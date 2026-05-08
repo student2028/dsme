@@ -1,19 +1,36 @@
 {
   "name": "dsme",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.3.0",
+  "description": "DeepSeek Matrix Engine — World-class TUI AI IDE",
+  "author": "student2028",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:pkg": "npm run build && electron-builder",
     "lint": "eslint .",
     "preview": "vite preview"
+  },
+  "build": {
+    "appId": "com.dsme.ide",
+    "productName": "DSME",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**"
+    ],
+    "mac": {
+      "target": "dmg",
+      "icon": null
+    }
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
-    "lucide-react": "^1.14.0",
     "openai": "^6.37.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",

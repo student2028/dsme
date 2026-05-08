@@ -141,7 +141,7 @@ function App() {
       </main>
 
       <div className="resize-handle-v" onMouseDown={handleChatDrag} />
-      <div style={{ width: `${chatWidth}px`, flexShrink: 0, display: 'flex' }}><ChatPanel /></div>
+      <div style={{ width: `${chatWidth}px`, flexShrink: 0, display: 'flex' }}><ChatPanel currentFileContext={activeTab ? { path: activeTab.path, content: activeTab.content } : null} /></div>
 
       <StatusBar activePath={activeTab?.name || ''} language={getLang(activeTab?.name || '')} cursorPosition={cursorPos} gitBranch={gitBranch} />
       <CommandPalette isOpen={cmdPaletteOpen} onClose={() => setCmdPaletteOpen(false)} onFileSelect={handleFileSelect} />
