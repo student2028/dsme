@@ -8,11 +8,14 @@ interface Props {
 }
 
 export const StatusBar: React.FC<Props> = ({ activePath, language, cursorPosition, gitBranch }) => {
-  const [time, setTime] = useState(new Date());
+  const [model, setModel] = useState('');
 
   useEffect(() => {
-    const interval = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(interval);
+    if (window.electronAPI) {
+      window.electronAPI.getConfig().then((c: any) => {
+        setModel(c?.model?.split('/').pop() || 'DeepSeek-V4-Flash');
+      });
+    }
   }, []);
 
   return (
@@ -23,9 +26,10 @@ export const StatusBar: React.FC<Props> = ({ activePath, language, cursorPositio
       </div>
       <div className="status-bar-right">
         <span className="status-item">Ln {cursorPosition.line}, Col {cursorPosition.column}</span>
-        <span className="status-item">{language.toUpperCase()}</span>
-        <span className="status-item">DeepSeek</span>
-        <span className="status-item">{time.toLocaleTimeString()}</span>
+        <span className="status-item status-lang">{language}</span>
+        <span className="status-item status-encoding">UTF-8</span>
+        <span className="status-item status-model">🤖 {model}</span>
+        <span className="status-item status-version">DSME v1.0</span>
       </div>
     </div>
   );

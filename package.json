@@ -1,7 +1,7 @@
 {
   "name": "dsme",
   "private": true,
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "DeepSeek Matrix Engine — World-class TUI AI IDE",
   "author": "student2028",
   "main": "dist-electron/main.js",

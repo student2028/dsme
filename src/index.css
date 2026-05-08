@@ -406,6 +406,10 @@ body {
 .status-item { white-space: nowrap; }
 
 .status-branch { font-weight: bold; }
+.status-lang { color: var(--cyan); }
+.status-encoding { color: var(--text-secondary); }
+.status-model { color: var(--orange); }
+.status-version { color: var(--accent-color); font-weight: bold; }
 
 /* ===== COMMAND PALETTE ===== */
 .command-palette-overlay {
