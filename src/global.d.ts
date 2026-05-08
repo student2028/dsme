@@ -19,6 +19,7 @@ declare global {
       readFile: (filepath: string) => Promise<string>;
       writeFile: (filepath: string, content: string) => Promise<boolean>;
       searchFiles: (query: string) => Promise<{ name: string; path: string }[]>;
+      searchCodebase: (query: string) => Promise<string>;
       getGitBranch: () => Promise<string>;
       onTerminalOutput: (callback: (data: string) => void) => void;
       sendTerminalInput: (data: string) => void;

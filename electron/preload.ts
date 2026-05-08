@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readFile: (filepath: string) => ipcRenderer.invoke('read-file', filepath),
   writeFile: (filepath: string, content: string) => ipcRenderer.invoke('write-file', filepath, content),
   searchFiles: (query: string) => ipcRenderer.invoke('search-files', query),
+  searchCodebase: (query: string) => ipcRenderer.invoke('search-codebase', query),
 
   // Git
   getGitBranch: () => ipcRenderer.invoke('get-git-branch'),

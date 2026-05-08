@@ -9258,4 +9258,15 @@ electron.ipcMain.handle("save-config", async (_, config) => {
 	await initAgent();
 	return m;
 });
+electron.ipcMain.handle("search-codebase", async (_, query) => {
+	try {
+		const { stdout } = await execAsync(`grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude-dir=dist-electron "${query.replace(/"/g, "\\\"")}" .`, {
+			cwd: currentWorkspacePath,
+			maxBuffer: 2 * 1024 * 1024
+		});
+		return stdout || "";
+	} catch (e) {
+		return e.stdout || "";
+	}
+});
 //#endregion

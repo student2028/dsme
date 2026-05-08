@@ -7,6 +7,9 @@ import { StatusBar } from './components/StatusBar';
 import { CommandPalette } from './components/CommandPalette';
 import { SettingsPanel } from './components/SettingsPanel';
 import { WelcomeScreen } from './components/WelcomeScreen';
+import { SearchPanel } from './components/SearchPanel';
+import { ShortcutHelp } from './components/ShortcutHelp';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastContainer, showToast } from './components/Toast';
 import './index.css';
 
@@ -23,6 +26,8 @@ function App() {
   const [cursorPos, setCursorPos] = useState({ line: 1, column: 1 });
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(220);
   const [chatWidth, setChatWidth] = useState(420);
   const [gitBranch, setGitBranch] = useState('');
@@ -30,7 +35,6 @@ function App() {
 
   const activeTab = tabs.find(t => t.path === activePath);
 
-  // Git branch polling
   useEffect(() => {
     const fetch = () => { if (window.electronAPI) window.electronAPI.getGitBranch().then(setGitBranch); };
     fetch();
@@ -38,7 +42,6 @@ function App() {
     return () => clearInterval(i);
   }, []);
 
-  // File open
   const handleFileSelect = useCallback(async (filepath: string, name: string) => {
     if (tabs.find(t => t.path === filepath)) { setActivePath(filepath); return; }
     if (window.electronAPI) {
@@ -46,13 +49,10 @@ function App() {
         const content = await window.electronAPI.readFile(filepath);
         setTabs(prev => [...prev, { path: filepath, name, content, isDirty: false }]);
         setActivePath(filepath);
-      } catch (e: any) {
-        showToast(`Failed to open: ${e.message}`, 'error');
-      }
+      } catch (e: any) { showToast(`Failed to open: ${e.message}`, 'error'); }
     }
   }, [tabs]);
 
-  // Save
   const handleSave = useCallback(() => {
     const tab = tabs.find(t => t.path === activePath);
     if (tab?.isDirty && window.electronAPI) {
@@ -62,24 +62,19 @@ function App() {
     }
   }, [tabs, activePath]);
 
-  // Editor change with auto-save debounce
   const handleEditorChange = useCallback((v: string | undefined) => {
     if (v !== undefined) {
       setTabs(prev => prev.map(t => t.path === activePath ? { ...t, content: v, isDirty: true } : t));
-
-      // Auto-save after 2s of inactivity
       if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
       autoSaveTimerRef.current = setTimeout(() => {
-        const tab = tabs.find(t => t.path === activePath);
-        if (tab && window.electronAPI) {
+        if (window.electronAPI) {
           window.electronAPI.writeFile(activePath, v);
           setTabs(prev => prev.map(t => t.path === activePath ? { ...t, isDirty: false } : t));
         }
       }, 2000);
     }
-  }, [activePath, tabs]);
+  }, [activePath]);
 
-  // Close tab
   const handleCloseTab = useCallback((e: React.MouseEvent, p: string) => {
     e.stopPropagation();
     setTabs(prev => {
@@ -89,7 +84,6 @@ function App() {
     });
   }, [activePath]);
 
-  // Live reload from agent
   useEffect(() => {
     if (window.electronAPI) {
       window.electronAPI.onFileChanged(async (fp: string) => {
@@ -102,12 +96,11 @@ function App() {
     }
   }, []);
 
-  // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.key === 's') { e.preventDefault(); handleSave(); }
-      if (mod && e.key === 'p') { e.preventDefault(); setCmdPaletteOpen(p => !p); }
+      if (mod && e.key === 'p' && !e.shiftKey) { e.preventDefault(); setCmdPaletteOpen(p => !p); }
       if (mod && e.key === 'w') {
         e.preventDefault();
         if (activePath) setTabs(prev => {
@@ -117,6 +110,8 @@ function App() {
         });
       }
       if (mod && e.key === ',') { e.preventDefault(); setSettingsOpen(p => !p); }
+      if (mod && e.shiftKey && e.key === 'F') { e.preventDefault(); setSearchOpen(p => !p); }
+      if (mod && e.key === '?') { e.preventDefault(); setHelpOpen(p => !p); }
     };
     window.addEventListener('keydown', handler);
     const save = () => handleSave();
@@ -124,7 +119,6 @@ function App() {
     return () => { window.removeEventListener('keydown', handler); window.removeEventListener('editor-save', save); };
   }, [handleSave, activePath]);
 
-  // Resize handlers
   const handleTerminalDrag = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const sY = e.clientY, sH = terminalHeight;
@@ -148,7 +142,10 @@ function App() {
 
   return (
     <div className="app-container">
-      <FileTree onFileSelect={handleFileSelect} />
+      <ErrorBoundary fallbackMessage="File tree crashed">
+        <FileTree onFileSelect={handleFileSelect} />
+      </ErrorBoundary>
+
       <main className="main-content">
         <div className="tab-bar">
           {tabs.map(tab => (
@@ -157,10 +154,9 @@ function App() {
               <span className="tab-close" onClick={(e) => handleCloseTab(e, tab.path)}>×</span>
             </div>
           ))}
-          {tabs.length === 0 && <div className="tab-empty">Ctrl+P search · Ctrl+, settings</div>}
+          {tabs.length === 0 && <div className="tab-empty">Ctrl+P search · Ctrl+Shift+F find · Ctrl+, settings</div>}
         </div>
 
-        {/* Breadcrumb */}
         {activeTab && (
           <div className="breadcrumb">
             {activeTab.path.split('/').slice(-3).map((part, i, arr) => (
@@ -172,24 +168,34 @@ function App() {
           </div>
         )}
 
-        {activeTab ? (
-          <EditorPanel content={activeTab.content} onChange={handleEditorChange} filename={activeTab.name} onCursorChange={(l, c) => setCursorPos({ line: l, column: c })} />
-        ) : (
-          <WelcomeScreen />
-        )}
+        <ErrorBoundary fallbackMessage="Editor crashed">
+          {activeTab ? (
+            <EditorPanel content={activeTab.content} onChange={handleEditorChange} filename={activeTab.name} onCursorChange={(l, c) => setCursorPos({ line: l, column: c })} />
+          ) : (
+            <WelcomeScreen />
+          )}
+        </ErrorBoundary>
 
         <div className="resize-handle-h" onMouseDown={handleTerminalDrag} />
-        <div style={{ height: `${terminalHeight}px`, flexShrink: 0 }}><TerminalPanel /></div>
+        <div style={{ height: `${terminalHeight}px`, flexShrink: 0 }}>
+          <ErrorBoundary fallbackMessage="Terminal crashed">
+            <TerminalPanel />
+          </ErrorBoundary>
+        </div>
       </main>
 
       <div className="resize-handle-v" onMouseDown={handleChatDrag} />
       <div style={{ width: `${chatWidth}px`, flexShrink: 0, display: 'flex' }}>
-        <ChatPanel currentFileContext={activeTab ? { path: activeTab.path, content: activeTab.content } : null} />
+        <ErrorBoundary fallbackMessage="Chat panel crashed">
+          <ChatPanel currentFileContext={activeTab ? { path: activeTab.path, content: activeTab.content } : null} />
+        </ErrorBoundary>
       </div>
 
       <StatusBar activePath={activeTab?.name || ''} language={getLang(activeTab?.name || '')} cursorPosition={cursorPos} gitBranch={gitBranch} />
       <CommandPalette isOpen={cmdPaletteOpen} onClose={() => setCmdPaletteOpen(false)} onFileSelect={handleFileSelect} />
       <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <SearchPanel isOpen={searchOpen} onClose={() => setSearchOpen(false)} onResultSelect={handleFileSelect} />
+      <ShortcutHelp isOpen={helpOpen} onClose={() => setHelpOpen(false)} />
       <ToastContainer />
     </div>
   );

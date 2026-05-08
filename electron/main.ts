@@ -161,3 +161,11 @@ ipcMain.handle('search-files', async (_, query: string) => {
 
 ipcMain.handle('get-config', () => loadConfig());
 ipcMain.handle('save-config', async (_, config) => { const m = await saveConfig(config); await initAgent(); return m; });
+
+ipcMain.handle('search-codebase', async (_, query: string) => {
+  try {
+    const cmd = `grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude-dir=dist-electron "${query.replace(/"/g, '\\"')}" .`;
+    const { stdout } = await execAsync(cmd, { cwd: currentWorkspacePath, maxBuffer: 2 * 1024 * 1024 });
+    return stdout || '';
+  } catch (e: any) { return e.stdout || ''; }
+});
