@@ -41,6 +41,35 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   const activeConv = conversations.find(c => c.id === activeConvId)!;
   const isLoading = agentStatus !== 'idle';
 
+  // Load conversations from disk on mount
+  useEffect(() => {
+    if (window.electronAPI) {
+      window.electronAPI.loadConversations().then(data => {
+        if (data) {
+          try {
+            const saved = JSON.parse(data);
+            if (saved.conversations?.length > 0) {
+              setConversations(saved.conversations);
+              setActiveConvId(saved.activeConvId || saved.conversations[0].id);
+            }
+          } catch {}
+        }
+      });
+    }
+  }, []);
+
+  // Save conversations to disk on change (debounced)
+  useEffect(() => {
+    if (!window.electronAPI) return;
+    const timer = setTimeout(() => {
+      window.electronAPI.saveConversations(JSON.stringify({
+        conversations,
+        activeConvId,
+      }));
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [conversations, activeConvId]);
+
   // Auto-scroll
   useEffect(() => {
     const c = scrollRef.current;

@@ -34,6 +34,8 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
 		electron.ipcRenderer.on("file-changed", (_e, fp) => callback(fp));
 	},
 	getConfig: () => electron.ipcRenderer.invoke("get-config"),
-	saveConfig: (config) => electron.ipcRenderer.invoke("save-config", config)
+	saveConfig: (config) => electron.ipcRenderer.invoke("save-config", config),
+	saveConversations: (data) => electron.ipcRenderer.invoke("save-conversations", data),
+	loadConversations: () => electron.ipcRenderer.invoke("load-conversations")
 });
 //#endregion

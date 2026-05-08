@@ -46,4 +46,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Config
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config: any) => ipcRenderer.invoke('save-config', config),
+  saveConversations: (data: string) => ipcRenderer.invoke('save-conversations', data),
+  loadConversations: () => ipcRenderer.invoke('load-conversations'),
 });

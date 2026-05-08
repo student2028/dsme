@@ -179,6 +179,20 @@ ipcMain.handle('search-files', async (_, query: string) => {
 ipcMain.handle('get-config', () => loadConfig());
 ipcMain.handle('save-config', async (_, config) => { const m = await saveConfig(config); await initAgent(); return m; });
 
+// Chat persistence
+const CHAT_DIR = join(app.getPath('userData'), 'conversations');
+fs.mkdir(CHAT_DIR, { recursive: true }).catch(() => {});
+
+ipcMain.handle('save-conversations', async (_, data: string) => {
+  await fs.writeFile(join(CHAT_DIR, 'sessions.json'), data, 'utf8');
+  return true;
+});
+
+ipcMain.handle('load-conversations', async () => {
+  try { return await fs.readFile(join(CHAT_DIR, 'sessions.json'), 'utf8'); }
+  catch { return null; }
+});
+
 ipcMain.handle('search-codebase', async (_, query: string) => {
   try {
     const cmd = `grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude-dir=dist-electron "${query.replace(/"/g, '\\"')}" .`;

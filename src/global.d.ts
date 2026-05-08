@@ -28,6 +28,8 @@ declare global {
       onFileChanged: (callback: (filepath: string) => void) => void;
       getConfig: () => Promise<any>;
       saveConfig: (config: any) => Promise<any>;
+      saveConversations: (data: string) => Promise<boolean>;
+      loadConversations: () => Promise<string | null>;
     };
   }
 }

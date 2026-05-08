@@ -9275,6 +9275,19 @@ electron.ipcMain.handle("save-config", async (_, config) => {
 	await initAgent();
 	return m;
 });
+var CHAT_DIR = (0, node_path.join)(electron.app.getPath("userData"), "conversations");
+node_fs_promises.mkdir(CHAT_DIR, { recursive: true }).catch(() => {});
+electron.ipcMain.handle("save-conversations", async (_, data) => {
+	await node_fs_promises.writeFile((0, node_path.join)(CHAT_DIR, "sessions.json"), data, "utf8");
+	return true;
+});
+electron.ipcMain.handle("load-conversations", async () => {
+	try {
+		return await node_fs_promises.readFile((0, node_path.join)(CHAT_DIR, "sessions.json"), "utf8");
+	} catch {
+		return null;
+	}
+});
 electron.ipcMain.handle("search-codebase", async (_, query) => {
 	try {
 		const { stdout } = await execAsync(`grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude-dir=dist-electron "${query.replace(/"/g, "\\\"")}" .`, {
