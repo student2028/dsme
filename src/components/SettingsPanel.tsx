@@ -46,9 +46,19 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
         <div className="settings-group">
           <label className="settings-label">MODEL</label>
           <select className="settings-input" value={model} onChange={e => setModel(e.target.value)}>
-            <option value="deepseek-chat">deepseek-chat</option>
-            <option value="deepseek-coder">deepseek-coder</option>
-            <option value="deepseek-reasoner">deepseek-reasoner</option>
+            <optgroup label="DeepSeek">
+              <option value="deepseek-ai/DeepSeek-V4-Flash">DeepSeek-V4-Flash (Default)</option>
+              <option value="deepseek-ai/DeepSeek-V3.2">DeepSeek-V3.2</option>
+              <option value="deepseek-ai/DeepSeek-OCR">DeepSeek-OCR</option>
+            </optgroup>
+            <optgroup label="Other Models">
+              <option value="Pro/zai-org/GLM-5">GLM-5</option>
+              <option value="Pro/MiniMaxAI/MiniMax-M2.5">MiniMax-M2.5</option>
+              <option value="Pro/moonshotai/Kimi-K2.5">Kimi-K2.5</option>
+              <option value="Qwen/Qwen3.5-4B">Qwen3.5-4B</option>
+              <option value="Qwen/Qwen3-8B">Qwen3-8B</option>
+              <option value="PaddlePaddle/PaddleOCR-VL-1.5">PaddleOCR-VL-1.5</option>
+            </optgroup>
           </select>
         </div>
 

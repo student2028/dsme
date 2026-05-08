@@ -646,3 +646,115 @@ body {
   font-size: 12px;
   color: var(--text-secondary);
 }
+
+/* ===== DIFF PREVIEW ===== */
+.diff-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  z-index: 9000;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 40px;
+}
+
+.diff-panel {
+  width: 90%;
+  max-width: 900px;
+  max-height: 80vh;
+  background: var(--bg-secondary);
+  border: 1px solid var(--accent-color);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 0 60px rgba(0, 255, 0, 0.15);
+}
+
+.diff-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-color);
+  font-size: 13px;
+  font-weight: bold;
+}
+
+.diff-header-actions { display: flex; gap: 8px; }
+
+.diff-tabs {
+  display: flex;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-primary);
+}
+
+.diff-tab {
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  border-right: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.diff-tab.active { background: var(--bg-secondary); color: var(--accent-color); font-weight: bold; }
+.diff-tab.accepted { color: var(--accent-color); }
+.diff-tab.rejected { color: var(--red); text-decoration: line-through; }
+
+.diff-content {
+  flex: 1;
+  overflow: auto;
+  font-size: 12px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.diff-line {
+  display: flex;
+  padding: 1px 12px;
+  line-height: 1.6;
+}
+
+.diff-line.add { background: rgba(0, 255, 0, 0.08); color: var(--accent-color); }
+.diff-line.remove { background: rgba(255, 68, 68, 0.08); color: var(--red); text-decoration: line-through; }
+.diff-line.same { color: var(--text-secondary); }
+
+.diff-marker { width: 20px; flex-shrink: 0; text-align: center; font-weight: bold; }
+.diff-text { white-space: pre; }
+
+.diff-actions {
+  display: flex;
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-primary);
+}
+
+.diff-btn {
+  padding: 8px 16px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: bold;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid;
+}
+
+.diff-btn.accept {
+  background: var(--accent-color);
+  color: var(--bg-primary);
+  border-color: var(--accent-color);
+}
+
+.diff-btn.reject {
+  background: transparent;
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.diff-btn.close {
+  background: transparent;
+  color: var(--text-primary);
+  border-color: var(--text-primary);
+}
+
+.diff-btn:hover { opacity: 0.85; }
