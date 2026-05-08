@@ -6,6 +6,7 @@ import { TerminalPanel } from './components/TerminalPanel';
 import { StatusBar } from './components/StatusBar';
 import { CommandPalette } from './components/CommandPalette';
 import { SettingsPanel } from './components/SettingsPanel';
+import { WelcomeScreen } from './components/WelcomeScreen';
 import './index.css';
 
 interface Tab {
@@ -21,29 +22,21 @@ function App() {
   const [cursorPos, setCursorPos] = useState({ line: 1, column: 1 });
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [terminalHeight, setTerminalHeight] = useState(250);
-  const [chatWidth, setChatWidth] = useState(450);
+  const [terminalHeight, setTerminalHeight] = useState(220);
+  const [chatWidth, setChatWidth] = useState(420);
   const [gitBranch, setGitBranch] = useState('');
 
   const activeTab = tabs.find(t => t.path === activePath);
 
-  // Fetch git branch
   useEffect(() => {
-    const fetchBranch = () => {
-      if (window.electronAPI) {
-        window.electronAPI.getGitBranch().then(setGitBranch);
-      }
-    };
-    fetchBranch();
-    const interval = setInterval(fetchBranch, 10000);
-    return () => clearInterval(interval);
+    const fetch = () => { if (window.electronAPI) window.electronAPI.getGitBranch().then(setGitBranch); };
+    fetch();
+    const i = setInterval(fetch, 10000);
+    return () => clearInterval(i);
   }, []);
 
   const handleFileSelect = useCallback(async (filepath: string, name: string) => {
-    if (tabs.find(t => t.path === filepath)) {
-      setActivePath(filepath);
-      return;
-    }
+    if (tabs.find(t => t.path === filepath)) { setActivePath(filepath); return; }
     if (window.electronAPI) {
       const content = await window.electronAPI.readFile(filepath);
       setTabs(prev => [...prev, { path: filepath, name, content, isDirty: false }]);
@@ -53,114 +46,79 @@ function App() {
 
   const handleSave = useCallback(() => {
     const tab = tabs.find(t => t.path === activePath);
-    if (tab && tab.isDirty && window.electronAPI) {
+    if (tab?.isDirty && window.electronAPI) {
       window.electronAPI.writeFile(tab.path, tab.content);
       setTabs(prev => prev.map(t => t.path === activePath ? { ...t, isDirty: false } : t));
     }
   }, [tabs, activePath]);
 
-  const handleEditorChange = useCallback((newContent: string | undefined) => {
-    if (newContent !== undefined) {
-      setTabs(prev => prev.map(tab =>
-        tab.path === activePath ? { ...tab, content: newContent, isDirty: true } : tab
-      ));
-    }
+  const handleEditorChange = useCallback((v: string | undefined) => {
+    if (v !== undefined) setTabs(prev => prev.map(t => t.path === activePath ? { ...t, content: v, isDirty: true } : t));
   }, [activePath]);
 
-  const handleCloseTab = useCallback((e: React.MouseEvent, pathToClose: string) => {
+  const handleCloseTab = useCallback((e: React.MouseEvent, p: string) => {
     e.stopPropagation();
     setTabs(prev => {
-      const newTabs = prev.filter(t => t.path !== pathToClose);
-      if (activePath === pathToClose) {
-        setActivePath(newTabs.length > 0 ? newTabs[newTabs.length - 1].path : '');
-      }
-      return newTabs;
+      const nt = prev.filter(t => t.path !== p);
+      if (activePath === p) setActivePath(nt.length > 0 ? nt[nt.length - 1].path : '');
+      return nt;
     });
   }, [activePath]);
 
-  // Live file reload from agent
   useEffect(() => {
     if (window.electronAPI) {
-      window.electronAPI.onFileChanged(async (filepath: string) => {
-        const newContent = await window.electronAPI.readFile(filepath);
-        setTabs(prev => prev.map(tab =>
-          tab.path === filepath ? { ...tab, content: newContent, isDirty: false } : tab
-        ));
+      window.electronAPI.onFileChanged(async (fp: string) => {
+        const c = await window.electronAPI.readFile(fp);
+        setTabs(prev => prev.map(t => t.path === fp ? { ...t, content: c, isDirty: false } : t));
       });
     }
   }, []);
 
-  // Global keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key === 's') { e.preventDefault(); handleSave(); }
+      if (mod && e.key === 'p') { e.preventDefault(); setCmdPaletteOpen(p => !p); }
+      if (mod && e.key === 'w') {
         e.preventDefault();
-        handleSave();
+        if (activePath) setTabs(prev => {
+          const nt = prev.filter(t => t.path !== activePath);
+          setActivePath(nt.length > 0 ? nt[nt.length - 1].path : '');
+          return nt;
+        });
       }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
-        e.preventDefault();
-        setCmdPaletteOpen(prev => !prev);
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'w') {
-        e.preventDefault();
-        if (activePath) {
-          setTabs(prev => {
-            const newTabs = prev.filter(t => t.path !== activePath);
-            setActivePath(newTabs.length > 0 ? newTabs[newTabs.length - 1].path : '');
-            return newTabs;
-          });
-        }
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === ',') {
-        e.preventDefault();
-        setSettingsOpen(prev => !prev);
-      }
+      if (mod && e.key === ',') { e.preventDefault(); setSettingsOpen(p => !p); }
     };
     window.addEventListener('keydown', handler);
-    const saveHandler = () => handleSave();
-    window.addEventListener('editor-save', saveHandler);
-    return () => {
-      window.removeEventListener('keydown', handler);
-      window.removeEventListener('editor-save', saveHandler);
-    };
+    const save = () => handleSave();
+    window.addEventListener('editor-save', save);
+    return () => { window.removeEventListener('keydown', handler); window.removeEventListener('editor-save', save); };
   }, [handleSave, activePath]);
 
-  // Resize handlers
   const handleTerminalDrag = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    const startY = e.clientY;
-    const startH = terminalHeight;
-    const onMove = (ev: MouseEvent) => setTerminalHeight(Math.max(80, Math.min(500, startH + (startY - ev.clientY))));
-    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
+    const sY = e.clientY, sH = terminalHeight;
+    const move = (ev: MouseEvent) => setTerminalHeight(Math.max(80, Math.min(500, sH + (sY - ev.clientY))));
+    const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
+    document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
   }, [terminalHeight]);
 
   const handleChatDrag = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    const startX = e.clientX;
-    const startW = chatWidth;
-    const onMove = (ev: MouseEvent) => setChatWidth(Math.max(300, Math.min(700, startW + (startX - ev.clientX))));
-    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
+    const sX = e.clientX, sW = chatWidth;
+    const move = (ev: MouseEvent) => setChatWidth(Math.max(300, Math.min(700, sW + (sX - ev.clientX))));
+    const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
+    document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
   }, [chatWidth]);
 
-  const getLanguage = (name: string) => {
-    const ext = name?.split('.').pop()?.toLowerCase() || '';
-    const map: Record<string, string> = {
-      'ts': 'TypeScript', 'tsx': 'TypeScript', 'js': 'JavaScript', 'jsx': 'JavaScript',
-      'css': 'CSS', 'html': 'HTML', 'json': 'JSON', 'md': 'Markdown',
-      'py': 'Python', 'kt': 'Kotlin', 'dart': 'Dart', 'swift': 'Swift',
-      'go': 'Go', 'rs': 'Rust', 'java': 'Java', 'sh': 'Shell',
-    };
-    return map[ext] || ext.toUpperCase() || 'TEXT';
+  const getLang = (n: string) => {
+    const ext = n?.split('.').pop()?.toLowerCase() || '';
+    return ({ ts:'TypeScript', tsx:'TypeScript', js:'JavaScript', jsx:'JavaScript', css:'CSS', html:'HTML', json:'JSON', md:'Markdown', py:'Python', kt:'Kotlin', dart:'Dart', swift:'Swift', go:'Go', rs:'Rust', java:'Java', sh:'Shell' } as any)[ext] || ext.toUpperCase() || 'TEXT';
   };
 
   return (
     <div className="app-container">
       <FileTree onFileSelect={handleFileSelect} />
-
       <main className="main-content">
         <div className="tab-bar">
           {tabs.map(tab => (
@@ -172,31 +130,20 @@ function App() {
           {tabs.length === 0 && <div className="tab-empty">Ctrl+P search · Ctrl+, settings</div>}
         </div>
 
-        <EditorPanel
-          content={activeTab ? activeTab.content : ''}
-          onChange={handleEditorChange}
-          filename={activeTab ? activeTab.name : ''}
-          onCursorChange={(line, col) => setCursorPos({ line, column: col })}
-        />
+        {activeTab ? (
+          <EditorPanel content={activeTab.content} onChange={handleEditorChange} filename={activeTab.name} onCursorChange={(l, c) => setCursorPos({ line: l, column: c })} />
+        ) : (
+          <WelcomeScreen />
+        )}
 
         <div className="resize-handle-h" onMouseDown={handleTerminalDrag} />
-        <div style={{ height: `${terminalHeight}px`, flexShrink: 0 }}>
-          <TerminalPanel />
-        </div>
+        <div style={{ height: `${terminalHeight}px`, flexShrink: 0 }}><TerminalPanel /></div>
       </main>
 
       <div className="resize-handle-v" onMouseDown={handleChatDrag} />
-      <div style={{ width: `${chatWidth}px`, flexShrink: 0, display: 'flex' }}>
-        <ChatPanel />
-      </div>
+      <div style={{ width: `${chatWidth}px`, flexShrink: 0, display: 'flex' }}><ChatPanel /></div>
 
-      <StatusBar
-        activePath={activeTab?.name || ''}
-        language={getLanguage(activeTab?.name || '')}
-        cursorPosition={cursorPos}
-        gitBranch={gitBranch}
-      />
-
+      <StatusBar activePath={activeTab?.name || ''} language={getLang(activeTab?.name || '')} cursorPosition={cursorPos} gitBranch={gitBranch} />
       <CommandPalette isOpen={cmdPaletteOpen} onClose={() => setCmdPaletteOpen(false)} onFileSelect={handleFileSelect} />
       <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>

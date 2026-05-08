@@ -20,11 +20,7 @@ const agentTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'read_file',
       description: 'Read the contents of a file at the given path.',
-      parameters: {
-        type: 'object',
-        properties: { filepath: { type: 'string' } },
-        required: ['filepath']
-      }
+      parameters: { type: 'object', properties: { filepath: { type: 'string' } }, required: ['filepath'] }
     }
   },
   {
@@ -32,14 +28,7 @@ const agentTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'write_file',
       description: 'Create or overwrite a file with the given content.',
-      parameters: {
-        type: 'object',
-        properties: {
-          filepath: { type: 'string' },
-          content: { type: 'string' }
-        },
-        required: ['filepath', 'content']
-      }
+      parameters: { type: 'object', properties: { filepath: { type: 'string' }, content: { type: 'string' } }, required: ['filepath', 'content'] }
     }
   },
   {
@@ -47,15 +36,7 @@ const agentTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'replace_in_file',
       description: 'Replace a specific substring in a file. Use for surgical edits.',
-      parameters: {
-        type: 'object',
-        properties: {
-          filepath: { type: 'string' },
-          target: { type: 'string', description: 'Exact string to find' },
-          replacement: { type: 'string', description: 'String to replace with' }
-        },
-        required: ['filepath', 'target', 'replacement']
-      }
+      parameters: { type: 'object', properties: { filepath: { type: 'string' }, target: { type: 'string' }, replacement: { type: 'string' } }, required: ['filepath', 'target', 'replacement'] }
     }
   },
   {
@@ -63,11 +44,7 @@ const agentTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'list_directory',
       description: 'List files and directories in a given path.',
-      parameters: {
-        type: 'object',
-        properties: { dirpath: { type: 'string' } },
-        required: ['dirpath']
-      }
+      parameters: { type: 'object', properties: { dirpath: { type: 'string' } }, required: ['dirpath'] }
     }
   },
   {
@@ -75,14 +52,7 @@ const agentTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'search_codebase',
       description: 'Search for a text pattern across the workspace using grep.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string' },
-          is_regex: { type: 'boolean' }
-        },
-        required: ['query']
-      }
+      parameters: { type: 'object', properties: { query: { type: 'string' }, is_regex: { type: 'boolean' } }, required: ['query'] }
     }
   },
   {
@@ -90,53 +60,42 @@ const agentTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'run_command',
       description: 'Run a shell command and return stdout/stderr.',
-      parameters: {
-        type: 'object',
-        properties: { command: { type: 'string' } },
-        required: ['command']
-      }
+      parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] }
     }
   }
 ];
 
-const SYSTEM_PROMPT = `You are Antigravity, a world-class autonomous AI coding agent powered by DeepSeek. You operate inside an Electron-based IDE.
+const SYSTEM_PROMPT = `You are Antigravity, a world-class autonomous AI coding agent. You operate inside an Electron-based IDE.
 
 ## Capabilities
-You have full access to the user's file system and terminal through tools. Use them liberally:
-- read_file: Read any file
-- write_file: Create or overwrite files
-- replace_in_file: Surgical string replacement (preferred for edits)
-- list_directory: Browse the file system
-- search_codebase: Grep across the project
-- run_command: Execute any shell command
+- read_file, write_file, replace_in_file, list_directory, search_codebase, run_command
 
-## Operating Principles
-1. BE AUTONOMOUS. Do not ask the user for clarification unless truly ambiguous. Just do the work.
-2. THINK step by step. Plan your approach, then execute tools one by one.
-3. VERIFY your work. After making changes, read the file back to confirm correctness.
-4. HANDLE ERRORS. If a tool fails, diagnose the problem and retry with corrections.
-5. BE THOROUGH. If a task involves multiple files, handle ALL of them without stopping.
-
-## Response Format
-- Use Markdown for all responses
-- Show code in fenced blocks with language tags
-- Be concise but complete`;
+## Principles
+1. BE AUTONOMOUS. Don't ask for clarification. Just do the work.
+2. THINK step by step. Plan, execute, verify.
+3. HANDLE ERRORS. If a tool fails, diagnose and retry.
+4. BE THOROUGH. Handle all files without stopping.
+5. Use Markdown for responses. Be concise but complete.`;
 
 export class DeepSeekAgent {
   private openai: OpenAI;
   private messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
   private cwd: string;
   private model: string;
-  private maxLoopIterations = 25; // Safety guard
+  private maxLoopIterations = 25;
 
   constructor(private window: BrowserWindow, config: AgentConfig) {
-    this.openai = new OpenAI({
-      baseURL: config.baseUrl,
-      apiKey: config.apiKey,
-    });
+    const key = config.apiKey || 'sk-placeholder';
+    this.openai = new OpenAI({ baseURL: config.baseUrl, apiKey: key });
     this.cwd = config.cwd;
     this.model = config.model;
     this.messages = [{ role: 'system', content: SYSTEM_PROMPT }];
+
+    if (!config.apiKey) {
+      this.window.webContents.once('did-finish-load', () => {
+        this.window.webContents.send('chat-reply', '⚠️ No API key. Press Ctrl+, to configure.');
+      });
+    }
   }
 
   public async handleUserMessage(content: string) {
@@ -146,7 +105,7 @@ export class DeepSeekAgent {
 
   private async processAgentLoop(iteration: number) {
     if (iteration >= this.maxLoopIterations) {
-      this.window.webContents.send('chat-reply', '\n\n⚠️ Agent reached maximum iteration limit. Stopping.');
+      this.window.webContents.send('chat-reply', '\n\n⚠️ Max iterations reached.');
       return;
     }
 
@@ -165,7 +124,7 @@ export class DeepSeekAgent {
         this.window.webContents.send('chat-reply', message.content);
       }
 
-      if (!message.tool_calls || message.tool_calls.length === 0) return; // Done
+      if (!message.tool_calls || message.tool_calls.length === 0) return;
 
       for (const toolCall of message.tool_calls) {
         const name = toolCall.function.name;
@@ -175,24 +134,16 @@ export class DeepSeekAgent {
         try { args = JSON.parse(toolCall.function.arguments); } catch {}
 
         const result = await this.executeTool(name, args);
-
-        this.messages.push({
-          role: 'tool',
-          tool_call_id: toolCall.id,
-          content: result.slice(0, 8000),
-        });
+        this.messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result.slice(0, 8000) });
       }
 
-      // Continue the loop
       await this.processAgentLoop(iteration + 1);
     } catch (error: any) {
       const errMsg = error?.message || String(error);
-      console.error('Agent error:', errMsg);
-
       if (errMsg.includes('rate_limit') || errMsg.includes('429')) {
-        this.window.webContents.send('chat-reply', '\n\n⏳ Rate limited. Waiting 5s...');
+        this.window.webContents.send('chat-reply', '\n\n⏳ Rate limited. Retrying in 5s...');
         await new Promise(r => setTimeout(r, 5000));
-        await this.processAgentLoop(iteration); // Retry same iteration
+        await this.processAgentLoop(iteration);
       } else {
         this.window.webContents.send('chat-reply', `\n\n❌ Error: ${errMsg}`);
       }
@@ -204,9 +155,8 @@ export class DeepSeekAgent {
       const resolve = (p: string) => path.resolve(this.cwd, p);
 
       switch (name) {
-        case 'read_file': {
+        case 'read_file':
           return await fs.readFile(resolve(args.filepath), 'utf8');
-        }
 
         case 'write_file': {
           const fp = resolve(args.filepath);
@@ -220,7 +170,7 @@ export class DeepSeekAgent {
           const fp = resolve(args.filepath);
           let content = await fs.readFile(fp, 'utf8');
           if (!content.includes(args.target)) {
-            return `❌ Target string not found in ${args.filepath}. File has ${content.length} chars. First 200:\n${content.slice(0, 200)}`;
+            return `❌ Target not found in ${args.filepath}. First 200 chars:\n${content.slice(0, 200)}`;
           }
           content = content.replace(args.target, args.replacement);
           await fs.writeFile(fp, content, 'utf8');
@@ -238,32 +188,22 @@ export class DeepSeekAgent {
 
         case 'search_codebase': {
           const flag = args.is_regex ? '-rnE' : '-rn';
-          const excludes = '--exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist';
-          const cmd = `grep ${flag} ${excludes} "${args.query}" .`;
+          const cmd = `grep ${flag} --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist "${args.query}" .`;
           try {
             const { stdout } = await execAsync(cmd, { cwd: this.cwd, maxBuffer: 1024 * 1024 });
-            return stdout || 'No matches found.';
-          } catch (e: any) {
-            return e.stdout || 'No matches found.';
-          }
+            return stdout || 'No matches.';
+          } catch (e: any) { return e.stdout || 'No matches.'; }
         }
 
         case 'run_command': {
-          const { stdout, stderr } = await execAsync(args.command, {
-            cwd: this.cwd,
-            timeout: 30000,
-            maxBuffer: 1024 * 1024,
-          });
+          const { stdout, stderr } = await execAsync(args.command, { cwd: this.cwd, timeout: 30000, maxBuffer: 1024 * 1024 });
           const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : '');
           this.window.webContents.send('terminal-output', `\r\n$ ${args.command}\r\n${stdout}`);
           return output;
         }
 
-        default:
-          return `Unknown tool: ${name}`;
+        default: return `Unknown tool: ${name}`;
       }
-    } catch (err: any) {
-      return `Tool error (${name}): ${err.message}`;
-    }
+    } catch (err: any) { return `Tool error (${name}): ${err.message}`; }
   }
 }

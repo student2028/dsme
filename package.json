@@ -1,8 +1,7 @@
 {
   "name": "dsme",
   "private": true,
-  "version": "0.0.0",
-  "type": "module",
+  "version": "0.1.0",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",

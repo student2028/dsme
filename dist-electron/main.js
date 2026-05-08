@@ -1,11 +1,35 @@
-import { BrowserWindow, app, dialog, ipcMain } from "electron";
-import * as path from "node:path";
-import { join } from "node:path";
-import * as fs from "node:fs/promises";
-import * as pty from "node:child_process";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
-import * as os from "node:os";
+//#region \0rolldown/runtime.js
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+	if (from && typeof from === "object" || typeof from === "function") for (var keys = __getOwnPropNames(from), i = 0, n = keys.length, key; i < n; i++) {
+		key = keys[i];
+		if (!__hasOwnProp.call(to, key) && key !== except) __defProp(to, key, {
+			get: ((k) => from[k]).bind(null, key),
+			enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable
+		});
+	}
+	return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", {
+	value: mod,
+	enumerable: true
+}) : target, mod));
+//#endregion
+let electron = require("electron");
+let node_path = require("node:path");
+node_path = __toESM(node_path);
+let node_fs_promises = require("node:fs/promises");
+node_fs_promises = __toESM(node_fs_promises);
+let node_child_process = require("node:child_process");
+node_child_process = __toESM(node_child_process);
+let node_util = require("node:util");
+let node_os = require("node:os");
+node_os = __toESM(node_os);
 //#region node_modules/openai/internal/tslib.mjs
 function __classPrivateFieldSet(receiver, state, value, kind, f) {
 	if (kind === "m") throw new TypeError("Private method is not writable");
@@ -1574,7 +1598,7 @@ var createPathTagFunction = (pathEncoder = encodeURIPath) => function path(stati
 /**
 * URI-encodes path params and ensures no unsafe /./ or /../ path segments are introduced.
 */
-var path$1 = /* @__PURE__ */ createPathTagFunction(encodeURIPath);
+var path = /* @__PURE__ */ createPathTagFunction(encodeURIPath);
 //#endregion
 //#region node_modules/openai/resources/chat/completions/messages.mjs
 /**
@@ -1596,7 +1620,7 @@ var Messages$1 = class extends APIResource {
 	* ```
 	*/
 	list(completionID, query = {}, options) {
-		return this._client.getAPIList(path$1`/chat/completions/${completionID}/messages`, CursorPage, {
+		return this._client.getAPIList(path`/chat/completions/${completionID}/messages`, CursorPage, {
 			query,
 			...options,
 			__security: { bearerAuth: true }
@@ -2765,7 +2789,7 @@ var Completions$1 = class extends APIResource {
 	* ```
 	*/
 	retrieve(completionID, options) {
-		return this._client.get(path$1`/chat/completions/${completionID}`, {
+		return this._client.get(path`/chat/completions/${completionID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -2784,7 +2808,7 @@ var Completions$1 = class extends APIResource {
 	* ```
 	*/
 	update(completionID, body, options) {
-		return this._client.post(path$1`/chat/completions/${completionID}`, {
+		return this._client.post(path`/chat/completions/${completionID}`, {
 			body,
 			...options,
 			__security: { bearerAuth: true }
@@ -2820,7 +2844,7 @@ var Completions$1 = class extends APIResource {
 	* ```
 	*/
 	delete(completionID, options) {
-		return this._client.delete(path$1`/chat/completions/${completionID}`, {
+		return this._client.delete(path`/chat/completions/${completionID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -2889,7 +2913,7 @@ var AdminAPIKeys = class extends APIResource {
 	* ```
 	*/
 	retrieve(keyID, options) {
-		return this._client.get(path$1`/organization/admin_api_keys/${keyID}`, {
+		return this._client.get(path`/organization/admin_api_keys/${keyID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -2924,7 +2948,7 @@ var AdminAPIKeys = class extends APIResource {
 	* ```
 	*/
 	delete(keyID, options) {
-		return this._client.delete(path$1`/organization/admin_api_keys/${keyID}`, {
+		return this._client.delete(path`/organization/admin_api_keys/${keyID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -2993,7 +3017,7 @@ var Certificates$1 = class extends APIResource {
 	* ```
 	*/
 	retrieve(certificateID, query = {}, options) {
-		return this._client.get(path$1`/organization/certificates/${certificateID}`, {
+		return this._client.get(path`/organization/certificates/${certificateID}`, {
 			query,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3011,7 +3035,7 @@ var Certificates$1 = class extends APIResource {
 	* ```
 	*/
 	update(certificateID, body, options) {
-		return this._client.post(path$1`/organization/certificates/${certificateID}`, {
+		return this._client.post(path`/organization/certificates/${certificateID}`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3049,7 +3073,7 @@ var Certificates$1 = class extends APIResource {
 	* ```
 	*/
 	delete(certificateID, options) {
-		return this._client.delete(path$1`/organization/certificates/${certificateID}`, {
+		return this._client.delete(path`/organization/certificates/${certificateID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -3136,7 +3160,7 @@ var Invites = class extends APIResource {
 	* ```
 	*/
 	retrieve(inviteID, options) {
-		return this._client.get(path$1`/organization/invites/${inviteID}`, {
+		return this._client.get(path`/organization/invites/${inviteID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -3171,7 +3195,7 @@ var Invites = class extends APIResource {
 	* ```
 	*/
 	delete(inviteID, options) {
-		return this._client.delete(path$1`/organization/invites/${inviteID}`, {
+		return this._client.delete(path`/organization/invites/${inviteID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -3209,7 +3233,7 @@ var Roles$5 = class extends APIResource {
 	* ```
 	*/
 	update(roleID, body, options) {
-		return this._client.post(path$1`/organization/roles/${roleID}`, {
+		return this._client.post(path`/organization/roles/${roleID}`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3244,7 +3268,7 @@ var Roles$5 = class extends APIResource {
 	* ```
 	*/
 	delete(roleID, options) {
-		return this._client.delete(path$1`/organization/roles/${roleID}`, {
+		return this._client.delete(path`/organization/roles/${roleID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -3432,7 +3456,7 @@ var Roles$4 = class extends APIResource {
 	* ```
 	*/
 	create(groupID, body, options) {
-		return this._client.post(path$1`/organization/groups/${groupID}/roles`, {
+		return this._client.post(path`/organization/groups/${groupID}/roles`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3452,7 +3476,7 @@ var Roles$4 = class extends APIResource {
 	* ```
 	*/
 	list(groupID, query = {}, options) {
-		return this._client.getAPIList(path$1`/organization/groups/${groupID}/roles`, NextCursorPage, {
+		return this._client.getAPIList(path`/organization/groups/${groupID}/roles`, NextCursorPage, {
 			query,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3472,7 +3496,7 @@ var Roles$4 = class extends APIResource {
 	*/
 	delete(roleID, params, options) {
 		const { group_id } = params;
-		return this._client.delete(path$1`/organization/groups/${group_id}/roles/${roleID}`, {
+		return this._client.delete(path`/organization/groups/${group_id}/roles/${roleID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -3494,7 +3518,7 @@ var Users$2 = class extends APIResource {
 	* ```
 	*/
 	create(groupID, body, options) {
-		return this._client.post(path$1`/organization/groups/${groupID}/users`, {
+		return this._client.post(path`/organization/groups/${groupID}/users`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3514,7 +3538,7 @@ var Users$2 = class extends APIResource {
 	* ```
 	*/
 	list(groupID, query = {}, options) {
-		return this._client.getAPIList(path$1`/organization/groups/${groupID}/users`, NextCursorPage, {
+		return this._client.getAPIList(path`/organization/groups/${groupID}/users`, NextCursorPage, {
 			query,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3534,7 +3558,7 @@ var Users$2 = class extends APIResource {
 	*/
 	delete(userID, params, options) {
 		const { group_id } = params;
-		return this._client.delete(path$1`/organization/groups/${group_id}/users/${userID}`, {
+		return this._client.delete(path`/organization/groups/${group_id}/users/${userID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -3577,7 +3601,7 @@ var Groups$1 = class extends APIResource {
 	* ```
 	*/
 	update(groupID, body, options) {
-		return this._client.post(path$1`/organization/groups/${groupID}`, {
+		return this._client.post(path`/organization/groups/${groupID}`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3612,7 +3636,7 @@ var Groups$1 = class extends APIResource {
 	* ```
 	*/
 	delete(groupID, options) {
-		return this._client.delete(path$1`/organization/groups/${groupID}`, {
+		return this._client.delete(path`/organization/groups/${groupID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -3637,7 +3661,7 @@ var APIKeys = class extends APIResource {
 	*/
 	retrieve(apiKeyID, params, options) {
 		const { project_id } = params;
-		return this._client.get(path$1`/organization/projects/${project_id}/api_keys/${apiKeyID}`, {
+		return this._client.get(path`/organization/projects/${project_id}/api_keys/${apiKeyID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -3656,7 +3680,7 @@ var APIKeys = class extends APIResource {
 	* ```
 	*/
 	list(projectID, query = {}, options) {
-		return this._client.getAPIList(path$1`/organization/projects/${projectID}/api_keys`, ConversationCursorPage, {
+		return this._client.getAPIList(path`/organization/projects/${projectID}/api_keys`, ConversationCursorPage, {
 			query,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3679,7 +3703,7 @@ var APIKeys = class extends APIResource {
 	*/
 	delete(apiKeyID, params, options) {
 		const { project_id } = params;
-		return this._client.delete(path$1`/organization/projects/${project_id}/api_keys/${apiKeyID}`, {
+		return this._client.delete(path`/organization/projects/${project_id}/api_keys/${apiKeyID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -3702,7 +3726,7 @@ var Certificates = class extends APIResource {
 	* ```
 	*/
 	list(projectID, query = {}, options) {
-		return this._client.getAPIList(path$1`/organization/projects/${projectID}/certificates`, ConversationCursorPage, {
+		return this._client.getAPIList(path`/organization/projects/${projectID}/certificates`, ConversationCursorPage, {
 			query,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3725,7 +3749,7 @@ var Certificates = class extends APIResource {
 	* ```
 	*/
 	activate(projectID, body, options) {
-		return this._client.getAPIList(path$1`/organization/projects/${projectID}/certificates/activate`, Page, {
+		return this._client.getAPIList(path`/organization/projects/${projectID}/certificates/activate`, Page, {
 			body,
 			method: "post",
 			...options,
@@ -3748,7 +3772,7 @@ var Certificates = class extends APIResource {
 	* ```
 	*/
 	deactivate(projectID, body, options) {
-		return this._client.getAPIList(path$1`/organization/projects/${projectID}/certificates/deactivate`, Page, {
+		return this._client.getAPIList(path`/organization/projects/${projectID}/certificates/deactivate`, Page, {
 			body,
 			method: "post",
 			...options,
@@ -3773,7 +3797,7 @@ var RateLimits = class extends APIResource {
 	* ```
 	*/
 	listRateLimits(projectID, query = {}, options) {
-		return this._client.getAPIList(path$1`/organization/projects/${projectID}/rate_limits`, ConversationCursorPage, {
+		return this._client.getAPIList(path`/organization/projects/${projectID}/rate_limits`, ConversationCursorPage, {
 			query,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3793,7 +3817,7 @@ var RateLimits = class extends APIResource {
 	*/
 	updateRateLimit(rateLimitID, params, options) {
 		const { project_id, ...body } = params;
-		return this._client.post(path$1`/organization/projects/${project_id}/rate_limits/${rateLimitID}`, {
+		return this._client.post(path`/organization/projects/${project_id}/rate_limits/${rateLimitID}`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3816,7 +3840,7 @@ var Roles$3 = class extends APIResource {
 	* ```
 	*/
 	create(projectID, body, options) {
-		return this._client.post(path$1`/projects/${projectID}/roles`, {
+		return this._client.post(path`/projects/${projectID}/roles`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3836,7 +3860,7 @@ var Roles$3 = class extends APIResource {
 	*/
 	update(roleID, params, options) {
 		const { project_id, ...body } = params;
-		return this._client.post(path$1`/projects/${project_id}/roles/${roleID}`, {
+		return this._client.post(path`/projects/${project_id}/roles/${roleID}`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3856,7 +3880,7 @@ var Roles$3 = class extends APIResource {
 	* ```
 	*/
 	list(projectID, query = {}, options) {
-		return this._client.getAPIList(path$1`/projects/${projectID}/roles`, NextCursorPage, {
+		return this._client.getAPIList(path`/projects/${projectID}/roles`, NextCursorPage, {
 			query,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3876,7 +3900,7 @@ var Roles$3 = class extends APIResource {
 	*/
 	delete(roleID, params, options) {
 		const { project_id } = params;
-		return this._client.delete(path$1`/projects/${project_id}/roles/${roleID}`, {
+		return this._client.delete(path`/projects/${project_id}/roles/${roleID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -3899,7 +3923,7 @@ var ServiceAccounts = class extends APIResource {
 	* ```
 	*/
 	create(projectID, body, options) {
-		return this._client.post(path$1`/organization/projects/${projectID}/service_accounts`, {
+		return this._client.post(path`/organization/projects/${projectID}/service_accounts`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3919,7 +3943,7 @@ var ServiceAccounts = class extends APIResource {
 	*/
 	retrieve(serviceAccountID, params, options) {
 		const { project_id } = params;
-		return this._client.get(path$1`/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, {
+		return this._client.get(path`/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -3938,7 +3962,7 @@ var ServiceAccounts = class extends APIResource {
 	* ```
 	*/
 	list(projectID, query = {}, options) {
-		return this._client.getAPIList(path$1`/organization/projects/${projectID}/service_accounts`, ConversationCursorPage, {
+		return this._client.getAPIList(path`/organization/projects/${projectID}/service_accounts`, ConversationCursorPage, {
 			query,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -3961,7 +3985,7 @@ var ServiceAccounts = class extends APIResource {
 	*/
 	delete(serviceAccountID, params, options) {
 		const { project_id } = params;
-		return this._client.delete(path$1`/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, {
+		return this._client.delete(path`/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -3984,7 +4008,7 @@ var Roles$2 = class extends APIResource {
 	*/
 	create(groupID, params, options) {
 		const { project_id, ...body } = params;
-		return this._client.post(path$1`/projects/${project_id}/groups/${groupID}/roles`, {
+		return this._client.post(path`/projects/${project_id}/groups/${groupID}/roles`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -4006,7 +4030,7 @@ var Roles$2 = class extends APIResource {
 	*/
 	list(groupID, params, options) {
 		const { project_id, ...query } = params;
-		return this._client.getAPIList(path$1`/projects/${project_id}/groups/${groupID}/roles`, NextCursorPage, {
+		return this._client.getAPIList(path`/projects/${project_id}/groups/${groupID}/roles`, NextCursorPage, {
 			query,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -4026,7 +4050,7 @@ var Roles$2 = class extends APIResource {
 	*/
 	delete(roleID, params, options) {
 		const { project_id, group_id } = params;
-		return this._client.delete(path$1`/projects/${project_id}/groups/${group_id}/roles/${roleID}`, {
+		return this._client.delete(path`/projects/${project_id}/groups/${group_id}/roles/${roleID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -4052,7 +4076,7 @@ var Groups = class extends APIResource {
 	* ```
 	*/
 	create(projectID, body, options) {
-		return this._client.post(path$1`/organization/projects/${projectID}/groups`, {
+		return this._client.post(path`/organization/projects/${projectID}/groups`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -4072,7 +4096,7 @@ var Groups = class extends APIResource {
 	* ```
 	*/
 	list(projectID, query = {}, options) {
-		return this._client.getAPIList(path$1`/organization/projects/${projectID}/groups`, NextCursorPage, {
+		return this._client.getAPIList(path`/organization/projects/${projectID}/groups`, NextCursorPage, {
 			query,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -4092,7 +4116,7 @@ var Groups = class extends APIResource {
 	*/
 	delete(groupID, params, options) {
 		const { project_id } = params;
-		return this._client.delete(path$1`/organization/projects/${project_id}/groups/${groupID}`, {
+		return this._client.delete(path`/organization/projects/${project_id}/groups/${groupID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -4116,7 +4140,7 @@ var Roles$1 = class extends APIResource {
 	*/
 	create(userID, params, options) {
 		const { project_id, ...body } = params;
-		return this._client.post(path$1`/projects/${project_id}/users/${userID}/roles`, {
+		return this._client.post(path`/projects/${project_id}/users/${userID}/roles`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -4138,7 +4162,7 @@ var Roles$1 = class extends APIResource {
 	*/
 	list(userID, params, options) {
 		const { project_id, ...query } = params;
-		return this._client.getAPIList(path$1`/projects/${project_id}/users/${userID}/roles`, NextCursorPage, {
+		return this._client.getAPIList(path`/projects/${project_id}/users/${userID}/roles`, NextCursorPage, {
 			query,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -4158,7 +4182,7 @@ var Roles$1 = class extends APIResource {
 	*/
 	delete(roleID, params, options) {
 		const { project_id, user_id } = params;
-		return this._client.delete(path$1`/projects/${project_id}/users/${user_id}/roles/${roleID}`, {
+		return this._client.delete(path`/projects/${project_id}/users/${user_id}/roles/${roleID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -4185,7 +4209,7 @@ var Users$1 = class extends APIResource {
 	* ```
 	*/
 	create(projectID, body, options) {
-		return this._client.post(path$1`/organization/projects/${projectID}/users`, {
+		return this._client.post(path`/organization/projects/${projectID}/users`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -4205,7 +4229,7 @@ var Users$1 = class extends APIResource {
 	*/
 	retrieve(userID, params, options) {
 		const { project_id } = params;
-		return this._client.get(path$1`/organization/projects/${project_id}/users/${userID}`, {
+		return this._client.get(path`/organization/projects/${project_id}/users/${userID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -4224,7 +4248,7 @@ var Users$1 = class extends APIResource {
 	*/
 	update(userID, params, options) {
 		const { project_id, ...body } = params;
-		return this._client.post(path$1`/organization/projects/${project_id}/users/${userID}`, {
+		return this._client.post(path`/organization/projects/${project_id}/users/${userID}`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -4244,7 +4268,7 @@ var Users$1 = class extends APIResource {
 	* ```
 	*/
 	list(projectID, query = {}, options) {
-		return this._client.getAPIList(path$1`/organization/projects/${projectID}/users`, ConversationCursorPage, {
+		return this._client.getAPIList(path`/organization/projects/${projectID}/users`, ConversationCursorPage, {
 			query,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -4267,7 +4291,7 @@ var Users$1 = class extends APIResource {
 	*/
 	delete(userID, params, options) {
 		const { project_id } = params;
-		return this._client.delete(path$1`/organization/projects/${project_id}/users/${userID}`, {
+		return this._client.delete(path`/organization/projects/${project_id}/users/${userID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -4318,7 +4342,7 @@ var Projects = class extends APIResource {
 	* ```
 	*/
 	retrieve(projectID, options) {
-		return this._client.get(path$1`/organization/projects/${projectID}`, {
+		return this._client.get(path`/organization/projects/${projectID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -4335,7 +4359,7 @@ var Projects = class extends APIResource {
 	* ```
 	*/
 	update(projectID, body, options) {
-		return this._client.post(path$1`/organization/projects/${projectID}`, {
+		return this._client.post(path`/organization/projects/${projectID}`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -4372,7 +4396,7 @@ var Projects = class extends APIResource {
 	* ```
 	*/
 	archive(projectID, options) {
-		return this._client.post(path$1`/organization/projects/${projectID}/archive`, {
+		return this._client.post(path`/organization/projects/${projectID}/archive`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -4401,7 +4425,7 @@ var Roles = class extends APIResource {
 	* ```
 	*/
 	create(userID, body, options) {
-		return this._client.post(path$1`/organization/users/${userID}/roles`, {
+		return this._client.post(path`/organization/users/${userID}/roles`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -4421,7 +4445,7 @@ var Roles = class extends APIResource {
 	* ```
 	*/
 	list(userID, query = {}, options) {
-		return this._client.getAPIList(path$1`/organization/users/${userID}/roles`, NextCursorPage, {
+		return this._client.getAPIList(path`/organization/users/${userID}/roles`, NextCursorPage, {
 			query,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -4441,7 +4465,7 @@ var Roles = class extends APIResource {
 	*/
 	delete(roleID, params, options) {
 		const { user_id } = params;
-		return this._client.delete(path$1`/organization/users/${user_id}/roles/${roleID}`, {
+		return this._client.delete(path`/organization/users/${user_id}/roles/${roleID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -4464,7 +4488,7 @@ var Users = class extends APIResource {
 	* ```
 	*/
 	retrieve(userID, options) {
-		return this._client.get(path$1`/organization/users/${userID}`, {
+		return this._client.get(path`/organization/users/${userID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -4479,7 +4503,7 @@ var Users = class extends APIResource {
 	* ```
 	*/
 	update(userID, body, options) {
-		return this._client.post(path$1`/organization/users/${userID}`, {
+		return this._client.post(path`/organization/users/${userID}`, {
 			body,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -4514,7 +4538,7 @@ var Users = class extends APIResource {
 	* ```
 	*/
 	delete(userID, options) {
-		return this._client.delete(path$1`/organization/users/${userID}`, {
+		return this._client.delete(path`/organization/users/${userID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -4712,7 +4736,7 @@ var Batches = class extends APIResource {
 	* Retrieves a batch.
 	*/
 	retrieve(batchID, options) {
-		return this._client.get(path$1`/batches/${batchID}`, {
+		return this._client.get(path`/batches/${batchID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -4733,7 +4757,7 @@ var Batches = class extends APIResource {
 	* (if any) available in the output file.
 	*/
 	cancel(batchID, options) {
-		return this._client.post(path$1`/batches/${batchID}/cancel`, {
+		return this._client.post(path`/batches/${batchID}/cancel`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -4764,7 +4788,7 @@ var Assistants = class extends APIResource {
 	* @deprecated
 	*/
 	retrieve(assistantID, options) {
-		return this._client.get(path$1`/assistants/${assistantID}`, {
+		return this._client.get(path`/assistants/${assistantID}`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -4776,7 +4800,7 @@ var Assistants = class extends APIResource {
 	* @deprecated
 	*/
 	update(assistantID, body, options) {
-		return this._client.post(path$1`/assistants/${assistantID}`, {
+		return this._client.post(path`/assistants/${assistantID}`, {
 			body,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
@@ -4802,7 +4826,7 @@ var Assistants = class extends APIResource {
 	* @deprecated
 	*/
 	delete(assistantID, options) {
-		return this._client.delete(path$1`/assistants/${assistantID}`, {
+		return this._client.delete(path`/assistants/${assistantID}`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -4912,7 +4936,7 @@ var Sessions = class extends APIResource {
 	* ```
 	*/
 	cancel(sessionID, options) {
-		return this._client.post(path$1`/chatkit/sessions/${sessionID}/cancel`, {
+		return this._client.post(path`/chatkit/sessions/${sessionID}/cancel`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "chatkit_beta=v1" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -4932,7 +4956,7 @@ var Threads$1 = class extends APIResource {
 	* ```
 	*/
 	retrieve(threadID, options) {
-		return this._client.get(path$1`/chatkit/threads/${threadID}`, {
+		return this._client.get(path`/chatkit/threads/${threadID}`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "chatkit_beta=v1" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -4968,7 +4992,7 @@ var Threads$1 = class extends APIResource {
 	* ```
 	*/
 	delete(threadID, options) {
-		return this._client.delete(path$1`/chatkit/threads/${threadID}`, {
+		return this._client.delete(path`/chatkit/threads/${threadID}`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "chatkit_beta=v1" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -4988,7 +5012,7 @@ var Threads$1 = class extends APIResource {
 	* ```
 	*/
 	listItems(threadID, query = {}, options) {
-		return this._client.getAPIList(path$1`/chatkit/threads/${threadID}/items`, ConversationCursorPage, {
+		return this._client.getAPIList(path`/chatkit/threads/${threadID}/items`, ConversationCursorPage, {
 			query,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "chatkit_beta=v1" }, options?.headers]),
@@ -5021,7 +5045,7 @@ var Messages = class extends APIResource {
 	* @deprecated The Assistants API is deprecated in favor of the Responses API
 	*/
 	create(threadID, body, options) {
-		return this._client.post(path$1`/threads/${threadID}/messages`, {
+		return this._client.post(path`/threads/${threadID}/messages`, {
 			body,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
@@ -5035,7 +5059,7 @@ var Messages = class extends APIResource {
 	*/
 	retrieve(messageID, params, options) {
 		const { thread_id } = params;
-		return this._client.get(path$1`/threads/${thread_id}/messages/${messageID}`, {
+		return this._client.get(path`/threads/${thread_id}/messages/${messageID}`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -5048,7 +5072,7 @@ var Messages = class extends APIResource {
 	*/
 	update(messageID, params, options) {
 		const { thread_id, ...body } = params;
-		return this._client.post(path$1`/threads/${thread_id}/messages/${messageID}`, {
+		return this._client.post(path`/threads/${thread_id}/messages/${messageID}`, {
 			body,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
@@ -5061,7 +5085,7 @@ var Messages = class extends APIResource {
 	* @deprecated The Assistants API is deprecated in favor of the Responses API
 	*/
 	list(threadID, query = {}, options) {
-		return this._client.getAPIList(path$1`/threads/${threadID}/messages`, CursorPage, {
+		return this._client.getAPIList(path`/threads/${threadID}/messages`, CursorPage, {
 			query,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
@@ -5075,7 +5099,7 @@ var Messages = class extends APIResource {
 	*/
 	delete(messageID, params, options) {
 		const { thread_id } = params;
-		return this._client.delete(path$1`/threads/${thread_id}/messages/${messageID}`, {
+		return this._client.delete(path`/threads/${thread_id}/messages/${messageID}`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -5097,7 +5121,7 @@ var Steps = class extends APIResource {
 	*/
 	retrieve(stepID, params, options) {
 		const { thread_id, run_id, ...query } = params;
-		return this._client.get(path$1`/threads/${thread_id}/runs/${run_id}/steps/${stepID}`, {
+		return this._client.get(path`/threads/${thread_id}/runs/${run_id}/steps/${stepID}`, {
 			query,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
@@ -5111,7 +5135,7 @@ var Steps = class extends APIResource {
 	*/
 	list(runID, params, options) {
 		const { thread_id, ...query } = params;
-		return this._client.getAPIList(path$1`/threads/${thread_id}/runs/${runID}/steps`, CursorPage, {
+		return this._client.getAPIList(path`/threads/${thread_id}/runs/${runID}/steps`, CursorPage, {
 			query,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
@@ -5627,7 +5651,7 @@ var Runs$1 = class extends APIResource {
 	}
 	create(threadID, params, options) {
 		const { include, ...body } = params;
-		return this._client.post(path$1`/threads/${threadID}/runs`, {
+		return this._client.post(path`/threads/${threadID}/runs`, {
 			query: { include },
 			body,
 			...options,
@@ -5644,7 +5668,7 @@ var Runs$1 = class extends APIResource {
 	*/
 	retrieve(runID, params, options) {
 		const { thread_id } = params;
-		return this._client.get(path$1`/threads/${thread_id}/runs/${runID}`, {
+		return this._client.get(path`/threads/${thread_id}/runs/${runID}`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -5657,7 +5681,7 @@ var Runs$1 = class extends APIResource {
 	*/
 	update(runID, params, options) {
 		const { thread_id, ...body } = params;
-		return this._client.post(path$1`/threads/${thread_id}/runs/${runID}`, {
+		return this._client.post(path`/threads/${thread_id}/runs/${runID}`, {
 			body,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
@@ -5670,7 +5694,7 @@ var Runs$1 = class extends APIResource {
 	* @deprecated The Assistants API is deprecated in favor of the Responses API
 	*/
 	list(threadID, query = {}, options) {
-		return this._client.getAPIList(path$1`/threads/${threadID}/runs`, CursorPage, {
+		return this._client.getAPIList(path`/threads/${threadID}/runs`, CursorPage, {
 			query,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
@@ -5684,7 +5708,7 @@ var Runs$1 = class extends APIResource {
 	*/
 	cancel(runID, params, options) {
 		const { thread_id } = params;
-		return this._client.post(path$1`/threads/${thread_id}/runs/${runID}/cancel`, {
+		return this._client.post(path`/threads/${thread_id}/runs/${runID}/cancel`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -5757,7 +5781,7 @@ var Runs$1 = class extends APIResource {
 	}
 	submitToolOutputs(runID, params, options) {
 		const { thread_id, ...body } = params;
-		return this._client.post(path$1`/threads/${thread_id}/runs/${runID}/submit_tool_outputs`, {
+		return this._client.post(path`/threads/${thread_id}/runs/${runID}/submit_tool_outputs`, {
 			body,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
@@ -5817,7 +5841,7 @@ var Threads = class extends APIResource {
 	* @deprecated The Assistants API is deprecated in favor of the Responses API
 	*/
 	retrieve(threadID, options) {
-		return this._client.get(path$1`/threads/${threadID}`, {
+		return this._client.get(path`/threads/${threadID}`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -5829,7 +5853,7 @@ var Threads = class extends APIResource {
 	* @deprecated The Assistants API is deprecated in favor of the Responses API
 	*/
 	update(threadID, body, options) {
-		return this._client.post(path$1`/threads/${threadID}`, {
+		return this._client.post(path`/threads/${threadID}`, {
 			body,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
@@ -5842,7 +5866,7 @@ var Threads = class extends APIResource {
 	* @deprecated The Assistants API is deprecated in favor of the Responses API
 	*/
 	delete(threadID, options) {
-		return this._client.delete(path$1`/threads/${threadID}`, {
+		return this._client.delete(path`/threads/${threadID}`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -5914,7 +5938,7 @@ var Content$2 = class extends APIResource {
 	*/
 	retrieve(fileID, params, options) {
 		const { container_id } = params;
-		return this._client.get(path$1`/containers/${container_id}/files/${fileID}/content`, {
+		return this._client.get(path`/containers/${container_id}/files/${fileID}/content`, {
 			...options,
 			headers: buildHeaders([{ Accept: "application/binary" }, options?.headers]),
 			__security: { bearerAuth: true },
@@ -5936,7 +5960,7 @@ var Files$2 = class extends APIResource {
 	* a JSON request with a file ID.
 	*/
 	create(containerID, body, options) {
-		return this._client.post(path$1`/containers/${containerID}/files`, maybeMultipartFormRequestOptions({
+		return this._client.post(path`/containers/${containerID}/files`, maybeMultipartFormRequestOptions({
 			body,
 			...options,
 			__security: { bearerAuth: true }
@@ -5947,7 +5971,7 @@ var Files$2 = class extends APIResource {
 	*/
 	retrieve(fileID, params, options) {
 		const { container_id } = params;
-		return this._client.get(path$1`/containers/${container_id}/files/${fileID}`, {
+		return this._client.get(path`/containers/${container_id}/files/${fileID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -5956,7 +5980,7 @@ var Files$2 = class extends APIResource {
 	* List Container files
 	*/
 	list(containerID, query = {}, options) {
-		return this._client.getAPIList(path$1`/containers/${containerID}/files`, CursorPage, {
+		return this._client.getAPIList(path`/containers/${containerID}/files`, CursorPage, {
 			query,
 			...options,
 			__security: { bearerAuth: true }
@@ -5967,7 +5991,7 @@ var Files$2 = class extends APIResource {
 	*/
 	delete(fileID, params, options) {
 		const { container_id } = params;
-		return this._client.delete(path$1`/containers/${container_id}/files/${fileID}`, {
+		return this._client.delete(path`/containers/${container_id}/files/${fileID}`, {
 			...options,
 			headers: buildHeaders([{ Accept: "*/*" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -5996,7 +6020,7 @@ var Containers = class extends APIResource {
 	* Retrieve Container
 	*/
 	retrieve(containerID, options) {
-		return this._client.get(path$1`/containers/${containerID}`, {
+		return this._client.get(path`/containers/${containerID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6015,7 +6039,7 @@ var Containers = class extends APIResource {
 	* Delete Container
 	*/
 	delete(containerID, options) {
-		return this._client.delete(path$1`/containers/${containerID}`, {
+		return this._client.delete(path`/containers/${containerID}`, {
 			...options,
 			headers: buildHeaders([{ Accept: "*/*" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -6034,7 +6058,7 @@ var Items = class extends APIResource {
 	*/
 	create(conversationID, params, options) {
 		const { include, ...body } = params;
-		return this._client.post(path$1`/conversations/${conversationID}/items`, {
+		return this._client.post(path`/conversations/${conversationID}/items`, {
 			query: { include },
 			body,
 			...options,
@@ -6046,7 +6070,7 @@ var Items = class extends APIResource {
 	*/
 	retrieve(itemID, params, options) {
 		const { conversation_id, ...query } = params;
-		return this._client.get(path$1`/conversations/${conversation_id}/items/${itemID}`, {
+		return this._client.get(path`/conversations/${conversation_id}/items/${itemID}`, {
 			query,
 			...options,
 			__security: { bearerAuth: true }
@@ -6056,7 +6080,7 @@ var Items = class extends APIResource {
 	* List all items for a conversation with the given ID.
 	*/
 	list(conversationID, query = {}, options) {
-		return this._client.getAPIList(path$1`/conversations/${conversationID}/items`, ConversationCursorPage, {
+		return this._client.getAPIList(path`/conversations/${conversationID}/items`, ConversationCursorPage, {
 			query,
 			...options,
 			__security: { bearerAuth: true }
@@ -6067,7 +6091,7 @@ var Items = class extends APIResource {
 	*/
 	delete(itemID, params, options) {
 		const { conversation_id } = params;
-		return this._client.delete(path$1`/conversations/${conversation_id}/items/${itemID}`, {
+		return this._client.delete(path`/conversations/${conversation_id}/items/${itemID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6097,7 +6121,7 @@ var Conversations = class extends APIResource {
 	* Get a conversation
 	*/
 	retrieve(conversationID, options) {
-		return this._client.get(path$1`/conversations/${conversationID}`, {
+		return this._client.get(path`/conversations/${conversationID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6106,7 +6130,7 @@ var Conversations = class extends APIResource {
 	* Update a conversation
 	*/
 	update(conversationID, body, options) {
-		return this._client.post(path$1`/conversations/${conversationID}`, {
+		return this._client.post(path`/conversations/${conversationID}`, {
 			body,
 			...options,
 			__security: { bearerAuth: true }
@@ -6116,7 +6140,7 @@ var Conversations = class extends APIResource {
 	* Delete a conversation. Items in the conversation will not be deleted.
 	*/
 	delete(conversationID, options) {
-		return this._client.delete(path$1`/conversations/${conversationID}`, {
+		return this._client.delete(path`/conversations/${conversationID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6175,7 +6199,7 @@ var OutputItems = class extends APIResource {
 	*/
 	retrieve(outputItemID, params, options) {
 		const { eval_id, run_id } = params;
-		return this._client.get(path$1`/evals/${eval_id}/runs/${run_id}/output_items/${outputItemID}`, {
+		return this._client.get(path`/evals/${eval_id}/runs/${run_id}/output_items/${outputItemID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6185,7 +6209,7 @@ var OutputItems = class extends APIResource {
 	*/
 	list(runID, params, options) {
 		const { eval_id, ...query } = params;
-		return this._client.getAPIList(path$1`/evals/${eval_id}/runs/${runID}/output_items`, CursorPage, {
+		return this._client.getAPIList(path`/evals/${eval_id}/runs/${runID}/output_items`, CursorPage, {
 			query,
 			...options,
 			__security: { bearerAuth: true }
@@ -6208,7 +6232,7 @@ var Runs = class extends APIResource {
 	* schema specified in the config of the evaluation.
 	*/
 	create(evalID, body, options) {
-		return this._client.post(path$1`/evals/${evalID}/runs`, {
+		return this._client.post(path`/evals/${evalID}/runs`, {
 			body,
 			...options,
 			__security: { bearerAuth: true }
@@ -6219,7 +6243,7 @@ var Runs = class extends APIResource {
 	*/
 	retrieve(runID, params, options) {
 		const { eval_id } = params;
-		return this._client.get(path$1`/evals/${eval_id}/runs/${runID}`, {
+		return this._client.get(path`/evals/${eval_id}/runs/${runID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6228,7 +6252,7 @@ var Runs = class extends APIResource {
 	* Get a list of runs for an evaluation.
 	*/
 	list(evalID, query = {}, options) {
-		return this._client.getAPIList(path$1`/evals/${evalID}/runs`, CursorPage, {
+		return this._client.getAPIList(path`/evals/${evalID}/runs`, CursorPage, {
 			query,
 			...options,
 			__security: { bearerAuth: true }
@@ -6239,7 +6263,7 @@ var Runs = class extends APIResource {
 	*/
 	delete(runID, params, options) {
 		const { eval_id } = params;
-		return this._client.delete(path$1`/evals/${eval_id}/runs/${runID}`, {
+		return this._client.delete(path`/evals/${eval_id}/runs/${runID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6249,7 +6273,7 @@ var Runs = class extends APIResource {
 	*/
 	cancel(runID, params, options) {
 		const { eval_id } = params;
-		return this._client.post(path$1`/evals/${eval_id}/runs/${runID}`, {
+		return this._client.post(path`/evals/${eval_id}/runs/${runID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6285,7 +6309,7 @@ var Evals = class extends APIResource {
 	* Get an evaluation by ID.
 	*/
 	retrieve(evalID, options) {
-		return this._client.get(path$1`/evals/${evalID}`, {
+		return this._client.get(path`/evals/${evalID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6294,7 +6318,7 @@ var Evals = class extends APIResource {
 	* Update certain properties of an evaluation.
 	*/
 	update(evalID, body, options) {
-		return this._client.post(path$1`/evals/${evalID}`, {
+		return this._client.post(path`/evals/${evalID}`, {
 			body,
 			...options,
 			__security: { bearerAuth: true }
@@ -6314,7 +6338,7 @@ var Evals = class extends APIResource {
 	* Delete an evaluation.
 	*/
 	delete(evalID, options) {
-		return this._client.delete(path$1`/evals/${evalID}`, {
+		return this._client.delete(path`/evals/${evalID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6367,7 +6391,7 @@ var Files$1 = class extends APIResource {
 	* Returns information about a specific file.
 	*/
 	retrieve(fileID, options) {
-		return this._client.get(path$1`/files/${fileID}`, {
+		return this._client.get(path`/files/${fileID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6386,7 +6410,7 @@ var Files$1 = class extends APIResource {
 	* Delete a file and remove it from all vector stores.
 	*/
 	delete(fileID, options) {
-		return this._client.delete(path$1`/files/${fileID}`, {
+		return this._client.delete(path`/files/${fileID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6395,7 +6419,7 @@ var Files$1 = class extends APIResource {
 	* Returns the contents of the specified file.
 	*/
 	content(fileID, options) {
-		return this._client.get(path$1`/files/${fileID}/content`, {
+		return this._client.get(path`/files/${fileID}/content`, {
 			...options,
 			headers: buildHeaders([{ Accept: "application/binary" }, options?.headers]),
 			__security: { bearerAuth: true },
@@ -6512,7 +6536,7 @@ var Permissions = class extends APIResource {
 	* ```
 	*/
 	create(fineTunedModelCheckpoint, body, options) {
-		return this._client.getAPIList(path$1`/fine_tuning/checkpoints/${fineTunedModelCheckpoint}/permissions`, Page, {
+		return this._client.getAPIList(path`/fine_tuning/checkpoints/${fineTunedModelCheckpoint}/permissions`, Page, {
 			body,
 			method: "post",
 			...options,
@@ -6528,7 +6552,7 @@ var Permissions = class extends APIResource {
 	* @deprecated Retrieve is deprecated. Please swap to the paginated list method instead.
 	*/
 	retrieve(fineTunedModelCheckpoint, query = {}, options) {
-		return this._client.get(path$1`/fine_tuning/checkpoints/${fineTunedModelCheckpoint}/permissions`, {
+		return this._client.get(path`/fine_tuning/checkpoints/${fineTunedModelCheckpoint}/permissions`, {
 			query,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -6551,7 +6575,7 @@ var Permissions = class extends APIResource {
 	* ```
 	*/
 	list(fineTunedModelCheckpoint, query = {}, options) {
-		return this._client.getAPIList(path$1`/fine_tuning/checkpoints/${fineTunedModelCheckpoint}/permissions`, ConversationCursorPage, {
+		return this._client.getAPIList(path`/fine_tuning/checkpoints/${fineTunedModelCheckpoint}/permissions`, ConversationCursorPage, {
 			query,
 			...options,
 			__security: { adminAPIKeyAuth: true }
@@ -6577,7 +6601,7 @@ var Permissions = class extends APIResource {
 	*/
 	delete(permissionID, params, options) {
 		const { fine_tuned_model_checkpoint } = params;
-		return this._client.delete(path$1`/fine_tuning/checkpoints/${fine_tuned_model_checkpoint}/permissions/${permissionID}`, {
+		return this._client.delete(path`/fine_tuning/checkpoints/${fine_tuned_model_checkpoint}/permissions/${permissionID}`, {
 			...options,
 			__security: { adminAPIKeyAuth: true }
 		});
@@ -6612,7 +6636,7 @@ var Checkpoints = class extends APIResource {
 	* ```
 	*/
 	list(fineTuningJobID, query = {}, options) {
-		return this._client.getAPIList(path$1`/fine_tuning/jobs/${fineTuningJobID}/checkpoints`, CursorPage, {
+		return this._client.getAPIList(path`/fine_tuning/jobs/${fineTuningJobID}/checkpoints`, CursorPage, {
 			query,
 			...options,
 			__security: { bearerAuth: true }
@@ -6666,7 +6690,7 @@ var Jobs = class extends APIResource {
 	* ```
 	*/
 	retrieve(fineTuningJobID, options) {
-		return this._client.get(path$1`/fine_tuning/jobs/${fineTuningJobID}`, {
+		return this._client.get(path`/fine_tuning/jobs/${fineTuningJobID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6700,7 +6724,7 @@ var Jobs = class extends APIResource {
 	* ```
 	*/
 	cancel(fineTuningJobID, options) {
-		return this._client.post(path$1`/fine_tuning/jobs/${fineTuningJobID}/cancel`, {
+		return this._client.post(path`/fine_tuning/jobs/${fineTuningJobID}/cancel`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6719,7 +6743,7 @@ var Jobs = class extends APIResource {
 	* ```
 	*/
 	listEvents(fineTuningJobID, query = {}, options) {
-		return this._client.getAPIList(path$1`/fine_tuning/jobs/${fineTuningJobID}/events`, CursorPage, {
+		return this._client.getAPIList(path`/fine_tuning/jobs/${fineTuningJobID}/events`, CursorPage, {
 			query,
 			...options,
 			__security: { bearerAuth: true }
@@ -6736,7 +6760,7 @@ var Jobs = class extends APIResource {
 	* ```
 	*/
 	pause(fineTuningJobID, options) {
-		return this._client.post(path$1`/fine_tuning/jobs/${fineTuningJobID}/pause`, {
+		return this._client.post(path`/fine_tuning/jobs/${fineTuningJobID}/pause`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6752,7 +6776,7 @@ var Jobs = class extends APIResource {
 	* ```
 	*/
 	resume(fineTuningJobID, options) {
-		return this._client.post(path$1`/fine_tuning/jobs/${fineTuningJobID}/resume`, {
+		return this._client.post(path`/fine_tuning/jobs/${fineTuningJobID}/resume`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6837,7 +6861,7 @@ var Models = class extends APIResource {
 	* the owner and permissioning.
 	*/
 	retrieve(model, options) {
-		return this._client.get(path$1`/models/${model}`, {
+		return this._client.get(path`/models/${model}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6857,7 +6881,7 @@ var Models = class extends APIResource {
 	* delete a model.
 	*/
 	delete(model, options) {
-		return this._client.delete(path$1`/models/${model}`, {
+		return this._client.delete(path`/models/${model}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -6896,7 +6920,7 @@ var Calls = class extends APIResource {
 	* ```
 	*/
 	accept(callID, body, options) {
-		return this._client.post(path$1`/realtime/calls/${callID}/accept`, {
+		return this._client.post(path`/realtime/calls/${callID}/accept`, {
 			body,
 			...options,
 			headers: buildHeaders([{ Accept: "*/*" }, options?.headers]),
@@ -6912,7 +6936,7 @@ var Calls = class extends APIResource {
 	* ```
 	*/
 	hangup(callID, options) {
-		return this._client.post(path$1`/realtime/calls/${callID}/hangup`, {
+		return this._client.post(path`/realtime/calls/${callID}/hangup`, {
 			...options,
 			headers: buildHeaders([{ Accept: "*/*" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -6929,7 +6953,7 @@ var Calls = class extends APIResource {
 	* ```
 	*/
 	refer(callID, body, options) {
-		return this._client.post(path$1`/realtime/calls/${callID}/refer`, {
+		return this._client.post(path`/realtime/calls/${callID}/refer`, {
 			body,
 			...options,
 			headers: buildHeaders([{ Accept: "*/*" }, options?.headers]),
@@ -6945,7 +6969,7 @@ var Calls = class extends APIResource {
 	* ```
 	*/
 	reject(callID, body = {}, options) {
-		return this._client.post(path$1`/realtime/calls/${callID}/reject`, {
+		return this._client.post(path`/realtime/calls/${callID}/reject`, {
 			body,
 			...options,
 			headers: buildHeaders([{ Accept: "*/*" }, options?.headers]),
@@ -7327,7 +7351,7 @@ var InputItems = class extends APIResource {
 	* ```
 	*/
 	list(responseID, query = {}, options) {
-		return this._client.getAPIList(path$1`/responses/${responseID}/input_items`, CursorPage, {
+		return this._client.getAPIList(path`/responses/${responseID}/input_items`, CursorPage, {
 			query,
 			...options,
 			__security: { bearerAuth: true }
@@ -7376,7 +7400,7 @@ var Responses = class extends APIResource {
 		});
 	}
 	retrieve(responseID, query = {}, options) {
-		return this._client.get(path$1`/responses/${responseID}`, {
+		return this._client.get(path`/responses/${responseID}`, {
 			query,
 			...options,
 			stream: query?.stream ?? false,
@@ -7397,7 +7421,7 @@ var Responses = class extends APIResource {
 	* ```
 	*/
 	delete(responseID, options) {
-		return this._client.delete(path$1`/responses/${responseID}`, {
+		return this._client.delete(path`/responses/${responseID}`, {
 			...options,
 			headers: buildHeaders([{ Accept: "*/*" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -7425,7 +7449,7 @@ var Responses = class extends APIResource {
 	* ```
 	*/
 	cancel(responseID, options) {
-		return this._client.post(path$1`/responses/${responseID}/cancel`, {
+		return this._client.post(path`/responses/${responseID}/cancel`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -7462,7 +7486,7 @@ var Content$1 = class extends APIResource {
 	* Download a skill zip bundle by its ID.
 	*/
 	retrieve(skillID, options) {
-		return this._client.get(path$1`/skills/${skillID}/content`, {
+		return this._client.get(path`/skills/${skillID}/content`, {
 			...options,
 			headers: buildHeaders([{ Accept: "application/binary" }, options?.headers]),
 			__security: { bearerAuth: true },
@@ -7478,7 +7502,7 @@ var Content = class extends APIResource {
 	*/
 	retrieve(version, params, options) {
 		const { skill_id } = params;
-		return this._client.get(path$1`/skills/${skill_id}/versions/${version}/content`, {
+		return this._client.get(path`/skills/${skill_id}/versions/${version}/content`, {
 			...options,
 			headers: buildHeaders([{ Accept: "application/binary" }, options?.headers]),
 			__security: { bearerAuth: true },
@@ -7497,7 +7521,7 @@ var Versions = class extends APIResource {
 	* Create a new immutable skill version.
 	*/
 	create(skillID, body = {}, options) {
-		return this._client.post(path$1`/skills/${skillID}/versions`, maybeMultipartFormRequestOptions({
+		return this._client.post(path`/skills/${skillID}/versions`, maybeMultipartFormRequestOptions({
 			body,
 			...options,
 			__security: { bearerAuth: true }
@@ -7508,7 +7532,7 @@ var Versions = class extends APIResource {
 	*/
 	retrieve(version, params, options) {
 		const { skill_id } = params;
-		return this._client.get(path$1`/skills/${skill_id}/versions/${version}`, {
+		return this._client.get(path`/skills/${skill_id}/versions/${version}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -7517,7 +7541,7 @@ var Versions = class extends APIResource {
 	* List skill versions for a skill.
 	*/
 	list(skillID, query = {}, options) {
-		return this._client.getAPIList(path$1`/skills/${skillID}/versions`, CursorPage, {
+		return this._client.getAPIList(path`/skills/${skillID}/versions`, CursorPage, {
 			query,
 			...options,
 			__security: { bearerAuth: true }
@@ -7528,7 +7552,7 @@ var Versions = class extends APIResource {
 	*/
 	delete(version, params, options) {
 		const { skill_id } = params;
-		return this._client.delete(path$1`/skills/${skill_id}/versions/${version}`, {
+		return this._client.delete(path`/skills/${skill_id}/versions/${version}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -7557,7 +7581,7 @@ var Skills = class extends APIResource {
 	* Get a skill by its ID.
 	*/
 	retrieve(skillID, options) {
-		return this._client.get(path$1`/skills/${skillID}`, {
+		return this._client.get(path`/skills/${skillID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -7566,7 +7590,7 @@ var Skills = class extends APIResource {
 	* Update the default version pointer for a skill.
 	*/
 	update(skillID, body, options) {
-		return this._client.post(path$1`/skills/${skillID}`, {
+		return this._client.post(path`/skills/${skillID}`, {
 			body,
 			...options,
 			__security: { bearerAuth: true }
@@ -7586,7 +7610,7 @@ var Skills = class extends APIResource {
 	* Delete a skill by its ID.
 	*/
 	delete(skillID, options) {
-		return this._client.delete(path$1`/skills/${skillID}`, {
+		return this._client.delete(path`/skills/${skillID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -7614,7 +7638,7 @@ var Parts = class extends APIResource {
 	* [complete the Upload](https://platform.openai.com/docs/api-reference/uploads/complete).
 	*/
 	create(uploadID, body, options) {
-		return this._client.post(path$1`/uploads/${uploadID}/parts`, multipartFormRequestOptions({
+		return this._client.post(path`/uploads/${uploadID}/parts`, multipartFormRequestOptions({
 			body,
 			...options,
 			__security: { bearerAuth: true }
@@ -7667,7 +7691,7 @@ var Uploads = class extends APIResource {
 	* Returns the Upload object with status `cancelled`.
 	*/
 	cancel(uploadID, options) {
-		return this._client.post(path$1`/uploads/${uploadID}/cancel`, {
+		return this._client.post(path`/uploads/${uploadID}/cancel`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -7690,7 +7714,7 @@ var Uploads = class extends APIResource {
 	* object.
 	*/
 	complete(uploadID, body, options) {
-		return this._client.post(path$1`/uploads/${uploadID}/complete`, {
+		return this._client.post(path`/uploads/${uploadID}/complete`, {
 			body,
 			...options,
 			__security: { bearerAuth: true }
@@ -7721,7 +7745,7 @@ var FileBatches = class extends APIResource {
 	* Create a vector store file batch.
 	*/
 	create(vectorStoreID, body, options) {
-		return this._client.post(path$1`/vector_stores/${vectorStoreID}/file_batches`, {
+		return this._client.post(path`/vector_stores/${vectorStoreID}/file_batches`, {
 			body,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
@@ -7733,7 +7757,7 @@ var FileBatches = class extends APIResource {
 	*/
 	retrieve(batchID, params, options) {
 		const { vector_store_id } = params;
-		return this._client.get(path$1`/vector_stores/${vector_store_id}/file_batches/${batchID}`, {
+		return this._client.get(path`/vector_stores/${vector_store_id}/file_batches/${batchID}`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -7745,7 +7769,7 @@ var FileBatches = class extends APIResource {
 	*/
 	cancel(batchID, params, options) {
 		const { vector_store_id } = params;
-		return this._client.post(path$1`/vector_stores/${vector_store_id}/file_batches/${batchID}/cancel`, {
+		return this._client.post(path`/vector_stores/${vector_store_id}/file_batches/${batchID}/cancel`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -7763,7 +7787,7 @@ var FileBatches = class extends APIResource {
 	*/
 	listFiles(batchID, params, options) {
 		const { vector_store_id, ...query } = params;
-		return this._client.getAPIList(path$1`/vector_stores/${vector_store_id}/file_batches/${batchID}/files`, CursorPage, {
+		return this._client.getAPIList(path`/vector_stores/${vector_store_id}/file_batches/${batchID}/files`, CursorPage, {
 			query,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
@@ -7839,7 +7863,7 @@ var Files = class extends APIResource {
 	* [vector store](https://platform.openai.com/docs/api-reference/vector-stores/object).
 	*/
 	create(vectorStoreID, body, options) {
-		return this._client.post(path$1`/vector_stores/${vectorStoreID}/files`, {
+		return this._client.post(path`/vector_stores/${vectorStoreID}/files`, {
 			body,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
@@ -7851,7 +7875,7 @@ var Files = class extends APIResource {
 	*/
 	retrieve(fileID, params, options) {
 		const { vector_store_id } = params;
-		return this._client.get(path$1`/vector_stores/${vector_store_id}/files/${fileID}`, {
+		return this._client.get(path`/vector_stores/${vector_store_id}/files/${fileID}`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -7862,7 +7886,7 @@ var Files = class extends APIResource {
 	*/
 	update(fileID, params, options) {
 		const { vector_store_id, ...body } = params;
-		return this._client.post(path$1`/vector_stores/${vector_store_id}/files/${fileID}`, {
+		return this._client.post(path`/vector_stores/${vector_store_id}/files/${fileID}`, {
 			body,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
@@ -7873,7 +7897,7 @@ var Files = class extends APIResource {
 	* Returns a list of vector store files.
 	*/
 	list(vectorStoreID, query = {}, options) {
-		return this._client.getAPIList(path$1`/vector_stores/${vectorStoreID}/files`, CursorPage, {
+		return this._client.getAPIList(path`/vector_stores/${vectorStoreID}/files`, CursorPage, {
 			query,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
@@ -7888,7 +7912,7 @@ var Files = class extends APIResource {
 	*/
 	delete(fileID, params, options) {
 		const { vector_store_id } = params;
-		return this._client.delete(path$1`/vector_stores/${vector_store_id}/files/${fileID}`, {
+		return this._client.delete(path`/vector_stores/${vector_store_id}/files/${fileID}`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -7961,7 +7985,7 @@ var Files = class extends APIResource {
 	*/
 	content(fileID, params, options) {
 		const { vector_store_id } = params;
-		return this._client.getAPIList(path$1`/vector_stores/${vector_store_id}/files/${fileID}/content`, Page, {
+		return this._client.getAPIList(path`/vector_stores/${vector_store_id}/files/${fileID}/content`, Page, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -7991,7 +8015,7 @@ var VectorStores = class extends APIResource {
 	* Retrieves a vector store.
 	*/
 	retrieve(vectorStoreID, options) {
-		return this._client.get(path$1`/vector_stores/${vectorStoreID}`, {
+		return this._client.get(path`/vector_stores/${vectorStoreID}`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -8001,7 +8025,7 @@ var VectorStores = class extends APIResource {
 	* Modifies a vector store.
 	*/
 	update(vectorStoreID, body, options) {
-		return this._client.post(path$1`/vector_stores/${vectorStoreID}`, {
+		return this._client.post(path`/vector_stores/${vectorStoreID}`, {
 			body,
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
@@ -8023,7 +8047,7 @@ var VectorStores = class extends APIResource {
 	* Delete a vector store.
 	*/
 	delete(vectorStoreID, options) {
-		return this._client.delete(path$1`/vector_stores/${vectorStoreID}`, {
+		return this._client.delete(path`/vector_stores/${vectorStoreID}`, {
 			...options,
 			headers: buildHeaders([{ "OpenAI-Beta": "assistants=v2" }, options?.headers]),
 			__security: { bearerAuth: true }
@@ -8034,7 +8058,7 @@ var VectorStores = class extends APIResource {
 	* filter.
 	*/
 	search(vectorStoreID, body, options) {
-		return this._client.getAPIList(path$1`/vector_stores/${vectorStoreID}/search`, Page, {
+		return this._client.getAPIList(path`/vector_stores/${vectorStoreID}/search`, Page, {
 			body,
 			method: "post",
 			...options,
@@ -8062,7 +8086,7 @@ var Videos = class extends APIResource {
 	* Fetch the latest metadata for a generated video.
 	*/
 	retrieve(videoID, options) {
-		return this._client.get(path$1`/videos/${videoID}`, {
+		return this._client.get(path`/videos/${videoID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -8081,7 +8105,7 @@ var Videos = class extends APIResource {
 	* Permanently delete a completed or failed video and its stored assets.
 	*/
 	delete(videoID, options) {
-		return this._client.delete(path$1`/videos/${videoID}`, {
+		return this._client.delete(path`/videos/${videoID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -8102,7 +8126,7 @@ var Videos = class extends APIResource {
 	* Streams the rendered video content for the specified video job.
 	*/
 	downloadContent(videoID, query = {}, options) {
-		return this._client.get(path$1`/videos/${videoID}/content`, {
+		return this._client.get(path`/videos/${videoID}/content`, {
 			query,
 			...options,
 			headers: buildHeaders([{ Accept: "application/binary" }, options?.headers]),
@@ -8135,7 +8159,7 @@ var Videos = class extends APIResource {
 	* Fetch a character.
 	*/
 	getCharacter(characterID, options) {
-		return this._client.get(path$1`/videos/characters/${characterID}`, {
+		return this._client.get(path`/videos/characters/${characterID}`, {
 			...options,
 			__security: { bearerAuth: true }
 		});
@@ -8144,7 +8168,7 @@ var Videos = class extends APIResource {
 	* Create a remix of a completed video using a refreshed prompt.
 	*/
 	remix(videoID, body, options) {
-		return this._client.post(path$1`/videos/${videoID}/remix`, maybeMultipartFormRequestOptions({
+		return this._client.post(path`/videos/${videoID}/remix`, maybeMultipartFormRequestOptions({
 			body,
 			...options,
 			__security: { bearerAuth: true }
@@ -8791,23 +8815,16 @@ OpenAI.Skills = Skills;
 OpenAI.Videos = Videos;
 //#endregion
 //#region electron/agent.ts
-var execAsync$1 = promisify(exec);
-var openai = new OpenAI({
-	baseURL: "https://api.deepseek.com/v1",
-	apiKey: process.env.DEEPSEEK_API_KEY || "sk-dummy-key"
-});
+var execAsync$1 = (0, node_util.promisify)(node_child_process.exec);
 var agentTools = [
 	{
 		type: "function",
 		function: {
 			name: "read_file",
-			description: "Read the contents of a file.",
+			description: "Read the contents of a file at the given path.",
 			parameters: {
 				type: "object",
-				properties: { filepath: {
-					type: "string",
-					description: "Relative path to the file"
-				} },
+				properties: { filepath: { type: "string" } },
 				required: ["filepath"]
 			}
 		}
@@ -8816,18 +8833,12 @@ var agentTools = [
 		type: "function",
 		function: {
 			name: "write_file",
-			description: "Write complete content to a file (creates if not exists).",
+			description: "Create or overwrite a file with the given content.",
 			parameters: {
 				type: "object",
 				properties: {
-					filepath: {
-						type: "string",
-						description: "Path to the file"
-					},
-					content: {
-						type: "string",
-						description: "The code or text to write"
-					}
+					filepath: { type: "string" },
+					content: { type: "string" }
 				},
 				required: ["filepath", "content"]
 			}
@@ -8836,28 +8847,19 @@ var agentTools = [
 	{
 		type: "function",
 		function: {
-			name: "replace_file_content",
-			description: "Replace a specific block of text in a file. Used for surgical code edits.",
+			name: "replace_in_file",
+			description: "Replace a specific substring in a file. Use for surgical edits.",
 			parameters: {
 				type: "object",
 				properties: {
-					filepath: {
-						type: "string",
-						description: "Path to the file"
-					},
-					target_content: {
-						type: "string",
-						description: "The exact exact string to be replaced."
-					},
-					replacement_content: {
-						type: "string",
-						description: "The content to replace it with."
-					}
+					filepath: { type: "string" },
+					target: { type: "string" },
+					replacement: { type: "string" }
 				},
 				required: [
 					"filepath",
-					"target_content",
-					"replacement_content"
+					"target",
+					"replacement"
 				]
 			}
 		}
@@ -8865,19 +8867,25 @@ var agentTools = [
 	{
 		type: "function",
 		function: {
+			name: "list_directory",
+			description: "List files and directories in a given path.",
+			parameters: {
+				type: "object",
+				properties: { dirpath: { type: "string" } },
+				required: ["dirpath"]
+			}
+		}
+	},
+	{
+		type: "function",
+		function: {
 			name: "search_codebase",
-			description: "Search for a string or regex pattern across the workspace.",
+			description: "Search for a text pattern across the workspace using grep.",
 			parameters: {
 				type: "object",
 				properties: {
-					query: {
-						type: "string",
-						description: "The string or regex to search for"
-					},
-					is_regex: {
-						type: "boolean",
-						description: "Whether the query is a regex pattern"
-					}
+					query: { type: "string" },
+					is_regex: { type: "boolean" }
 				},
 				required: ["query"]
 			}
@@ -8887,212 +8895,326 @@ var agentTools = [
 		type: "function",
 		function: {
 			name: "run_command",
-			description: "Run a shell command on the host machine in the background.",
+			description: "Run a shell command and return stdout/stderr.",
 			parameters: {
 				type: "object",
-				properties: { command: {
-					type: "string",
-					description: "The bash command to run"
-				} },
+				properties: { command: { type: "string" } },
 				required: ["command"]
 			}
 		}
 	}
 ];
+var SYSTEM_PROMPT = `You are Antigravity, a world-class autonomous AI coding agent. You operate inside an Electron-based IDE.
+
+## Capabilities
+- read_file, write_file, replace_in_file, list_directory, search_codebase, run_command
+
+## Principles
+1. BE AUTONOMOUS. Don't ask for clarification. Just do the work.
+2. THINK step by step. Plan, execute, verify.
+3. HANDLE ERRORS. If a tool fails, diagnose and retry.
+4. BE THOROUGH. Handle all files without stopping.
+5. Use Markdown for responses. Be concise but complete.`;
 var DeepSeekAgent = class {
-	constructor(window) {
+	constructor(window, config) {
 		this.window = window;
+		this.messages = [];
+		this.maxLoopIterations = 25;
+		const key = config.apiKey || "sk-placeholder";
+		this.openai = new OpenAI({
+			baseURL: config.baseUrl,
+			apiKey: key
+		});
+		this.cwd = config.cwd;
+		this.model = config.model;
 		this.messages = [{
 			role: "system",
-			content: "You are Antigravity, a world-class AI software engineer powered by DeepSeek. You have access to a full IDE, file system, terminal, diff patching, and codebase searching. Work autonomously to fulfill the user request."
+			content: SYSTEM_PROMPT
 		}];
-		this.currentCwd = process.cwd();
+		if (!config.apiKey) this.window.webContents.once("did-finish-load", () => {
+			this.window.webContents.send("chat-reply", "⚠️ No API key. Press Ctrl+, to configure.");
+		});
 	}
 	async handleUserMessage(content) {
 		this.messages.push({
 			role: "user",
 			content
 		});
-		await this.processAgentLoop();
+		await this.processAgentLoop(0);
 	}
-	async processAgentLoop() {
+	async processAgentLoop(iteration) {
+		if (iteration >= this.maxLoopIterations) {
+			this.window.webContents.send("chat-reply", "\n\n⚠️ Max iterations reached.");
+			return;
+		}
 		try {
-			const message = (await openai.chat.completions.create({
-				model: "deepseek-chat",
+			const message = (await this.openai.chat.completions.create({
+				model: this.model,
 				messages: this.messages,
 				tools: agentTools,
 				tool_choice: "auto"
 			})).choices[0].message;
 			this.messages.push(message);
 			if (message.content) this.window.webContents.send("chat-reply", message.content);
-			if (message.tool_calls && message.tool_calls.length > 0) {
-				for (const toolCall of message.tool_calls) {
-					this.window.webContents.send("chat-reply", `\n\n> 🔧 正在使用工具: ${toolCall.function.name}...`);
-					let args = {};
-					try {
-						args = JSON.parse(toolCall.function.arguments);
-					} catch (e) {
-						console.error("Failed to parse arguments", e);
-					}
-					let toolResult = "";
-					try {
-						const fullPath = args.filepath ? path.resolve(this.currentCwd, args.filepath) : "";
-						if (toolCall.function.name === "read_file") toolResult = await fs.readFile(fullPath, "utf8");
-						else if (toolCall.function.name === "write_file") {
-							await fs.mkdir(path.dirname(fullPath), { recursive: true });
-							await fs.writeFile(fullPath, args.content, "utf8");
-							toolResult = "File written successfully.";
-							this.window.webContents.send("file-changed", fullPath);
-						} else if (toolCall.function.name === "replace_file_content") {
-							let content = await fs.readFile(fullPath, "utf8");
-							if (content.includes(args.target_content)) {
-								content = content.replace(args.target_content, args.replacement_content);
-								await fs.writeFile(fullPath, content, "utf8");
-								toolResult = "Chunk replaced successfully.";
-								this.window.webContents.send("file-changed", fullPath);
-							} else toolResult = "Error: target_content not found in the file. Make sure you match the exact string.";
-						} else if (toolCall.function.name === "search_codebase") {
-							const { stdout, stderr } = await execAsync$1(args.is_regex ? `grep -rnE "${args.query}" .` : `grep -rn "${args.query}" .`, { cwd: this.currentCwd }).catch((e) => e);
-							toolResult = stdout || stderr || "No matches found.";
-						} else if (toolCall.function.name === "run_command") {
-							const { stdout, stderr } = await execAsync$1(args.command, { cwd: this.currentCwd });
-							toolResult = stdout + (stderr ? `\nSTDERR:\n${stderr}` : "");
-							this.window.webContents.send("terminal-output", `\r\n$ ${args.command}\r\n${stdout.replace(/\\n/g, "\r\n")}`);
-						}
-					} catch (err) {
-						toolResult = "Error executing tool: " + err.message;
-					}
-					this.messages.push({
-						role: "tool",
-						tool_call_id: toolCall.id,
-						content: toolResult.slice(0, 4e3)
-					});
-				}
-				await this.processAgentLoop();
+			if (!message.tool_calls || message.tool_calls.length === 0) return;
+			for (const toolCall of message.tool_calls) {
+				const name = toolCall.function.name;
+				this.window.webContents.send("chat-reply", `\n\n> 🔧 ${name}`);
+				let args = {};
+				try {
+					args = JSON.parse(toolCall.function.arguments);
+				} catch {}
+				const result = await this.executeTool(name, args);
+				this.messages.push({
+					role: "tool",
+					tool_call_id: toolCall.id,
+					content: result.slice(0, 8e3)
+				});
 			}
+			await this.processAgentLoop(iteration + 1);
 		} catch (error) {
-			console.error("Agent Loop Error:", error);
-			this.window.webContents.send("chat-reply", `\n[Agent Error: ${error.message}]`);
+			const errMsg = error?.message || String(error);
+			if (errMsg.includes("rate_limit") || errMsg.includes("429")) {
+				this.window.webContents.send("chat-reply", "\n\n⏳ Rate limited. Retrying in 5s...");
+				await new Promise((r) => setTimeout(r, 5e3));
+				await this.processAgentLoop(iteration);
+			} else this.window.webContents.send("chat-reply", `\n\n❌ Error: ${errMsg}`);
+		}
+	}
+	async executeTool(name, args) {
+		try {
+			const resolve = (p) => node_path.resolve(this.cwd, p);
+			switch (name) {
+				case "read_file": return await node_fs_promises.readFile(resolve(args.filepath), "utf8");
+				case "write_file": {
+					const fp = resolve(args.filepath);
+					await node_fs_promises.mkdir(node_path.dirname(fp), { recursive: true });
+					await node_fs_promises.writeFile(fp, args.content, "utf8");
+					this.window.webContents.send("file-changed", fp);
+					return `✅ Written: ${args.filepath}`;
+				}
+				case "replace_in_file": {
+					const fp = resolve(args.filepath);
+					let content = await node_fs_promises.readFile(fp, "utf8");
+					if (!content.includes(args.target)) return `❌ Target not found in ${args.filepath}. First 200 chars:\n${content.slice(0, 200)}`;
+					content = content.replace(args.target, args.replacement);
+					await node_fs_promises.writeFile(fp, content, "utf8");
+					this.window.webContents.send("file-changed", fp);
+					return `✅ Replaced in: ${args.filepath}`;
+				}
+				case "list_directory": return (await node_fs_promises.readdir(resolve(args.dirpath), { withFileTypes: true })).filter((e) => !["node_modules", ".git"].includes(e.name)).map((e) => `${e.isDirectory() ? "[DIR]" : "[FILE]"} ${e.name}`).join("\n");
+				case "search_codebase": {
+					const cmd = `grep ${args.is_regex ? "-rnE" : "-rn"} --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist "${args.query}" .`;
+					try {
+						const { stdout } = await execAsync$1(cmd, {
+							cwd: this.cwd,
+							maxBuffer: 1024 * 1024
+						});
+						return stdout || "No matches.";
+					} catch (e) {
+						return e.stdout || "No matches.";
+					}
+				}
+				case "run_command": {
+					const { stdout, stderr } = await execAsync$1(args.command, {
+						cwd: this.cwd,
+						timeout: 3e4,
+						maxBuffer: 1024 * 1024
+					});
+					const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : "");
+					this.window.webContents.send("terminal-output", `\r\n$ ${args.command}\r\n${stdout}`);
+					return output;
+				}
+				default: return `Unknown tool: ${name}`;
+			}
+		} catch (err) {
+			return `Tool error (${name}): ${err.message}`;
 		}
 	}
 };
 //#endregion
 //#region electron/main.ts
-var execAsync = promisify(exec);
-process.env.DIST_ELECTRON = join(__dirname, "..");
-process.env.DIST = join(process.env.DIST_ELECTRON, "../dist");
-process.env.VITE_PUBLIC = process.env.VITE_DEV_SERVER_URL ? join(process.env.DIST_ELECTRON, "../public") : process.env.DIST;
+var execAsync = (0, node_util.promisify)(node_child_process.exec);
 var win;
 var agent = null;
 var ptyProcess = null;
 var currentWorkspacePath = process.cwd();
+var CONFIG_PATH = (0, node_path.join)(electron.app.getPath("userData"), "dsme-config.json");
+var DEFAULT_CONFIG = {
+	apiKey: "sk-lqowsnopfxvymjqaeaafrbsnncpuxubrqfemorsbqdoyrvjk",
+	model: "deepseek-ai/DeepSeek-V4-Flash",
+	baseUrl: "https://api.siliconflow.cn/v1"
+};
+async function loadConfig() {
+	try {
+		return {
+			...DEFAULT_CONFIG,
+			...JSON.parse(await node_fs_promises.readFile(CONFIG_PATH, "utf8"))
+		};
+	} catch {
+		return { ...DEFAULT_CONFIG };
+	}
+}
+async function saveConfig(config) {
+	const merged = {
+		...await loadConfig(),
+		...config
+	};
+	await node_fs_promises.writeFile(CONFIG_PATH, JSON.stringify(merged, null, 2), "utf8");
+	return merged;
+}
 function createWindow() {
-	win = new BrowserWindow({
-		width: 1400,
-		height: 900,
+	win = new electron.BrowserWindow({
+		width: 1500,
+		height: 950,
+		minWidth: 900,
+		minHeight: 600,
 		titleBarStyle: "hiddenInset",
 		backgroundColor: "#000000",
 		webPreferences: {
-			preload: join(__dirname, "../dist-electron/preload.mjs"),
+			preload: (0, node_path.join)(__dirname, "../dist-electron/preload.js"),
 			nodeIntegration: true,
 			contextIsolation: true
 		}
 	});
 	if (process.env.VITE_DEV_SERVER_URL) win.loadURL(process.env.VITE_DEV_SERVER_URL);
-	else win.loadFile(join(process.env.DIST, "index.html"));
-	agent = new DeepSeekAgent(win);
+	else win.loadFile((0, node_path.join)(__dirname, "../dist/index.html"));
+	initAgent();
 	startPty();
+}
+async function initAgent() {
+	if (!win) return;
+	const config = await loadConfig();
+	agent = new DeepSeekAgent(win, {
+		apiKey: config.apiKey,
+		model: config.model,
+		baseUrl: config.baseUrl,
+		cwd: currentWorkspacePath
+	});
 }
 function startPty() {
 	if (ptyProcess) ptyProcess.kill();
-	const shell = os.platform() === "win32" ? "powershell.exe" : "zsh";
-	ptyProcess = pty.spawn(shell, [], {
+	const shell = node_os.platform() === "win32" ? "powershell.exe" : "zsh";
+	ptyProcess = node_child_process.spawn(shell, [], {
 		env: process.env,
 		cwd: currentWorkspacePath
 	});
-	ptyProcess.stdout.on("data", (data) => {
-		win?.webContents.send("terminal-output", data.toString());
-	});
-	ptyProcess.stderr.on("data", (data) => {
-		win?.webContents.send("terminal-output", data.toString());
-	});
+	ptyProcess.stdout.on("data", (d) => win?.webContents.send("terminal-output", d.toString()));
+	ptyProcess.stderr.on("data", (d) => win?.webContents.send("terminal-output", d.toString()));
 }
-app.on("window-all-closed", () => {
-	if (process.platform !== "darwin") app.quit();
+electron.app.on("window-all-closed", () => {
+	if (process.platform !== "darwin") electron.app.quit();
 });
-app.whenReady().then(() => {
+electron.app.whenReady().then(() => {
 	createWindow();
-	app.on("activate", () => {
-		if (BrowserWindow.getAllWindows().length === 0) createWindow();
+	electron.app.on("activate", () => {
+		if (electron.BrowserWindow.getAllWindows().length === 0) createWindow();
 	});
 });
-ipcMain.on("chat-message", async (event, userMessage) => {
-	if (agent) agent.handleUserMessage(userMessage);
+electron.ipcMain.on("chat-message", async (_, msg) => {
+	if (agent) agent.handleUserMessage(msg);
 });
-ipcMain.on("terminal-input", (event, data) => {
+electron.ipcMain.on("terminal-input", (_, data) => {
 	if (ptyProcess) ptyProcess.stdin.write(data);
 });
+async function getGitBranch(dir) {
+	try {
+		return (await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: dir })).stdout.trim();
+	} catch {
+		return "";
+	}
+}
 async function getGitStatus(dir) {
 	try {
 		const { stdout } = await execAsync("git status --porcelain", { cwd: dir });
-		const lines = stdout.split("\n").filter((l) => l.trim().length > 0);
-		const statusMap = /* @__PURE__ */ new Map();
-		for (const line of lines) {
-			const statusCode = line.substring(0, 2);
-			const file = line.substring(3).trim();
-			if (statusCode.includes("?")) statusMap.set(file, "untracked");
-			else statusMap.set(file, "modified");
-		}
-		return statusMap;
-	} catch (e) {
+		const m = /* @__PURE__ */ new Map();
+		stdout.split("\n").filter((l) => l.trim()).forEach((l) => {
+			m.set(l.substring(3).trim(), l.substring(0, 2).includes("?") ? "untracked" : "modified");
+		});
+		return m;
+	} catch {
 		return /* @__PURE__ */ new Map();
 	}
 }
 async function buildFileTree(dir) {
 	try {
-		const gitStatusMap = await getGitStatus(dir);
-		const entries = await fs.readdir(dir, { withFileTypes: true });
-		const nodes = [];
-		for (const entry of entries) {
-			if (entry.name === "node_modules" || entry.name === ".git" || entry.name === "dist") continue;
-			const fullPath = path.join(dir, entry.name);
-			const relativePath = path.relative(dir, fullPath);
-			let gitStatus = "clean";
-			if (!entry.isDirectory()) {
-				if (gitStatusMap.has(relativePath)) gitStatus = gitStatusMap.get(relativePath);
-			}
-			nodes.push({
-				name: entry.name,
-				path: fullPath,
-				isDirectory: entry.isDirectory(),
-				gitStatus
-			});
-		}
-		return nodes.sort((a, b) => {
-			if (a.isDirectory === b.isDirectory) return a.name.localeCompare(b.name);
-			return a.isDirectory ? -1 : 1;
-		});
-	} catch (e) {
+		const gitMap = dir === currentWorkspacePath ? await getGitStatus(dir) : /* @__PURE__ */ new Map();
+		const entries = await node_fs_promises.readdir(dir, { withFileTypes: true });
+		const ignore = [
+			"node_modules",
+			".git",
+			"dist",
+			"dist-electron",
+			".DS_Store",
+			"__pycache__",
+			".next",
+			"build"
+		];
+		return entries.filter((e) => !ignore.includes(e.name)).map((e) => ({
+			name: e.name,
+			path: node_path.join(dir, e.name),
+			isDirectory: e.isDirectory(),
+			gitStatus: gitMap.get(node_path.relative(currentWorkspacePath, node_path.join(dir, e.name))) || "clean"
+		})).sort((a, b) => a.isDirectory === b.isDirectory ? a.name.localeCompare(b.name) : a.isDirectory ? -1 : 1);
+	} catch {
 		return [];
 	}
 }
-ipcMain.handle("get-file-tree", async () => {
-	return buildFileTree(currentWorkspacePath);
-});
-ipcMain.handle("open-workspace", async () => {
+electron.ipcMain.handle("get-file-tree", (_, dir) => buildFileTree(dir || currentWorkspacePath));
+electron.ipcMain.handle("get-git-branch", () => getGitBranch(currentWorkspacePath));
+electron.ipcMain.handle("open-workspace", async () => {
 	if (!win) return null;
-	const result = await dialog.showOpenDialog(win, { properties: ["openDirectory"] });
-	if (result.canceled || result.filePaths.length === 0) return null;
-	currentWorkspacePath = result.filePaths[0];
-	startPty();
+	const r = await electron.dialog.showOpenDialog(win, { properties: ["openDirectory"] });
+	if (r.canceled || r.filePaths.length === 0) return null;
+	currentWorkspacePath = r.filePaths[0];
 	process.chdir(currentWorkspacePath);
+	startPty();
+	await initAgent();
 	return currentWorkspacePath;
 });
-ipcMain.handle("read-file", async (_, filepath) => {
-	return fs.readFile(filepath, "utf8");
-});
-ipcMain.handle("write-file", async (_, filepath, content) => {
-	await fs.writeFile(filepath, content, "utf8");
+electron.ipcMain.handle("read-file", (_, fp) => node_fs_promises.readFile(fp, "utf8"));
+electron.ipcMain.handle("write-file", async (_, fp, content) => {
+	await node_fs_promises.writeFile(fp, content, "utf8");
 	return true;
+});
+var fileCache = [];
+var fileCacheTime = 0;
+async function walkDir(dir, maxDepth = 5, depth = 0) {
+	if (depth > maxDepth) return [];
+	const ignore = [
+		"node_modules",
+		".git",
+		"dist",
+		"dist-electron",
+		".DS_Store",
+		"__pycache__"
+	];
+	const results = [];
+	try {
+		for (const e of await node_fs_promises.readdir(dir, { withFileTypes: true })) {
+			if (ignore.includes(e.name)) continue;
+			const fp = node_path.join(dir, e.name);
+			if (e.isDirectory()) results.push(...await walkDir(fp, maxDepth, depth + 1));
+			else results.push({
+				name: e.name,
+				path: fp
+			});
+		}
+	} catch {}
+	return results;
+}
+electron.ipcMain.handle("search-files", async (_, query) => {
+	if (Date.now() - fileCacheTime > 1e4) {
+		fileCache = await walkDir(currentWorkspacePath);
+		fileCacheTime = Date.now();
+	}
+	const q = query.toLowerCase();
+	return fileCache.filter((f) => f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q)).slice(0, 20);
+});
+electron.ipcMain.handle("get-config", () => loadConfig());
+electron.ipcMain.handle("save-config", async (_, config) => {
+	const m = await saveConfig(config);
+	await initAgent();
+	return m;
 });
 //#endregion

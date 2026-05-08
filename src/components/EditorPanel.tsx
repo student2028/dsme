@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import Editor, { OnMount } from '@monaco-editor/react';
+import Editor from '@monaco-editor/react';
 
 interface Props {
   content: string;
@@ -26,7 +26,7 @@ export const EditorPanel: React.FC<Props> = ({ content, onChange, filename, onCu
     return map[ext || ''] || 'plaintext';
   };
 
-  const handleEditorMount: OnMount = (editor, monaco) => {
+  const handleEditorMount = (editor: any, monaco: any) => {
     editorRef.current = editor;
 
     // Track cursor position

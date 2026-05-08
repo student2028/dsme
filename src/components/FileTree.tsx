@@ -1,5 +1,11 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { FileNode } from '../types';
+
+interface FileNode {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  gitStatus?: 'modified' | 'untracked' | 'clean';
+}
 
 interface Props {
   onFileSelect: (filepath: string, name: string) => void;
