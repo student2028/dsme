@@ -21,6 +21,8 @@ declare global {
       searchFiles: (query: string) => Promise<{ name: string; path: string }[]>;
       searchCodebase: (query: string) => Promise<string>;
       getGitBranch: () => Promise<string>;
+      getGitStatus: () => Promise<{ status: string; path: string; staged: boolean }[]>;
+      gitCommit: (msg: string) => Promise<string>;
       onTerminalOutput: (callback: (data: string) => void) => void;
       sendTerminalInput: (data: string) => void;
       onFileChanged: (callback: (filepath: string) => void) => void;

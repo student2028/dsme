@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Git
   getGitBranch: () => ipcRenderer.invoke('get-git-branch'),
+  getGitStatus: () => ipcRenderer.invoke('get-git-status'),
+  gitCommit: (msg: string) => ipcRenderer.invoke('git-commit', msg),
 
   // Terminal
   onTerminalOutput: (callback: (data: string) => void) => {

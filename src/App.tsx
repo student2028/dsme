@@ -10,19 +10,16 @@ import { WelcomeScreen } from './components/WelcomeScreen';
 import { SearchPanel } from './components/SearchPanel';
 import { ShortcutHelp } from './components/ShortcutHelp';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { ActivityBar } from './components/ActivityBar';
+import { GitPanel } from './components/GitPanel';
 import { ToastContainer, showToast } from './components/Toast';
 import './index.css';
 
-interface Tab {
-  path: string;
-  name: string;
-  content: string;
-  isDirty: boolean;
-}
+interface Tab { path: string; name: string; content: string; isDirty: boolean; }
 
 function App() {
   const [tabs, setTabs] = useState<Tab[]>([]);
-  const [activePath, setActivePath] = useState<string>('');
+  const [activePath, setActivePath] = useState('');
   const [cursorPos, setCursorPos] = useState({ line: 1, column: 1 });
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -31,15 +28,14 @@ function App() {
   const [terminalHeight, setTerminalHeight] = useState(220);
   const [chatWidth, setChatWidth] = useState(420);
   const [gitBranch, setGitBranch] = useState('');
-  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [sidePanel, setSidePanel] = useState<string>('explorer');
+  const autoSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const activeTab = tabs.find(t => t.path === activePath);
 
   useEffect(() => {
-    const fetch = () => { if (window.electronAPI) window.electronAPI.getGitBranch().then(setGitBranch); };
-    fetch();
-    const i = setInterval(fetch, 10000);
-    return () => clearInterval(i);
+    const f = () => { if (window.electronAPI) window.electronAPI.getGitBranch().then(setGitBranch); };
+    f(); const i = setInterval(f, 10000); return () => clearInterval(i);
   }, []);
 
   const handleFileSelect = useCallback(async (filepath: string, name: string) => {
@@ -49,7 +45,7 @@ function App() {
         const content = await window.electronAPI.readFile(filepath);
         setTabs(prev => [...prev, { path: filepath, name, content, isDirty: false }]);
         setActivePath(filepath);
-      } catch (e: any) { showToast(`Failed to open: ${e.message}`, 'error'); }
+      } catch (e: any) { showToast(`Failed: ${e.message}`, 'error'); }
     }
   }, [tabs]);
 
@@ -65,8 +61,8 @@ function App() {
   const handleEditorChange = useCallback((v: string | undefined) => {
     if (v !== undefined) {
       setTabs(prev => prev.map(t => t.path === activePath ? { ...t, content: v, isDirty: true } : t));
-      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-      autoSaveTimerRef.current = setTimeout(() => {
+      if (autoSaveRef.current) clearTimeout(autoSaveRef.current);
+      autoSaveRef.current = setTimeout(() => {
         if (window.electronAPI) {
           window.electronAPI.writeFile(activePath, v);
           setTabs(prev => prev.map(t => t.path === activePath ? { ...t, isDirty: false } : t));
@@ -101,17 +97,11 @@ function App() {
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.key === 's') { e.preventDefault(); handleSave(); }
       if (mod && e.key === 'p' && !e.shiftKey) { e.preventDefault(); setCmdPaletteOpen(p => !p); }
-      if (mod && e.key === 'w') {
-        e.preventDefault();
-        if (activePath) setTabs(prev => {
-          const nt = prev.filter(t => t.path !== activePath);
-          setActivePath(nt.length > 0 ? nt[nt.length - 1].path : '');
-          return nt;
-        });
-      }
+      if (mod && e.key === 'w') { e.preventDefault(); if (activePath) setTabs(prev => { const nt = prev.filter(t => t.path !== activePath); setActivePath(nt.length > 0 ? nt[nt.length - 1].path : ''); return nt; }); }
       if (mod && e.key === ',') { e.preventDefault(); setSettingsOpen(p => !p); }
       if (mod && e.shiftKey && e.key === 'F') { e.preventDefault(); setSearchOpen(p => !p); }
       if (mod && e.key === '?') { e.preventDefault(); setHelpOpen(p => !p); }
+      if (mod && e.key === 'b') { e.preventDefault(); setSidePanel(p => p ? '' : 'explorer'); }
     };
     window.addEventListener('keydown', handler);
     const save = () => handleSave();
@@ -120,16 +110,14 @@ function App() {
   }, [handleSave, activePath]);
 
   const handleTerminalDrag = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const sY = e.clientY, sH = terminalHeight;
+    e.preventDefault(); const sY = e.clientY, sH = terminalHeight;
     const move = (ev: MouseEvent) => setTerminalHeight(Math.max(80, Math.min(500, sH + (sY - ev.clientY))));
     const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
     document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
   }, [terminalHeight]);
 
   const handleChatDrag = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const sX = e.clientX, sW = chatWidth;
+    e.preventDefault(); const sX = e.clientX, sW = chatWidth;
     const move = (ev: MouseEvent) => setChatWidth(Math.max(300, Math.min(700, sW + (sX - ev.clientX))));
     const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
     document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
@@ -137,14 +125,36 @@ function App() {
 
   const getLang = (n: string) => {
     const ext = n?.split('.').pop()?.toLowerCase() || '';
-    return ({ ts:'TypeScript', tsx:'TypeScript', js:'JavaScript', jsx:'JavaScript', css:'CSS', html:'HTML', json:'JSON', md:'Markdown', py:'Python', kt:'Kotlin', dart:'Dart', swift:'Swift', go:'Go', rs:'Rust', java:'Java', sh:'Shell' } as any)[ext] || ext.toUpperCase() || 'TEXT';
+    return ({ ts:'TS', tsx:'TSX', js:'JS', jsx:'JSX', css:'CSS', html:'HTML', json:'JSON', md:'MD', py:'PY', kt:'KT', dart:'Dart', swift:'Swift', go:'Go', rs:'Rust', java:'Java', sh:'SH' } as any)[ext] || ext.toUpperCase() || 'TXT';
+  };
+
+  const handlePanelChange = (panel: string) => {
+    if (panel === 'settings') { setSettingsOpen(p => !p); return; }
+    setSidePanel(prev => prev === panel ? '' : panel);
   };
 
   return (
     <div className="app-container">
-      <ErrorBoundary fallbackMessage="File tree crashed">
-        <FileTree onFileSelect={handleFileSelect} />
-      </ErrorBoundary>
+      <ActivityBar activePanel={sidePanel} onPanelChange={handlePanelChange} />
+
+      {/* Side panel */}
+      {sidePanel && (
+        <div className="side-panel">
+          {sidePanel === 'explorer' && (
+            <ErrorBoundary fallbackMessage="File tree crashed">
+              <FileTree onFileSelect={handleFileSelect} />
+            </ErrorBoundary>
+          )}
+          {sidePanel === 'search' && (
+            <SearchPanel isOpen={true} onClose={() => setSidePanel('')} onResultSelect={handleFileSelect} />
+          )}
+          {sidePanel === 'git' && (
+            <ErrorBoundary fallbackMessage="Git panel crashed">
+              <GitPanel />
+            </ErrorBoundary>
+          )}
+        </div>
+      )}
 
       <main className="main-content">
         <div className="tab-bar">
@@ -154,16 +164,13 @@ function App() {
               <span className="tab-close" onClick={(e) => handleCloseTab(e, tab.path)}>×</span>
             </div>
           ))}
-          {tabs.length === 0 && <div className="tab-empty">Ctrl+P search · Ctrl+Shift+F find · Ctrl+, settings</div>}
+          {tabs.length === 0 && <div className="tab-empty">Ctrl+P open · Ctrl+B sidebar · Ctrl+, settings</div>}
         </div>
 
         {activeTab && (
           <div className="breadcrumb">
             {activeTab.path.split('/').slice(-3).map((part, i, arr) => (
-              <span key={i}>
-                {i > 0 && <span className="breadcrumb-sep">/</span>}
-                <span className={i === arr.length - 1 ? 'breadcrumb-active' : ''}>{part}</span>
-              </span>
+              <span key={i}>{i > 0 && <span className="breadcrumb-sep">/</span>}<span className={i === arr.length - 1 ? 'breadcrumb-active' : ''}>{part}</span></span>
             ))}
           </div>
         )}
@@ -178,15 +185,13 @@ function App() {
 
         <div className="resize-handle-h" onMouseDown={handleTerminalDrag} />
         <div style={{ height: `${terminalHeight}px`, flexShrink: 0 }}>
-          <ErrorBoundary fallbackMessage="Terminal crashed">
-            <TerminalPanel />
-          </ErrorBoundary>
+          <ErrorBoundary fallbackMessage="Terminal crashed"><TerminalPanel /></ErrorBoundary>
         </div>
       </main>
 
       <div className="resize-handle-v" onMouseDown={handleChatDrag} />
       <div style={{ width: `${chatWidth}px`, flexShrink: 0, display: 'flex' }}>
-        <ErrorBoundary fallbackMessage="Chat panel crashed">
+        <ErrorBoundary fallbackMessage="Chat crashed">
           <ChatPanel currentFileContext={activeTab ? { path: activeTab.path, content: activeTab.content } : null} />
         </ErrorBoundary>
       </div>
@@ -194,7 +199,7 @@ function App() {
       <StatusBar activePath={activeTab?.name || ''} language={getLang(activeTab?.name || '')} cursorPosition={cursorPos} gitBranch={gitBranch} />
       <CommandPalette isOpen={cmdPaletteOpen} onClose={() => setCmdPaletteOpen(false)} onFileSelect={handleFileSelect} />
       <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      <SearchPanel isOpen={searchOpen} onClose={() => setSearchOpen(false)} onResultSelect={handleFileSelect} />
+      {searchOpen && <SearchPanel isOpen={searchOpen} onClose={() => setSearchOpen(false)} onResultSelect={handleFileSelect} />}
       <ShortcutHelp isOpen={helpOpen} onClose={() => setHelpOpen(false)} />
       <ToastContainer />
     </div>

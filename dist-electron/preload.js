@@ -24,6 +24,8 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
 	searchFiles: (query) => electron.ipcRenderer.invoke("search-files", query),
 	searchCodebase: (query) => electron.ipcRenderer.invoke("search-codebase", query),
 	getGitBranch: () => electron.ipcRenderer.invoke("get-git-branch"),
+	getGitStatus: () => electron.ipcRenderer.invoke("get-git-status"),
+	gitCommit: (msg) => electron.ipcRenderer.invoke("git-commit", msg),
 	onTerminalOutput: (callback) => {
 		electron.ipcRenderer.on("terminal-output", (_e, d) => callback(d));
 	},

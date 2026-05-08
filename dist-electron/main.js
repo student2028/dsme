@@ -9203,6 +9203,23 @@ async function buildFileTree(dir) {
 }
 electron.ipcMain.handle("get-file-tree", (_, dir) => buildFileTree(dir || currentWorkspacePath));
 electron.ipcMain.handle("get-git-branch", () => getGitBranch(currentWorkspacePath));
+electron.ipcMain.handle("get-git-status", async () => {
+	try {
+		const { stdout } = await execAsync("git status --porcelain", { cwd: currentWorkspacePath });
+		return stdout.split("\n").filter((l) => l.trim()).map((l) => ({
+			status: l.substring(0, 2),
+			path: l.substring(3).trim(),
+			staged: l[0] !== " " && l[0] !== "?"
+		}));
+	} catch {
+		return [];
+	}
+});
+electron.ipcMain.handle("git-commit", async (_, msg) => {
+	await execAsync("git add -A", { cwd: currentWorkspacePath });
+	const { stdout } = await execAsync(`git commit -m "${msg.replace(/"/g, "\\\"")}"`, { cwd: currentWorkspacePath });
+	return stdout;
+});
 electron.ipcMain.handle("open-workspace", async () => {
 	if (!win) return null;
 	const r = await electron.dialog.showOpenDialog(win, { properties: ["openDirectory"] });
