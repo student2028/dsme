@@ -99,6 +99,20 @@ export const FileTree: React.FC<Props> = ({ onFileSelect }) => {
     return '';
   };
 
+  const getFileIcon = (name: string) => {
+    const ext = name.split('.').pop()?.toLowerCase() || '';
+    const icons: Record<string, string> = {
+      'ts': '⟨⟩', 'tsx': '⟨⟩', 'js': '◇', 'jsx': '◇',
+      'css': '◆', 'html': '◈', 'json': '{}',
+      'md': '¶', 'py': '⊕', 'rs': '⊗', 'go': '◎',
+      'kt': '◉', 'dart': '◊', 'swift': '⊙', 'java': '☕',
+      'sh': '$', 'yaml': '≡', 'yml': '≡', 'toml': '≡',
+      'sql': '⊞', 'xml': '≤≥', 'svg': '▲', 'png': '▣',
+      'jpg': '▣', 'gif': '▣', 'lock': '🔒',
+    };
+    return icons[ext] || '·';
+  };
+
   return (
     <div className="filetree-panel">
       <div className="filetree-header">
@@ -119,7 +133,7 @@ export const FileTree: React.FC<Props> = ({ onFileSelect }) => {
             <span className="filetree-icon">
               {node.isDirectory 
                 ? (expandedDirs.has(node.path) ? '▼' : '▶') 
-                : '·'
+                : getFileIcon(node.name)
               }
             </span>
             <span className="filetree-name">{node.name}</span>

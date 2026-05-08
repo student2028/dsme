@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ChatPanel } from './components/ChatPanel';
 import { EditorPanel } from './components/EditorPanel';
 import { FileTree } from './components/FileTree';
@@ -7,6 +7,7 @@ import { StatusBar } from './components/StatusBar';
 import { CommandPalette } from './components/CommandPalette';
 import { SettingsPanel } from './components/SettingsPanel';
 import { WelcomeScreen } from './components/WelcomeScreen';
+import { ToastContainer, showToast } from './components/Toast';
 import './index.css';
 
 interface Tab {
@@ -25,9 +26,11 @@ function App() {
   const [terminalHeight, setTerminalHeight] = useState(220);
   const [chatWidth, setChatWidth] = useState(420);
   const [gitBranch, setGitBranch] = useState('');
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const activeTab = tabs.find(t => t.path === activePath);
 
+  // Git branch polling
   useEffect(() => {
     const fetch = () => { if (window.electronAPI) window.electronAPI.getGitBranch().then(setGitBranch); };
     fetch();
@@ -35,27 +38,48 @@ function App() {
     return () => clearInterval(i);
   }, []);
 
+  // File open
   const handleFileSelect = useCallback(async (filepath: string, name: string) => {
     if (tabs.find(t => t.path === filepath)) { setActivePath(filepath); return; }
     if (window.electronAPI) {
-      const content = await window.electronAPI.readFile(filepath);
-      setTabs(prev => [...prev, { path: filepath, name, content, isDirty: false }]);
-      setActivePath(filepath);
+      try {
+        const content = await window.electronAPI.readFile(filepath);
+        setTabs(prev => [...prev, { path: filepath, name, content, isDirty: false }]);
+        setActivePath(filepath);
+      } catch (e: any) {
+        showToast(`Failed to open: ${e.message}`, 'error');
+      }
     }
   }, [tabs]);
 
+  // Save
   const handleSave = useCallback(() => {
     const tab = tabs.find(t => t.path === activePath);
     if (tab?.isDirty && window.electronAPI) {
       window.electronAPI.writeFile(tab.path, tab.content);
       setTabs(prev => prev.map(t => t.path === activePath ? { ...t, isDirty: false } : t));
+      showToast(`Saved: ${tab.name}`, 'success');
     }
   }, [tabs, activePath]);
 
+  // Editor change with auto-save debounce
   const handleEditorChange = useCallback((v: string | undefined) => {
-    if (v !== undefined) setTabs(prev => prev.map(t => t.path === activePath ? { ...t, content: v, isDirty: true } : t));
-  }, [activePath]);
+    if (v !== undefined) {
+      setTabs(prev => prev.map(t => t.path === activePath ? { ...t, content: v, isDirty: true } : t));
 
+      // Auto-save after 2s of inactivity
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = setTimeout(() => {
+        const tab = tabs.find(t => t.path === activePath);
+        if (tab && window.electronAPI) {
+          window.electronAPI.writeFile(activePath, v);
+          setTabs(prev => prev.map(t => t.path === activePath ? { ...t, isDirty: false } : t));
+        }
+      }, 2000);
+    }
+  }, [activePath, tabs]);
+
+  // Close tab
   const handleCloseTab = useCallback((e: React.MouseEvent, p: string) => {
     e.stopPropagation();
     setTabs(prev => {
@@ -65,15 +89,20 @@ function App() {
     });
   }, [activePath]);
 
+  // Live reload from agent
   useEffect(() => {
     if (window.electronAPI) {
       window.electronAPI.onFileChanged(async (fp: string) => {
-        const c = await window.electronAPI.readFile(fp);
-        setTabs(prev => prev.map(t => t.path === fp ? { ...t, content: c, isDirty: false } : t));
+        try {
+          const c = await window.electronAPI.readFile(fp);
+          setTabs(prev => prev.map(t => t.path === fp ? { ...t, content: c, isDirty: false } : t));
+          showToast(`Agent updated: ${fp.split('/').pop()}`, 'info');
+        } catch {}
       });
     }
   }, []);
 
+  // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
@@ -95,6 +124,7 @@ function App() {
     return () => { window.removeEventListener('keydown', handler); window.removeEventListener('editor-save', save); };
   }, [handleSave, activePath]);
 
+  // Resize handlers
   const handleTerminalDrag = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const sY = e.clientY, sH = terminalHeight;
@@ -130,6 +160,18 @@ function App() {
           {tabs.length === 0 && <div className="tab-empty">Ctrl+P search · Ctrl+, settings</div>}
         </div>
 
+        {/* Breadcrumb */}
+        {activeTab && (
+          <div className="breadcrumb">
+            {activeTab.path.split('/').slice(-3).map((part, i, arr) => (
+              <span key={i}>
+                {i > 0 && <span className="breadcrumb-sep">/</span>}
+                <span className={i === arr.length - 1 ? 'breadcrumb-active' : ''}>{part}</span>
+              </span>
+            ))}
+          </div>
+        )}
+
         {activeTab ? (
           <EditorPanel content={activeTab.content} onChange={handleEditorChange} filename={activeTab.name} onCursorChange={(l, c) => setCursorPos({ line: l, column: c })} />
         ) : (
@@ -141,11 +183,14 @@ function App() {
       </main>
 
       <div className="resize-handle-v" onMouseDown={handleChatDrag} />
-      <div style={{ width: `${chatWidth}px`, flexShrink: 0, display: 'flex' }}><ChatPanel currentFileContext={activeTab ? { path: activeTab.path, content: activeTab.content } : null} /></div>
+      <div style={{ width: `${chatWidth}px`, flexShrink: 0, display: 'flex' }}>
+        <ChatPanel currentFileContext={activeTab ? { path: activeTab.path, content: activeTab.content } : null} />
+      </div>
 
       <StatusBar activePath={activeTab?.name || ''} language={getLang(activeTab?.name || '')} cursorPosition={cursorPos} gitBranch={gitBranch} />
       <CommandPalette isOpen={cmdPaletteOpen} onClose={() => setCmdPaletteOpen(false)} onFileSelect={handleFileSelect} />
       <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <ToastContainer />
     </div>
   );
 }
