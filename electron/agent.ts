@@ -158,6 +158,27 @@ export class DeepSeekAgent {
     }
   }
 
+  private pendingChanges: Map<string, { filepath: string; newContent: string; resolve: (v: string) => void }> = new Map();
+  private changeIdCounter = 0;
+
+  public setupDiffHandlers() {
+    const { ipcMain } = require('electron');
+    ipcMain.on('diff-accept', (_: any, changeId: string) => {
+      const pending = this.pendingChanges.get(changeId);
+      if (pending) {
+        this.pendingChanges.delete(changeId);
+        pending.resolve('accepted');
+      }
+    });
+    ipcMain.on('diff-reject', (_: any, changeId: string) => {
+      const pending = this.pendingChanges.get(changeId);
+      if (pending) {
+        this.pendingChanges.delete(changeId);
+        pending.resolve('rejected');
+      }
+    });
+  }
+
   private async executeTool(name: string, args: any): Promise<string> {
     try {
       const resolve = (p: string) => path.resolve(this.cwd, p);
@@ -169,19 +190,71 @@ export class DeepSeekAgent {
         case 'write_file': {
           const fp = resolve(args.filepath);
           await fs.mkdir(path.dirname(fp), { recursive: true });
-          await fs.writeFile(fp, args.content, 'utf8');
-          this.send('file-changed', fp);
-          return `✅ Written: ${args.filepath}`;
+          let oldContent = '';
+          try { oldContent = await fs.readFile(fp, 'utf8'); } catch {}
+
+          // Emit diff preview and wait for user decision
+          const changeId = `change_${this.changeIdCounter++}`;
+          this.send('diff-preview', {
+            id: changeId,
+            filepath: fp,
+            filename: args.filepath,
+            oldContent,
+            newContent: args.content,
+          });
+
+          const decision = await new Promise<string>(r => {
+            this.pendingChanges.set(changeId, { filepath: fp, newContent: args.content, resolve: r });
+            // Auto-accept after 60s if no response
+            setTimeout(() => {
+              if (this.pendingChanges.has(changeId)) {
+                this.pendingChanges.delete(changeId);
+                r('accepted');
+              }
+            }, 60000);
+          });
+
+          if (decision === 'accepted') {
+            await fs.writeFile(fp, args.content, 'utf8');
+            this.send('file-changed', fp);
+            return `✅ Written (accepted): ${args.filepath}`;
+          } else {
+            return `⏭ Skipped (rejected): ${args.filepath}`;
+          }
         }
 
         case 'replace_in_file': {
           const fp = resolve(args.filepath);
-          let c = await fs.readFile(fp, 'utf8');
-          if (!c.includes(args.target)) return `❌ Target not found in ${args.filepath}`;
-          c = c.replace(args.target, args.replacement);
-          await fs.writeFile(fp, c, 'utf8');
-          this.send('file-changed', fp);
-          return `✅ Replaced in: ${args.filepath}`;
+          const oldContent = await fs.readFile(fp, 'utf8');
+          if (!oldContent.includes(args.target)) return `❌ Target not found in ${args.filepath}`;
+          const newContent = oldContent.replace(args.target, args.replacement);
+
+          const changeId = `change_${this.changeIdCounter++}`;
+          this.send('diff-preview', {
+            id: changeId,
+            filepath: fp,
+            filename: args.filepath,
+            oldContent,
+            newContent,
+          });
+
+          const decision = await new Promise<string>(r => {
+            this.pendingChanges.set(changeId, { filepath: fp, newContent, resolve: r });
+            setTimeout(() => {
+              if (this.pendingChanges.has(changeId)) {
+                this.pendingChanges.delete(changeId);
+                r('accepted');
+              }
+            }, 60000);
+          });
+
+          if (decision === 'accepted') {
+            await fs.writeFile(fp, newContent, 'utf8');
+            this.send('file-changed', fp);
+            return `✅ Replaced (accepted): ${args.filepath}`;
+          } else {
+            return `⏭ Skipped (rejected): ${args.filepath}`;
+          }
         }
 
         case 'list_directory': {
@@ -208,3 +281,4 @@ export class DeepSeekAgent {
     } catch (err: any) { return `Tool error (${name}): ${err.message}`; }
   }
 }
+

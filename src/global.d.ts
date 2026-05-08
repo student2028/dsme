@@ -26,6 +26,9 @@ declare global {
       onTerminalOutput: (callback: (data: string) => void) => void;
       sendTerminalInput: (data: string) => void;
       onFileChanged: (callback: (filepath: string) => void) => void;
+      onDiffPreview: (callback: (change: any) => void) => void;
+      acceptDiff: (changeId: string) => void;
+      rejectDiff: (changeId: string) => void;
       getConfig: () => Promise<any>;
       saveConfig: (config: any) => Promise<any>;
       saveConversations: (data: string) => Promise<boolean>;

@@ -12,6 +12,8 @@ import { ShortcutHelp } from './components/ShortcutHelp';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ActivityBar } from './components/ActivityBar';
 import { GitPanel } from './components/GitPanel';
+import { DiffPreview } from './components/DiffPreview';
+import type { DiffChange } from './components/DiffPreview';
 import { ToastContainer, showToast } from './components/Toast';
 import './index.css';
 
@@ -29,6 +31,7 @@ function App() {
   const [chatWidth, setChatWidth] = useState(420);
   const [gitBranch, setGitBranch] = useState('');
   const [sidePanel, setSidePanel] = useState<string>('explorer');
+  const [diffChanges, setDiffChanges] = useState<DiffChange[]>([]);
   const autoSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const activeTab = tabs.find(t => t.path === activePath);
@@ -86,8 +89,20 @@ function App() {
         try {
           const c = await window.electronAPI.readFile(fp);
           setTabs(prev => prev.map(t => t.path === fp ? { ...t, content: c, isDirty: false } : t));
-          showToast(`Agent updated: ${fp.split('/').pop()}`, 'info');
+          showToast(`Applied: ${fp.split('/').pop()}`, 'success');
         } catch {}
+      });
+
+      // Diff preview from agent
+      window.electronAPI.onDiffPreview((change: any) => {
+        setDiffChanges(prev => [...prev, {
+          id: change.id,
+          filepath: change.filepath,
+          filename: change.filename,
+          oldContent: change.oldContent,
+          newContent: change.newContent,
+          status: 'pending' as const,
+        }]);
       });
     }
   }, []);
@@ -201,6 +216,29 @@ function App() {
       <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
       {searchOpen && <SearchPanel isOpen={searchOpen} onClose={() => setSearchOpen(false)} onResultSelect={handleFileSelect} />}
       <ShortcutHelp isOpen={helpOpen} onClose={() => setHelpOpen(false)} />
+
+      {/* Agent Diff Preview */}
+      {diffChanges.filter(c => c.status === 'pending').length > 0 && (
+        <DiffPreview
+          changes={diffChanges}
+          onAccept={(id) => {
+            if (window.electronAPI) window.electronAPI.acceptDiff(id);
+            setDiffChanges(prev => prev.map(c => c.id === id ? { ...c, status: 'accepted' } : c));
+          }}
+          onReject={(id) => {
+            if (window.electronAPI) window.electronAPI.rejectDiff(id);
+            setDiffChanges(prev => prev.map(c => c.id === id ? { ...c, status: 'rejected' } : c));
+          }}
+          onAcceptAll={() => {
+            diffChanges.filter(c => c.status === 'pending').forEach(c => {
+              if (window.electronAPI) window.electronAPI.acceptDiff(c.id);
+            });
+            setDiffChanges(prev => prev.map(c => c.status === 'pending' ? { ...c, status: 'accepted' } : c));
+          }}
+          onClose={() => setDiffChanges([])}
+        />
+      )}
+
       <ToastContainer />
     </div>
   );

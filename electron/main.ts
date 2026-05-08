@@ -65,6 +65,7 @@ async function initAgent() {
     baseUrl: config.baseUrl,
     cwd: currentWorkspacePath,
   });
+  agent.setupDiffHandlers();
 }
 
 function startPty() {

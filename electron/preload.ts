@@ -42,6 +42,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onFileChanged: (callback: (filepath: string) => void) => {
     ipcRenderer.on('file-changed', (_e, fp) => callback(fp));
   },
+  onDiffPreview: (callback: (change: any) => void) => {
+    ipcRenderer.on('diff-preview', (_e, change) => callback(change));
+  },
+  acceptDiff: (changeId: string) => ipcRenderer.send('diff-accept', changeId),
+  rejectDiff: (changeId: string) => ipcRenderer.send('diff-reject', changeId),
 
   // Config
   getConfig: () => ipcRenderer.invoke('get-config'),
