@@ -23,7 +23,6 @@ function computeDiff(oldText: string, newText: string): { type: 'same' | 'add' |
   const result: { type: 'same' | 'add' | 'remove'; line: string }[] = [];
 
   // Simple line-by-line diff
-  const maxLen = Math.max(oldLines.length, newLines.length);
   let oi = 0, ni = 0;
 
   while (oi < oldLines.length || ni < newLines.length) {

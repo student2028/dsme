@@ -30,7 +30,7 @@ export const EditorPanel: React.FC<Props> = ({ content, onChange, filename, onCu
     editorRef.current = editor;
 
     // Track cursor position
-    editor.onDidChangeCursorPosition((e) => {
+    editor.onDidChangeCursorPosition((e: any) => {
       onCursorChange?.(e.position.lineNumber, e.position.column);
     });
 

@@ -16,7 +16,6 @@ export const GitPanel: React.FC = () => {
   const refresh = useCallback(async () => {
     if (!window.electronAPI) return;
     try {
-      const raw = await window.electronAPI.searchCodebase(''); // We'll use a dedicated IPC
       setBranch(await window.electronAPI.getGitBranch());
     } catch {}
 
