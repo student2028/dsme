@@ -4,7 +4,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Chat
   sendChatMessage: (message: string) => ipcRenderer.send('chat-message', message),
   onChatReply: (callback: (reply: string) => void) => {
-    ipcRenderer.on('chat-reply', (_event, value) => callback(value));
+    ipcRenderer.on('chat-reply', (_e, v) => callback(v));
+  },
+  onChatStreamStart: (callback: () => void) => {
+    ipcRenderer.on('chat-stream-start', () => callback());
+  },
+  onChatStreamToken: (callback: (token: string) => void) => {
+    ipcRenderer.on('chat-stream-token', (_e, v) => callback(v));
+  },
+  onChatStreamEnd: (callback: () => void) => {
+    ipcRenderer.on('chat-stream-end', () => callback());
+  },
+  onChatStatus: (callback: (status: string) => void) => {
+    ipcRenderer.on('chat-status', (_e, v) => callback(v));
   },
 
   // File System
@@ -19,13 +31,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Terminal
   onTerminalOutput: (callback: (data: string) => void) => {
-    ipcRenderer.on('terminal-output', (_event, data) => callback(data));
+    ipcRenderer.on('terminal-output', (_e, d) => callback(d));
   },
   sendTerminalInput: (data: string) => ipcRenderer.send('terminal-input', data),
 
   // File watcher
   onFileChanged: (callback: (filepath: string) => void) => {
-    ipcRenderer.on('file-changed', (_event, filepath) => callback(filepath));
+    ipcRenderer.on('file-changed', (_e, fp) => callback(fp));
   },
 
   // Config

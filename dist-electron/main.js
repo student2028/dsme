@@ -8821,7 +8821,7 @@ var agentTools = [
 		type: "function",
 		function: {
 			name: "read_file",
-			description: "Read the contents of a file at the given path.",
+			description: "Read a file.",
 			parameters: {
 				type: "object",
 				properties: { filepath: { type: "string" } },
@@ -8833,7 +8833,7 @@ var agentTools = [
 		type: "function",
 		function: {
 			name: "write_file",
-			description: "Create or overwrite a file with the given content.",
+			description: "Create/overwrite a file.",
 			parameters: {
 				type: "object",
 				properties: {
@@ -8848,7 +8848,7 @@ var agentTools = [
 		type: "function",
 		function: {
 			name: "replace_in_file",
-			description: "Replace a specific substring in a file. Use for surgical edits.",
+			description: "Replace exact substring in a file.",
 			parameters: {
 				type: "object",
 				properties: {
@@ -8868,7 +8868,7 @@ var agentTools = [
 		type: "function",
 		function: {
 			name: "list_directory",
-			description: "List files and directories in a given path.",
+			description: "List files in a directory.",
 			parameters: {
 				type: "object",
 				properties: { dirpath: { type: "string" } },
@@ -8880,7 +8880,7 @@ var agentTools = [
 		type: "function",
 		function: {
 			name: "search_codebase",
-			description: "Search for a text pattern across the workspace using grep.",
+			description: "Grep search across workspace.",
 			parameters: {
 				type: "object",
 				properties: {
@@ -8895,7 +8895,7 @@ var agentTools = [
 		type: "function",
 		function: {
 			name: "run_command",
-			description: "Run a shell command and return stdout/stderr.",
+			description: "Run shell command.",
 			parameters: {
 				type: "object",
 				properties: { command: { type: "string" } },
@@ -8904,22 +8904,21 @@ var agentTools = [
 		}
 	}
 ];
-var SYSTEM_PROMPT = `You are Antigravity, a world-class autonomous AI coding agent. You operate inside an Electron-based IDE.
+var SYSTEM_PROMPT = `You are Antigravity, a world-class autonomous AI coding agent. You operate inside an Electron IDE with full system access.
 
-## Capabilities
-- read_file, write_file, replace_in_file, list_directory, search_codebase, run_command
+Tools: read_file, write_file, replace_in_file, list_directory, search_codebase, run_command
 
-## Principles
-1. BE AUTONOMOUS. Don't ask for clarification. Just do the work.
-2. THINK step by step. Plan, execute, verify.
-3. HANDLE ERRORS. If a tool fails, diagnose and retry.
-4. BE THOROUGH. Handle all files without stopping.
-5. Use Markdown for responses. Be concise but complete.`;
+Principles:
+1. BE AUTONOMOUS — don't ask, just do
+2. THINK step by step — plan then execute
+3. VERIFY — read files back after editing
+4. HANDLE ERRORS — diagnose and retry
+5. Use Markdown. Be concise but complete.`;
 var DeepSeekAgent = class {
 	constructor(window, config) {
 		this.window = window;
 		this.messages = [];
-		this.maxLoopIterations = 25;
+		this.maxIterations = 25;
 		const key = config.apiKey || "sk-placeholder";
 		this.openai = new OpenAI({
 			baseURL: config.baseUrl,
@@ -8940,45 +8939,89 @@ var DeepSeekAgent = class {
 			role: "user",
 			content
 		});
-		await this.processAgentLoop(0);
+		this.send("chat-status", "thinking");
+		await this.processLoop(0);
+		this.send("chat-status", "idle");
 	}
-	async processAgentLoop(iteration) {
-		if (iteration >= this.maxLoopIterations) {
-			this.window.webContents.send("chat-reply", "\n\n⚠️ Max iterations reached.");
+	send(channel, data) {
+		try {
+			this.window.webContents.send(channel, data);
+		} catch {}
+	}
+	async processLoop(iteration) {
+		if (iteration >= this.maxIterations) {
+			this.send("chat-reply", "\n\n⚠️ Max iterations reached.");
 			return;
 		}
 		try {
-			const message = (await this.openai.chat.completions.create({
+			const stream = await this.openai.chat.completions.create({
 				model: this.model,
 				messages: this.messages,
 				tools: agentTools,
-				tool_choice: "auto"
-			})).choices[0].message;
-			this.messages.push(message);
-			if (message.content) this.window.webContents.send("chat-reply", message.content);
-			if (!message.tool_calls || message.tool_calls.length === 0) return;
-			for (const toolCall of message.tool_calls) {
-				const name = toolCall.function.name;
-				this.window.webContents.send("chat-reply", `\n\n> 🔧 ${name}`);
+				tool_choice: "auto",
+				stream: true
+			});
+			let contentBuffer = "";
+			let toolCalls = /* @__PURE__ */ new Map();
+			let finishReason = "";
+			this.send("chat-stream-start", null);
+			for await (const chunk of stream) {
+				const delta = chunk.choices[0]?.delta;
+				finishReason = chunk.choices[0]?.finish_reason || finishReason;
+				if (delta?.content) {
+					contentBuffer += delta.content;
+					this.send("chat-stream-token", delta.content);
+				}
+				if (delta?.tool_calls) for (const tc of delta.tool_calls) {
+					const idx = tc.index;
+					if (!toolCalls.has(idx)) toolCalls.set(idx, {
+						id: tc.id || "",
+						name: tc.function?.name || "",
+						args: ""
+					});
+					const entry = toolCalls.get(idx);
+					if (tc.id) entry.id = tc.id;
+					if (tc.function?.name) entry.name = tc.function.name;
+					if (tc.function?.arguments) entry.args += tc.function.arguments;
+				}
+			}
+			this.send("chat-stream-end", null);
+			const assistantMessage = {
+				role: "assistant",
+				content: contentBuffer || null
+			};
+			if (toolCalls.size > 0) assistantMessage.tool_calls = Array.from(toolCalls.values()).map((tc) => ({
+				id: tc.id,
+				type: "function",
+				function: {
+					name: tc.name,
+					arguments: tc.args
+				}
+			}));
+			this.messages.push(assistantMessage);
+			if (toolCalls.size === 0) return;
+			for (const tc of toolCalls.values()) {
+				this.send("chat-reply", `\n\n> 🔧 ${tc.name}`);
+				this.send("chat-status", `tool:${tc.name}`);
 				let args = {};
 				try {
-					args = JSON.parse(toolCall.function.arguments);
+					args = JSON.parse(tc.args);
 				} catch {}
-				const result = await this.executeTool(name, args);
+				const result = await this.executeTool(tc.name, args);
 				this.messages.push({
 					role: "tool",
-					tool_call_id: toolCall.id,
+					tool_call_id: tc.id,
 					content: result.slice(0, 8e3)
 				});
 			}
-			await this.processAgentLoop(iteration + 1);
+			await this.processLoop(iteration + 1);
 		} catch (error) {
-			const errMsg = error?.message || String(error);
-			if (errMsg.includes("rate_limit") || errMsg.includes("429")) {
-				this.window.webContents.send("chat-reply", "\n\n⏳ Rate limited. Retrying in 5s...");
+			const msg = error?.message || String(error);
+			if (msg.includes("rate_limit") || msg.includes("429")) {
+				this.send("chat-reply", "\n\n⏳ Rate limited. Retrying...");
 				await new Promise((r) => setTimeout(r, 5e3));
-				await this.processAgentLoop(iteration);
-			} else this.window.webContents.send("chat-reply", `\n\n❌ Error: ${errMsg}`);
+				await this.processLoop(iteration);
+			} else this.send("chat-reply", `\n\n❌ Error: ${msg}`);
 		}
 	}
 	async executeTool(name, args) {
@@ -8990,27 +9033,26 @@ var DeepSeekAgent = class {
 					const fp = resolve(args.filepath);
 					await node_fs_promises.mkdir(node_path.dirname(fp), { recursive: true });
 					await node_fs_promises.writeFile(fp, args.content, "utf8");
-					this.window.webContents.send("file-changed", fp);
+					this.send("file-changed", fp);
 					return `✅ Written: ${args.filepath}`;
 				}
 				case "replace_in_file": {
 					const fp = resolve(args.filepath);
-					let content = await node_fs_promises.readFile(fp, "utf8");
-					if (!content.includes(args.target)) return `❌ Target not found in ${args.filepath}. First 200 chars:\n${content.slice(0, 200)}`;
-					content = content.replace(args.target, args.replacement);
-					await node_fs_promises.writeFile(fp, content, "utf8");
-					this.window.webContents.send("file-changed", fp);
+					let c = await node_fs_promises.readFile(fp, "utf8");
+					if (!c.includes(args.target)) return `❌ Target not found in ${args.filepath}`;
+					c = c.replace(args.target, args.replacement);
+					await node_fs_promises.writeFile(fp, c, "utf8");
+					this.send("file-changed", fp);
 					return `✅ Replaced in: ${args.filepath}`;
 				}
 				case "list_directory": return (await node_fs_promises.readdir(resolve(args.dirpath), { withFileTypes: true })).filter((e) => !["node_modules", ".git"].includes(e.name)).map((e) => `${e.isDirectory() ? "[DIR]" : "[FILE]"} ${e.name}`).join("\n");
 				case "search_codebase": {
 					const cmd = `grep ${args.is_regex ? "-rnE" : "-rn"} --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist "${args.query}" .`;
 					try {
-						const { stdout } = await execAsync$1(cmd, {
+						return (await execAsync$1(cmd, {
 							cwd: this.cwd,
 							maxBuffer: 1024 * 1024
-						});
-						return stdout || "No matches.";
+						})).stdout || "No matches.";
 					} catch (e) {
 						return e.stdout || "No matches.";
 					}
@@ -9018,12 +9060,11 @@ var DeepSeekAgent = class {
 				case "run_command": {
 					const { stdout, stderr } = await execAsync$1(args.command, {
 						cwd: this.cwd,
-						timeout: 3e4,
-						maxBuffer: 1024 * 1024
+						timeout: 6e4,
+						maxBuffer: 2 * 1024 * 1024
 					});
-					const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : "");
-					this.window.webContents.send("terminal-output", `\r\n$ ${args.command}\r\n${stdout}`);
-					return output;
+					this.send("terminal-output", `\r\n$ ${args.command}\r\n${stdout}`);
+					return stdout + (stderr ? `\nSTDERR:\n${stderr}` : "");
 				}
 				default: return `Unknown tool: ${name}`;
 			}

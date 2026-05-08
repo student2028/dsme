@@ -25,97 +25,112 @@ const newId = () => `msg_${Date.now()}_${msgId++}`;
 
 export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   const [conversations, setConversations] = useState<Conversation[]>([{
-    id: 'conv_0',
-    title: 'New Session',
-    messages: [
-      { id: newId(), role: 'assistant', content: '> SYSTEM INITIALIZED\n> DEEPSEEK AGENT READY\n> TOOLS: read_file, write_file, replace, grep, shell\n> AWAITING COMMAND...', timestamp: Date.now() }
-    ],
+    id: 'conv_0', title: 'New Session',
+    messages: [{ id: newId(), role: 'assistant', content: '> SYSTEM INITIALIZED\n> DEEPSEEK AGENT READY\n> AWAITING COMMAND...', timestamp: Date.now() }],
     createdAt: Date.now()
   }]);
   const [activeConvId, setActiveConvId] = useState('conv_0');
   const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+  const [agentStatus, setAgentStatus] = useState<string>('idle');
   const [showHistory, setShowHistory] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const streamingMsgId = useRef<string | null>(null);
 
   const activeConv = conversations.find(c => c.id === activeConvId)!;
+  const isLoading = agentStatus !== 'idle';
 
   // Auto-scroll
   useEffect(() => {
-    const container = scrollRef.current;
-    if (container) {
-      const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
-      if (isNearBottom) endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const c = scrollRef.current;
+    if (c && c.scrollHeight - c.scrollTop - c.clientHeight < 200) {
+      endRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [activeConv?.messages]);
 
-  // Listen for agent replies
+  // Setup streaming listeners
   useEffect(() => {
     if (!window.electronAPI) return;
 
-    const handler = (reply: string) => {
+    // Stream start: create a new empty assistant message
+    window.electronAPI.onChatStreamStart(() => {
+      const id = newId();
+      streamingMsgId.current = id;
+      setConversations(prev => prev.map(conv => {
+        if (conv.id !== activeConvId) return conv;
+        return { ...conv, messages: [...conv.messages, { id, role: 'assistant', content: '', timestamp: Date.now() }] };
+      }));
+    });
+
+    // Stream token: append to the streaming message
+    window.electronAPI.onChatStreamToken((token: string) => {
+      const sid = streamingMsgId.current;
+      if (!sid) return;
+      setConversations(prev => prev.map(conv => {
+        if (conv.id !== activeConvId) return conv;
+        return {
+          ...conv,
+          messages: conv.messages.map(m => m.id === sid ? { ...m, content: m.content + token } : m)
+        };
+      }));
+    });
+
+    // Stream end
+    window.electronAPI.onChatStreamEnd(() => {
+      streamingMsgId.current = null;
+    });
+
+    // Non-streaming replies (tool indicators, errors)
+    window.electronAPI.onChatReply((reply: string) => {
       setConversations(prev => prev.map(conv => {
         if (conv.id !== activeConvId) return conv;
         const msgs = [...conv.messages];
-
         if (reply.startsWith('\n\n> 🔧')) {
           msgs.push({ id: newId(), role: 'tool', content: reply.trim(), timestamp: Date.now() });
-        } else {
-          const lastMsg = msgs[msgs.length - 1];
-          if (lastMsg && lastMsg.role === 'assistant' && !reply.startsWith('\n\n')) {
-            // Append to existing assistant message (streaming)
-            msgs[msgs.length - 1] = { ...lastMsg, content: lastMsg.content + reply };
-          } else {
-            msgs.push({ id: newId(), role: 'assistant', content: reply.replace(/^\n\n/, ''), timestamp: Date.now() });
-          }
+        } else if (reply.startsWith('\n\n❌') || reply.startsWith('\n\n⚠️') || reply.startsWith('\n\n⏳')) {
+          msgs.push({ id: newId(), role: 'assistant', content: reply.trim(), timestamp: Date.now() });
         }
-
-        let title = conv.title;
-        if (title === 'New Session') {
-          const firstUser = msgs.find(m => m.role === 'user');
-          if (firstUser) title = firstUser.content.slice(0, 30) + (firstUser.content.length > 30 ? '...' : '');
-        }
-
-        return { ...conv, messages: msgs, title };
+        return { ...conv, messages: msgs };
       }));
-      setIsLoading(false);
-    };
+    });
 
-    window.electronAPI.onChatReply(handler);
-    // Note: ipcRenderer.on doesn't return unsubscribe, so we don't clean up here
-    // This is a known limitation; in production we'd use removeListener
+    // Agent status
+    window.electronAPI.onChatStatus((status: string) => {
+      setAgentStatus(status);
+    });
   }, [activeConvId]);
+
+  // Auto-title
+  useEffect(() => {
+    if (activeConv.title === 'New Session') {
+      const firstUser = activeConv.messages.find(m => m.role === 'user');
+      if (firstUser) {
+        setConversations(prev => prev.map(c =>
+          c.id === activeConvId ? { ...c, title: firstUser.content.slice(0, 30) + (firstUser.content.length > 30 ? '...' : '') } : c
+        ));
+      }
+    }
+  }, [activeConv.messages]);
 
   const handleSubmit = useCallback(() => {
     if (!input.trim() || isLoading) return;
+    let msg = input.trim();
 
-    let userMessage = input.trim();
-
-    // Context injection: if the user has a file open, auto-attach it
-    if (currentFileContext && currentFileContext.content) {
-      const ctx = currentFileContext;
-      const snippet = ctx.content.length > 3000 ? ctx.content.slice(0, 3000) + '\n... (truncated)' : ctx.content;
-      userMessage = `[CONTEXT: Currently editing ${ctx.path}]\n\`\`\`\n${snippet}\n\`\`\`\n\n${userMessage}`;
+    // Context injection
+    if (currentFileContext?.content) {
+      const snippet = currentFileContext.content.length > 3000
+        ? currentFileContext.content.slice(0, 3000) + '\n...(truncated)'
+        : currentFileContext.content;
+      msg = `[CONTEXT: ${currentFileContext.path}]\n\`\`\`\n${snippet}\n\`\`\`\n\n${msg}`;
     }
 
     setConversations(prev => prev.map(conv => {
       if (conv.id !== activeConvId) return conv;
-      return {
-        ...conv,
-        messages: [
-          ...conv.messages,
-          { id: newId(), role: 'user', content: input.trim(), timestamp: Date.now() } // Show original (not injected context) in UI
-        ]
-      };
+      return { ...conv, messages: [...conv.messages, { id: newId(), role: 'user', content: input.trim(), timestamp: Date.now() }] };
     }));
     setInput('');
-    setIsLoading(true);
-
-    if (window.electronAPI) {
-      window.electronAPI.sendChatMessage(userMessage); // Send the context-enriched version to agent
-    }
+    if (window.electronAPI) window.electronAPI.sendChatMessage(msg);
   }, [input, isLoading, activeConvId, currentFileContext]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -124,8 +139,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
 
   const handleNewConversation = () => {
     const c: Conversation = {
-      id: `conv_${Date.now()}`,
-      title: 'New Session',
+      id: `conv_${Date.now()}`, title: 'New Session',
       messages: [{ id: newId(), role: 'assistant', content: '> NEW SESSION\n> AWAITING COMMAND...', timestamp: Date.now() }],
       createdAt: Date.now()
     };
@@ -141,6 +155,12 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
     }
   }, [input]);
 
+  const getStatusLabel = () => {
+    if (agentStatus === 'thinking') return '🧠 THINKING...';
+    if (agentStatus.startsWith('tool:')) return `🔧 ${agentStatus.replace('tool:', '')}`;
+    return null;
+  };
+
   return (
     <div className="chat-panel">
       <div className="chat-header">
@@ -149,10 +169,9 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
         </span>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           {currentFileContext && (
-            <span style={{ fontSize: '10px', color: 'var(--cyan)', opacity: 0.7 }}>
-              CTX: {currentFileContext.path.split('/').pop()}
-            </span>
+            <span className="ctx-indicator">CTX: {currentFileContext.path.split('/').pop()}</span>
           )}
+          {getStatusLabel() && <span className="agent-status-badge">{getStatusLabel()}</span>}
           <button className="chat-new-btn" onClick={handleNewConversation} title="New Session">+</button>
         </div>
       </div>
@@ -180,9 +199,11 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
               )}
             </div>
           ))}
-          {isLoading && <div className="chat-message assistant loader">
-            <span className="loading-bar">▓▓▓▓▓▓▓▓░░░░ PROCESSING...</span>
-          </div>}
+          {isLoading && !streamingMsgId.current && (
+            <div className="chat-message assistant loader">
+              <span className="loading-bar">▓▓▓▓▓▓▓▓░░░░ {getStatusLabel() || 'PROCESSING...'}</span>
+            </div>
+          )}
           <div ref={endRef} />
         </div>
       )}
@@ -192,8 +213,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
           <textarea ref={textareaRef} className="chat-input" placeholder="ENTER COMMAND OR QUERY..."
             value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown}
             disabled={isLoading} spellCheck="false" />
-          <button className="chat-submit-btn" onClick={handleSubmit}
-            disabled={!input.trim() || isLoading}>EXEC</button>
+          <button className="chat-submit-btn" onClick={handleSubmit} disabled={!input.trim() || isLoading}>EXEC</button>
         </div>
       </div>
     </div>

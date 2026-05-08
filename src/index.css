@@ -785,3 +785,18 @@ body {
 }
 
 .diff-btn:hover { opacity: 0.85; }
+
+/* ===== STREAMING INDICATORS ===== */
+.ctx-indicator {
+  font-size: 10px;
+  color: var(--cyan);
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
+.agent-status-badge {
+  font-size: 10px;
+  color: var(--orange);
+  animation: blink 0.8s infinite;
+  white-space: nowrap;
+}
