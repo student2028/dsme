@@ -1025,7 +1025,6 @@ body {
   font-family: 'JetBrains Mono', monospace;
 }
 
-.loading-bar { animation: pulse-glow 1.5s ease-in-out infinite; }
 
 @keyframes pulse-glow {
   0%, 100% { opacity: 1; }

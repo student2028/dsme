@@ -16,10 +16,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('chat-stream-end');
     ipcRenderer.on('chat-stream-end', () => callback());
   },
-  onChatStatus: (callback: (status: string) => void) => {
-    ipcRenderer.removeAllListeners('chat-status');
-    ipcRenderer.on('chat-status', (_e, v) => callback(v));
-  },
+  onChatStatus: (() => {
+    // Multi-subscriber pattern: single IPC listener, multiple callbacks
+    const subs = new Set<(status: string) => void>();
+    let listening = false;
+    return (callback: (status: string) => void) => {
+      subs.add(callback);
+      if (!listening) {
+        listening = true;
+        ipcRenderer.on('chat-status', (_e, v) => subs.forEach(cb => cb(v)));
+      }
+    };
+  })(),
 
   // File System
   getFileTree: (dir?: string) => ipcRenderer.invoke('get-file-tree', dir),
