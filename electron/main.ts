@@ -111,22 +111,57 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+// Window state persistence
+const WIN_STATE_PATH = join(app.getPath('userData'), 'window-state.json');
+
+interface WindowState { x?: number; y?: number; width: number; height: number; maximized?: boolean; }
+
+async function loadWindowState(): Promise<WindowState> {
+  try { return JSON.parse(await fs.readFile(WIN_STATE_PATH, 'utf8')); }
+  catch { return { width: 1500, height: 950 }; }
+}
+
+function saveWindowState(state: WindowState) {
+  fs.writeFile(WIN_STATE_PATH, JSON.stringify(state), 'utf8').catch(() => {});
+}
+
 // Window
-function createWindow() {
+async function createWindow() {
+  const state = await loadWindowState();
   win = new BrowserWindow({
-    width: 1500, height: 950, minWidth: 900, minHeight: 600,
+    ...state.x !== undefined && { x: state.x, y: state.y },
+    width: state.width, height: state.height,
+    minWidth: 900, minHeight: 600,
     titleBarStyle: 'hiddenInset', backgroundColor: '#000000',
     title: 'DSME — DeepSeek Matrix Engine',
     webPreferences: {
       preload: join(__dirname, '../dist-electron/preload.js'),
       nodeIntegration: true, contextIsolation: true,
     },
-  })
+  });
+
+  if (state.maximized) win.maximize();
+
+  // Save window state on move/resize (debounced)
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  const persistState = () => {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      if (!win || win.isDestroyed()) return;
+      const maximized = win.isMaximized();
+      const bounds = maximized ? win.getNormalBounds() : win.getBounds();
+      saveWindowState({ ...bounds, maximized });
+    }, 500);
+  };
+  win.on('resize', persistState);
+  win.on('move', persistState);
+  win.on('maximize', persistState);
+  win.on('unmaximize', persistState);
 
   if (process.env.VITE_DEV_SERVER_URL) {
-    win.loadURL(process.env.VITE_DEV_SERVER_URL)
+    win.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    win.loadFile(join(__dirname, '../dist/index.html'))
+    win.loadFile(join(__dirname, '../dist/index.html'));
   }
 
   buildMenu();
