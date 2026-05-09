@@ -151,14 +151,21 @@ async function initAgent() {
 }
 
 function startPty() {
-  if (ptyProcess) ptyProcess.kill();
+  if (ptyProcess) { ptyProcess.kill(); ptyProcess = null; }
   const shell = os.platform() === 'win32' ? 'powershell.exe' : 'zsh';
   ptyProcess = cp.spawn(shell, [], { env: process.env, cwd: currentWorkspacePath });
   ptyProcess.stdout.on('data', (d) => win?.webContents.send('terminal-output', d.toString()));
   ptyProcess.stderr.on('data', (d) => win?.webContents.send('terminal-output', d.toString()));
+  ptyProcess.on('error', (err) => console.error('[PTY] Process error:', err.message));
+  ptyProcess.on('close', (code) => { console.log(`[PTY] Exited with code ${code}`); ptyProcess = null; });
 }
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('before-quit', () => {
+  if (ptyProcess) { ptyProcess.kill(); ptyProcess = null; }
+  if (agent) { agent.destroy(); agent = null; }
+  cdpProxy.close();
+});
 app.whenReady().then(() => {
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
@@ -244,11 +251,15 @@ ipcMain.handle('get-git-status', async () => {
 });
 
 ipcMain.handle('git-commit', async (_, msg: string) => {
-  await execAsync('git add -A', { cwd: currentWorkspacePath });
-  // Sanitize commit message to prevent shell injection
-  const safeMsg = msg.replace(/[`$\\!]/g, '').replace(/"/g, '\\"');
-  const { stdout } = await execAsync(`git commit -m "${safeMsg}"`, { cwd: currentWorkspacePath });
-  return stdout;
+  try {
+    await execAsync('git add -A', { cwd: currentWorkspacePath });
+    // Sanitize commit message to prevent shell injection
+    const safeMsg = msg.replace(/[`$\\!]/g, '').replace(/"/g, '\\"');
+    const { stdout } = await execAsync(`git commit -m "${safeMsg}"`, { cwd: currentWorkspacePath });
+    return stdout;
+  } catch (e) {
+    return `Error: ${e instanceof Error ? e.message : 'commit failed'}`;
+  }
 });
 
 ipcMain.handle('open-workspace', async () => {
@@ -262,7 +273,10 @@ ipcMain.handle('open-workspace', async () => {
 });
 
 ipcMain.handle('read-file', (_, fp) => fs.readFile(fp, 'utf8'));
-ipcMain.handle('write-file', async (_, fp, content) => { await fs.writeFile(fp, content, 'utf8'); return true; });
+ipcMain.handle('write-file', async (_, fp, content) => {
+  try { await fs.writeFile(fp, content, 'utf8'); return true; }
+  catch { return false; }
+});
 
 // File search
 let fileCache: { name: string; path: string }[] = [];
@@ -313,5 +327,5 @@ ipcMain.handle('search-codebase', async (_, query: string) => {
     const cmd = `grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude-dir=dist-electron "${safeQuery}" .`;
     const { stdout } = await execAsync(cmd, { cwd: currentWorkspacePath, maxBuffer: 2 * 1024 * 1024 });
     return stdout || '';
-  } catch (e: any) { return e.stdout || ''; }
+  } catch (e) { return (e instanceof Error && 'stdout' in e) ? (e as { stdout: string }).stdout : ''; }
 });

@@ -28,7 +28,7 @@ export interface AgentCallbacks {
   onError: (error: string) => void;
   onTerminalOutput: (data: string) => void;
   onFileChanged: (filepath: string) => void;
-  onDiffPreview: (change: any) => void;
+  onDiffPreview: (change: { id: string; filepath: string; filename: string; oldContent: string; newContent: string }) => void;
 }
 
 // ── Agent interface ─────────────────────────────────────────────────
@@ -65,7 +65,7 @@ export interface ToolResult {
   content: string;
 }
 
-export type ToolExecutor = (args: any, cwd: string, callbacks: AgentCallbacks) => Promise<string>;
+export type ToolExecutor = (args: Record<string, unknown>, cwd: string, callbacks: AgentCallbacks) => Promise<string>;
 
 export interface ToolDefinition {
   name: string;
