@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { showToast } from './Toast';
 import { marked } from 'marked';
 import hljs from 'highlight.js/lib/core';
@@ -84,6 +84,12 @@ function renderMarkdown(content: string): string {
   catch { return content; }
 }
 
+// Memoized markdown renderer — prevents re-parsing unchanged messages during streaming
+const MemoizedMarkdown = React.memo(({ content, isStreaming }: { content: string; isStreaming: boolean }) => {
+  const html = useMemo(() => renderMarkdown(content), [content]);
+  return <div className={`md-content${isStreaming ? ' streaming' : ''}`} dangerouslySetInnerHTML={{ __html: html }} />;
+}, (prev, next) => prev.content === next.content && prev.isStreaming === next.isStreaming);
+
 function formatTime(ts: number): string {
   const diff = Math.floor((Date.now() - ts) / 1000);
   if (diff < 10) return 'just now';
@@ -126,7 +132,7 @@ const newId = () => `msg_${Date.now()}_${msgId++}`;
 export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   const [conversations, setConversations] = useState<Conversation[]>([{
     id: 'conv_0', title: 'New Session',
-    messages: [{ id: newId(), role: 'assistant', content: 'New session started. How can I help you?', timestamp: Date.now() }],
+    messages: [{ id: newId(), role: 'assistant' as const, content: 'New session started. How can I help you?', timestamp: Date.now() }],
     createdAt: Date.now()
   }]);
   const [activeConvId, setActiveConvId] = useState('conv_0');
@@ -195,7 +201,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
       streamingMsgId.current = mid;
       setConversations(prev => prev.map(conv => {
         if (conv.id !== activeConvIdRef.current) return conv;
-        return { ...conv, messages: [...conv.messages, { id: mid, role: 'assistant', content: '', timestamp: Date.now() }] };
+        return { ...conv, messages: [...conv.messages, { id: mid, role: 'assistant' as const, content: '', timestamp: Date.now() }] };
       }));
     });
     window.electronAPI.onChatStreamToken((token: string) => {
@@ -252,7 +258,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
 
     setConversations(prev => prev.map(conv => {
       if (conv.id !== activeConvId) return conv;
-      const updated = { ...conv, messages: [...conv.messages, { id: newId(), role: 'user', content: userDisplay, timestamp: Date.now(), attachments }] };
+      const updated = { ...conv, messages: [...conv.messages, { id: newId(), role: 'user' as const, content: userDisplay, timestamp: Date.now(), attachments }] };
       // Auto-title from first user message
       if (conv.title === 'New Session' || conv.messages.filter(m => m.role === 'user').length === 0) {
         updated.title = userDisplay.slice(0, 30) + (userDisplay.length > 30 ? '...' : '');
@@ -306,7 +312,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   const handleNewConversation = () => {
     const c: Conversation = {
       id: `conv_${Date.now()}`, title: 'New Session',
-      messages: [{ id: newId(), role: 'assistant', content: 'Hi! How can I help you today? \n\nI can **search the web**, **read/write files**, **run commands**, and help with coding tasks.', timestamp: Date.now() }],
+      messages: [{ id: newId(), role: 'assistant' as const, content: 'Hi! How can I help you today? \n\nI can **search the web**, **read/write files**, **run commands**, and help with coding tasks.', timestamp: Date.now() }],
       createdAt: Date.now()
     };
     setConversations(prev => [...prev, c]);
@@ -585,7 +591,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
                     </div>
                   </div>
                   {msg.role === 'assistant' ? (
-                    <div className={`md-content${streamingMsgId.current === msg.id ? ' streaming' : ''}`} dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+                    <MemoizedMarkdown content={msg.content} isStreaming={streamingMsgId.current === msg.id} />
                   ) : (
                     <div>
                       <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
