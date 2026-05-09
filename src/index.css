@@ -1253,10 +1253,6 @@ body {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.4; transform: scale(0.7); }
 }
-@keyframes statusFadeIn {
-  from { opacity: 0; transform: translateY(2px); }
-  to { opacity: 1; transform: translateY(0); }
-}
 
 /* ===== COMMAND PALETTE ===== */
 .command-palette-overlay {
@@ -1834,25 +1830,7 @@ body {
   pointer-events: none;
 }
 
-.toast {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-color);
-  font-size: 13px;
-  animation: toastIn 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-  pointer-events: auto;
-  box-shadow: var(--shadow-lg);
-  border-radius: var(--radius-md);
-  backdrop-filter: blur(16px);
-  position: relative;
-  overflow: hidden;
-  min-width: 240px;
-  max-width: 400px;
-}
-
+/* Toast progress bar — applied by the unified toast system below */
 .toast::after {
   content: '';
   position: absolute;
@@ -1863,25 +1841,9 @@ body {
   animation: toastProgress 3s linear forwards;
 }
 
-.toast-success { border-color: rgba(74, 222, 128, 0.3); }
-.toast-success .toast-icon { color: var(--green); }
 .toast-success::after { background: var(--green); }
-
-.toast-error { border-color: rgba(240, 96, 96, 0.3); }
-.toast-error .toast-icon { color: var(--red); }
 .toast-error::after { background: var(--red); }
-
-.toast-info { border-color: rgba(86, 212, 230, 0.3); }
-.toast-info .toast-icon { color: var(--cyan); }
 .toast-info::after { background: var(--cyan); }
-
-.toast-icon { font-weight: 600; font-size: 14px; flex-shrink: 0; }
-.toast-message { color: var(--text-primary); flex: 1; }
-
-@keyframes toastIn {
-  from { opacity: 0; transform: translateX(30px) scale(0.95); }
-  to { opacity: 1; transform: translateX(0) scale(1); }
-}
 
 @keyframes toastProgress {
   from { width: 100%; }
@@ -1947,14 +1909,61 @@ body {
   align-items: center;
   justify-content: center;
   padding: 40px;
-  gap: 14px;
   height: 100%;
   background: var(--bg-primary);
 }
 
+.error-boundary-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 32px 40px;
+  max-width: 480px;
+  box-shadow: var(--shadow-lg);
+}
+
 .error-boundary-icon { font-size: 36px; }
-.error-boundary-title { font-size: 15px; font-weight: 600; color: var(--red); }
-.error-boundary-msg { font-size: 13px; color: var(--text-secondary); max-width: 400px; text-align: center; word-break: break-word; line-height: 1.5; }
+.error-boundary-title { font-size: 16px; font-weight: 600; color: var(--red); }
+.error-boundary-msg { font-size: 13px; color: var(--text-secondary); text-align: center; line-height: 1.6; }
+
+.error-boundary-detail {
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--red);
+  background: rgba(240, 96, 96, 0.08);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.error-boundary-stack {
+  width: 100%;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.error-boundary-stack summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 4px 0;
+}
+.error-boundary-stack pre {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  max-height: 200px;
+  overflow: auto;
+  background: var(--bg-tertiary);
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  margin-top: 6px;
+}
 
 .error-boundary-btn {
   padding: 8px 24px;
@@ -1967,6 +1976,7 @@ body {
   cursor: pointer;
   border-radius: var(--radius-sm);
   transition: all var(--transition);
+  margin-top: 4px;
 }
 
 .error-boundary-btn:hover {
@@ -2688,6 +2698,8 @@ textarea:focus-visible {
   animation: toast-in 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   max-width: 340px;
   backdrop-filter: blur(12px);
+  position: relative;
+  overflow: hidden;
 }
 .toast.toast-exit { animation: toast-out 0.25s ease forwards; }
 .toast-icon { font-size: 14px; flex-shrink: 0; }
