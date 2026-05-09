@@ -151,17 +151,20 @@ export class VercelAgent implements IAgent {
   private window!: BrowserWindow;
   private cwd!: string;
   private model!: string;
+  private apiKey = '';
   private provider!: ReturnType<typeof createOpenAI>;
   private messages: Array<{ role: string; content: string }> = [];
   private abortController: AbortController | null = null;
   private pendingChanges = new Map<string, { filepath: string; newContent: string; resolve: (v: string) => void }>();
   private changeIdCounter = 0;
+  private retryCount = 0;
   private busy = false;
 
   init(window: BrowserWindow, config: AgentConfig): void {
     this.window = window;
     this.cwd = config.cwd;
     this.model = config.model;
+    this.apiKey = config.apiKey || '';
 
     // Create OpenAI-compatible provider via Vercel AI SDK
     this.provider = createOpenAI({
@@ -181,6 +184,14 @@ export class VercelAgent implements IAgent {
     if (this.busy) {
       this.abort();
       await new Promise(r => setTimeout(r, 500));
+    }
+    // Guard: API key must be configured
+    if (!this.apiKey) {
+      this.send('chat-stream-start', '');
+      this.send('chat-stream-token', '⚠️ **API Key 未配置**\n\n请在 Settings (⌘,) 中配置你的 API Key，然后重试。\n\n支持的服务商：SiliconFlow、OpenAI、DeepSeek 等 OpenAI-compatible 接口。');
+      this.send('chat-stream-end', '');
+      this.send('chat-status', 'idle');
+      return;
     }
     this.busy = true;
     this.messages.push({ role: 'user', content });
@@ -414,19 +425,41 @@ export class VercelAgent implements IAgent {
 
       // Context window management: sliding window + content truncation
       this.pruneHistory();
+      this.retryCount = 0; // Reset retry budget on success
 
     } catch (err: any) {
       if (err.name === 'AbortError') return;
       const msg = err?.message || String(err);
       console.error('[VercelAgent] ERROR:', msg);
 
+      // Auth errors → guide user to Settings
+      if (msg.includes('401') || msg.includes('Unauthorized') || msg.includes('invalid_api_key')) {
+        this.send('chat-stream-token', '\n\n⚠️ **认证失败** — API Key 无效或已过期。\n\n请在 Settings (⌘,) 中更新你的 API Key。');
+        return;
+      }
+
+      // Rate limit → retry with cap
       if (msg.includes('rate_limit') || msg.includes('429')) {
-        this.send('chat-stream-token', '\n\n*Rate limited. Retrying in 5s...*');
-        await new Promise(r => setTimeout(r, 5000));
+        this.retryCount = (this.retryCount || 0) + 1;
+        if (this.retryCount > 3) {
+          this.retryCount = 0;
+          this.send('chat-stream-token', '\n\n⚠️ **请求频率超限**，已重试 3 次仍失败。请稍后再试。');
+          return;
+        }
+        const delay = this.retryCount * 5000;
+        this.send('chat-stream-token', `\n\n*Rate limited. Retrying in ${delay / 1000}s... (${this.retryCount}/3)*`);
+        await new Promise(r => setTimeout(r, delay));
         return this.runStream();
       }
 
-      this.send('chat-stream-token', `\n\nError: ${msg}`);
+      // Network errors → friendly message
+      if (msg.includes('ECONNRESET') || msg.includes('ETIMEDOUT') || msg.includes('fetch failed') || msg.includes('network')) {
+        this.send('chat-stream-token', '\n\n⚠️ **网络连接异常** — 请检查网络连接和代理设置。');
+        return;
+      }
+
+      // Generic error
+      this.send('chat-stream-token', `\n\n⚠️ Error: ${msg.slice(0, 500)}`);
     }
   }
 }

@@ -1925,64 +1925,6 @@ body {
   color: #fff;
 }
 
-/* ===== SHORTCUT HELP ===== */
-.shortcut-help-panel {
-  width: 480px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-color);
-  padding: 28px;
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
-}
-
-.shortcut-help-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-primary);
-  text-align: center;
-  margin-bottom: 24px;
-}
-
-.shortcut-help-cat { margin-bottom: 18px; }
-
-.shortcut-help-cat-name {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-  letter-spacing: 1.5px;
-  margin-bottom: 8px;
-  border-bottom: 1px solid var(--border-color);
-  padding-bottom: 6px;
-  text-transform: uppercase;
-}
-
-.shortcut-help-row {
-  display: flex;
-  justify-content: space-between;
-  padding: 5px 0;
-  font-size: 13px;
-}
-
-.shortcut-help-key {
-  color: var(--accent-color);
-  font-weight: 600;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
-  background: var(--accent-subtle);
-  padding: 1px 8px;
-  border-radius: 4px;
-}
-.shortcut-help-desc { color: var(--text-secondary); }
-
-.shortcut-help-footer {
-  text-align: center;
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-top: 20px;
-  border-top: 1px solid var(--border-color);
-  padding-top: 14px;
-}
-
 /* ===== ACTIVITY BAR ===== */
 .activity-bar {
   width: 52px;
@@ -2797,41 +2739,3 @@ textarea:focus-visible {
   opacity: 1 !important;
 }
 .chat-msg-copy.copied svg { stroke: var(--green); }
-
-/* ===== WELCOME SCREEN ===== */
-.chat-welcome {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-  gap: 16px;
-  opacity: 0.7;
-  text-align: center;
-  padding: 40px 20px;
-}
-.chat-welcome-icon {
-  font-size: 48px;
-  margin-bottom: 8px;
-}
-.chat-welcome-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-.chat-welcome-sub {
-  font-size: 12px;
-  color: var(--text-muted);
-  max-width: 280px;
-  line-height: 1.6;
-}
-.chat-welcome-shortcuts {
-  display: flex;
-  gap: 12px;
-  margin-top: 8px;
-}
-.chat-welcome-shortcuts .shortcut-key {
-  font-size: 10px;
-  padding: 2px 6px;
-}
-
