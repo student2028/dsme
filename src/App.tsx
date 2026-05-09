@@ -82,6 +82,9 @@ function App() {
         case 'shortcuts': setHelpOpen(p => !p); break;
         case 'toggle-sidebar': setSidePanel(p => p ? '' : 'explorer'); break;
         case 'save': handleSave(); break;
+        case 'find': window.dispatchEvent(new CustomEvent('dsme-find')); break;
+        case 'new-conversation': window.dispatchEvent(new CustomEvent('dsme-new-conversation')); break;
+        case 'focus-chat': document.querySelector<HTMLTextAreaElement>('.chat-input')?.focus(); break;
       }
     });
   }, [handleSave]);

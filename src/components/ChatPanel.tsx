@@ -236,6 +236,17 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
     window.electronAPI.onChatStatus((status: string) => setAgentStatus(status));
   }, []);
 
+  // Menu shortcut listeners (⌘F, ⌘N)
+  useEffect(() => {
+    const handleFind = () => setShowSearch(s => !s);
+    const handleNewConv = () => handleNewConversation();
+    window.addEventListener('dsme-find', handleFind);
+    window.addEventListener('dsme-new-conversation', handleNewConv);
+    return () => {
+      window.removeEventListener('dsme-find', handleFind);
+      window.removeEventListener('dsme-new-conversation', handleNewConv);
+    };
+  }, []);
   // Auto-title
   useEffect(() => {
     if (activeConv.title === 'New Session') {
@@ -597,6 +608,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
             type="text"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Escape') { setShowSearch(false); setSearchQuery(''); } }}
             placeholder="搜索消息..."
             autoFocus
           />
