@@ -678,6 +678,17 @@ body {
 
 .chat-message:hover .chat-msg-time { opacity: 1; }
 
+.chat-msg-duration {
+  font-size: 10px;
+  color: var(--accent-color);
+  font-weight: 500;
+  font-family: 'JetBrains Mono', monospace;
+  opacity: 0.7;
+  background: var(--accent-subtle);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
 /* ── Conversation delete ── */
 .chat-history-delete {
   color: var(--text-muted);

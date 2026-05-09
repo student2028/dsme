@@ -105,6 +105,7 @@ type Message = {
   content: string;
   timestamp: number;
   attachments?: Attachment[];
+  duration?: string;
 };
 
 interface Attachment {
@@ -148,6 +149,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streamingMsgId = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const streamStartTime = useRef<number>(0);
 
   const activeConv = conversations.find(c => c.id === activeConvId) || conversations[0];
   const isLoading = agentStatus !== 'idle';
@@ -201,6 +203,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
     window.electronAPI.onChatStreamStart(() => {
       const mid = newId();
       streamingMsgId.current = mid;
+      streamStartTime.current = Date.now();
       setConversations(prev => prev.map(conv => {
         if (conv.id !== activeConvIdRef.current) return conv;
         return { ...conv, messages: [...conv.messages, { id: mid, role: 'assistant' as const, content: '', timestamp: Date.now() }] };
@@ -214,7 +217,22 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
         }));
       }
     });
-    window.electronAPI.onChatStreamEnd(() => { streamingMsgId.current = null; setAgentStatus('idle'); });
+    window.electronAPI.onChatStreamEnd(() => {
+      const duration = streamStartTime.current ? ((Date.now() - streamStartTime.current) / 1000).toFixed(1) : null;
+      const finishedMsgId = streamingMsgId.current;
+      streamingMsgId.current = null;
+      streamStartTime.current = 0;
+      setAgentStatus('idle');
+      // Store response duration in the assistant message
+      if (finishedMsgId && duration) {
+        setConversations(prev => prev.map(conv => {
+          if (conv.id !== activeConvIdRef.current) return conv;
+          return { ...conv, messages: conv.messages.map(m =>
+            m.id === finishedMsgId ? { ...m, duration: `${duration}s` } : m
+          ) };
+        }));
+      }
+    });
     window.electronAPI.onChatStatus((status: string) => setAgentStatus(status));
   }, []);
 
@@ -656,6 +674,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
                         </button>
                       )}
                       <span className="chat-msg-time">{formatTime(msg.timestamp)}</span>
+                      {msg.duration && <span className="chat-msg-duration">⚡ {msg.duration}</span>}
                     </div>
                   </div>
                   {msg.role === 'assistant' ? (
