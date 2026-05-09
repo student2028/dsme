@@ -17,6 +17,7 @@ import { streamText, tool, stepCountIs } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { z } from 'zod';
 import type { IAgent, AgentConfig } from './base';
+import { RAGEngine } from './rag';
 
 const execAsync = promisify(exec);
 
@@ -185,6 +186,7 @@ export class VercelAgent implements IAgent {
   private changeIdCounter = 0;
   private retryCount = 0;
   private busy = false;
+  private rag = new RAGEngine();
 
   init(window: BrowserWindow, config: AgentConfig): void {
     this.window = window;
@@ -200,6 +202,11 @@ export class VercelAgent implements IAgent {
     });
 
     console.log(`[VercelAgent] Initialized with Vercel AI SDK, model=${this.model}, baseUrl=${config.baseUrl}`);
+
+    // Index project files for RAG (non-blocking)
+    this.rag.index(config.cwd).then(count => {
+      console.log(`[VercelAgent] RAG indexed ${count} files`);
+    }).catch(() => {});
   }
 
   private send(channel: string, ...args: any[]) {
@@ -428,7 +435,10 @@ export class VercelAgent implements IAgent {
     try {
       const result = streamText({
         model: this.provider.chat(this.model),
-        system: getSystemPrompt(this.cwd),
+        system: getSystemPrompt(this.cwd) + this.rag.buildContext(
+          // Use last user message as RAG query
+          (this.messages.filter(m => m.role === 'user').pop()?.content as string) || ''
+        ),
         messages: this.messages as any,
         tools: this.getTools(),
         stopWhen: stepCountIs(25),

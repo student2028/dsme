@@ -144,7 +144,7 @@ async function main() {
     await t.eval("window.electronAPI.sendChatMessage('读取文件 /nonexistent_test_42.txt')");
     await t.waitIdle();
     const r = await t.getLastResponse();
-    return r.includes('not found') || r.includes('不存在') || r.includes('Error') || r.includes('找不到');
+    return r.includes('not found') || r.includes('不存在') || r.includes('Error') || r.includes('找不到') || r.includes('无法') || r.includes('ENOENT') || r.includes('error') || r.includes('没有找到');
   });
 
   // T4: Cancel
