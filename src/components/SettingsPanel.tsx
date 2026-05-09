@@ -4,8 +4,8 @@ import { useTheme } from '../ThemeContext';
 export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ isOpen, onClose }) => {
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
-  const [model, setModel] = useState('deepseek-chat');
-  const [baseUrl, setBaseUrl] = useState('https://api.deepseek.com/v1');
+  const [model, setModel] = useState('deepseek-ai/DeepSeek-V4-Flash');
+  const [baseUrl, setBaseUrl] = useState('https://api.siliconflow.cn/v1');
 
   const [saved, setSaved] = useState(false);
   const { theme, toggleTheme } = useTheme();

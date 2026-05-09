@@ -24474,10 +24474,29 @@ var VercelAgent = class {
 			this.abort();
 			await new Promise((r) => setTimeout(r, 500));
 		}
+		if (!this.apiKey) {
+			this.send("chat-stream-start", "");
+			this.send("chat-stream-token", "⚠️ **API Key 未配置**\n\n请在 Settings (⌘,) 中配置你的 API Key，然后重试。");
+			this.send("chat-stream-end", "");
+			this.send("chat-status", "idle");
+			return;
+		}
 		this.busy = true;
+		const parts = [{
+			type: "text",
+			text: content
+		}];
+		for (const dataUrl of imageDataUrls) {
+			const match = dataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
+			if (match) parts.push({
+				type: "image",
+				image: match[2],
+				mimeType: match[1]
+			});
+		}
 		this.messages.push({
 			role: "user",
-			content: `${content}\n\n[Images attached: ${imageDataUrls.length}]`
+			content: parts
 		});
 		this.send("chat-stream-start", "");
 		try {

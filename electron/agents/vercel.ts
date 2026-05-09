@@ -210,8 +210,25 @@ export class VercelAgent implements IAgent {
       this.abort();
       await new Promise(r => setTimeout(r, 500));
     }
+    // Guard: API key must be configured
+    if (!this.apiKey) {
+      this.send('chat-stream-start', '');
+      this.send('chat-stream-token', '⚠️ **API Key 未配置**\n\n请在 Settings (⌘,) 中配置你的 API Key，然后重试。');
+      this.send('chat-stream-end', '');
+      this.send('chat-status', 'idle');
+      return;
+    }
     this.busy = true;
-    this.messages.push({ role: 'user', content: `${content}\n\n[Images attached: ${imageDataUrls.length}]` });
+    // Build multimodal message with text + image parts (Vercel AI SDK format)
+    const parts: any[] = [{ type: 'text', text: content }];
+    for (const dataUrl of imageDataUrls) {
+      // dataUrl format: "data:image/png;base64,iVBOR..."
+      const match = dataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
+      if (match) {
+        parts.push({ type: 'image', image: match[2], mimeType: match[1] });
+      }
+    }
+    this.messages.push({ role: 'user', content: parts } as any);
     this.send('chat-stream-start', '');
     try {
       await this.runStream();
