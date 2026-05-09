@@ -167,7 +167,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
             }
           } catch {}
         }
-      });
+      }).catch(() => {});
     }
   }, []);
 
@@ -359,7 +359,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
       setCopiedMsgId(msgId);
       showToast('Copied to clipboard', 'success');
       setTimeout(() => setCopiedMsgId(null), 1500);
-    });
+    }).catch(() => showToast('Failed to copy', 'error'));
   };
 
   // Regenerate last AI response

@@ -16,7 +16,7 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
         setApiKey(config.apiKey || '');
         setModel(config.model || 'deepseek-chat');
         setBaseUrl(config.baseUrl || 'https://api.siliconflow.cn/v1');
-      });
+      }).catch(() => {});
       setShowKey(false);
     }
   }, [isOpen]);

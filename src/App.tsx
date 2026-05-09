@@ -40,7 +40,7 @@ function App() {
   const activeTab = tabs.find(t => t.path === activePath);
 
   useEffect(() => {
-    const f = () => { if (window.electronAPI) window.electronAPI.getGitBranch().then(setGitBranch); };
+    const f = () => { if (window.electronAPI) window.electronAPI.getGitBranch().then(setGitBranch).catch(() => {}); };
     f(); const i = setInterval(f, 10000); return () => clearInterval(i);
   }, []);
 
