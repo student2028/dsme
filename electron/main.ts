@@ -2,7 +2,6 @@ import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
 import { join } from 'node:path'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import { DeepSeekAgent } from './agent'
 import { VercelAgent } from './agents/vercel'
 import type { IAgent } from './agents/base'
 import * as os from 'node:os'
@@ -29,7 +28,7 @@ cdpProxy.listen(CDP_EXTERNAL, '0.0.0.0', () => console.log(`[CDP] 0.0.0.0:${CDP_
 cdpProxy.on('error', () => {});
 
 let win: BrowserWindow | null
-let agent: (DeepSeekAgent | IAgent) | null = null
+let agent: IAgent | null = null
 let ptyProcess: cp.ChildProcessWithoutNullStreams | null = null
 // Default workspace: open DSME's own project directory
 let currentWorkspacePath = path.resolve(__dirname, '..')
@@ -43,7 +42,7 @@ const DEFAULT_CONFIG: AppConfig = {
   apiKey: process.env.DSME_API_KEY || '',
   model: 'deepseek-ai/DeepSeek-V4-Flash',
   baseUrl: 'https://api.siliconflow.cn/v1',
-  agentKernel: 'vercel',  // 'builtin' | 'vercel' — engine selector
+  agentKernel: 'vercel',
 };
 
 async function loadConfig(): Promise<AppConfig> {
@@ -141,17 +140,11 @@ async function initAgent() {
     cwd: currentWorkspacePath,
   };
 
-  if (config.agentKernel === 'vercel') {
-    console.log('[Agent] Using Vercel AI SDK kernel');
-    const va = new VercelAgent();
-    va.init(win, agentConfig);
-    va.setupDiffHandlers();
-    agent = va;
-  } else {
-    console.log('[Agent] Using built-in kernel');
-    agent = new DeepSeekAgent(win, agentConfig);
-    (agent as DeepSeekAgent).setupDiffHandlers();
-  }
+  console.log('[Agent] Initializing Vercel AI SDK kernel');
+  const va = new VercelAgent();
+  va.init(win, agentConfig);
+  va.setupDiffHandlers();
+  agent = va;
 }
 
 function startPty() {
@@ -173,30 +166,18 @@ ipcMain.on('update-title', (_, title: string) => {
   if (win) win.setTitle(title ? `${title} — DSME` : 'DSME — DeepSeek Matrix Engine');
 });
 
-// IPC — dispatch to whichever agent kernel is active
+// IPC — dispatch to agent
 ipcMain.on('chat-message', async (_, msg) => {
-  console.log('[IPC] chat-message received, agent:', agent ? 'exists' : 'null', 'hasHandleUserMessage:', agent ? ('handleUserMessage' in agent) : 'n/a');
   if (!agent) return;
-  if ('handleUserMessage' in agent) {
-    console.log('[IPC] dispatching to built-in handleUserMessage');
-    (agent as DeepSeekAgent).handleUserMessage(msg);
-  } else {
-    console.log('[IPC] dispatching to IAgent handleMessage');
-    (agent as IAgent).handleMessage(msg);
-  }
+  agent.handleMessage(msg);
 });
 ipcMain.on('chat-message-images', async (_, msg, imageDataUrls) => {
   if (!agent) return;
-  if ('handleUserMessageWithImages' in agent) (agent as any).handleUserMessageWithImages(msg, imageDataUrls);
-  else (agent as IAgent).handleMessageWithImages(msg, imageDataUrls);
+  agent.handleMessageWithImages(msg, imageDataUrls);
 });
 ipcMain.on('terminal-input', (_, data) => { if (ptyProcess) ptyProcess.stdin.write(data); });
-ipcMain.on('cancel-chat-request', () => {
-  if (agent && 'abort' in agent) (agent as IAgent).abort();
-});
-ipcMain.on('reset-conversation', () => {
-  if (agent && 'resetConversation' in agent) (agent as IAgent).resetConversation();
-});
+ipcMain.on('cancel-chat-request', () => agent?.abort());
+ipcMain.on('reset-conversation', () => agent?.resetConversation());
 
 // Reinitialize agent when kernel config changes (no full app restart needed)
 ipcMain.on('relaunch-app', async () => {

@@ -133,25 +133,6 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   const [input, setInput] = useState('');
   const [agentStatus, setAgentStatus] = useState<string>('idle');
   const [showHistory, setShowHistory] = useState(false);
-  const [currentKernel, setCurrentKernel] = useState('builtin');
-
-  // Load current kernel from config
-  useEffect(() => {
-    if (window.electronAPI) {
-      window.electronAPI.getConfig().then((config: any) => {
-        setCurrentKernel(config.agentKernel || 'builtin');
-      });
-    }
-  }, []);
-
-  const toggleKernel = async () => {
-    if (!window.electronAPI) return;
-    const next = currentKernel === 'builtin' ? 'vercel' : 'builtin';
-    const config = await window.electronAPI.getConfig();
-    await window.electronAPI.saveConfig({ ...config, agentKernel: next });
-    setCurrentKernel(next);
-    window.electronAPI.relaunchApp();
-  };
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -522,8 +503,8 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
             )}
           </span>
           {!showHistory && (
-            <span className="chat-kernel-toggle" onClick={e => { e.stopPropagation(); toggleKernel(); }} title="Click to switch agent kernel">
-              {currentKernel === 'vercel' ? '⚡ Vercel' : '🔧 Built-in'}
+            <span className="chat-kernel-toggle" title="Vercel AI SDK Engine">
+              ⚡ VERCEL
             </span>
           )}
         </div>
