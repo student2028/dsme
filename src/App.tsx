@@ -148,7 +148,9 @@ function App() {
     window.addEventListener('keydown', handler);
     const save = () => handleSave();
     window.addEventListener('editor-save', save);
-    return () => { window.removeEventListener('keydown', handler); window.removeEventListener('editor-save', save); };
+    const openSettings = () => setSettingsOpen(true);
+    window.addEventListener('open-settings', openSettings);
+    return () => { window.removeEventListener('keydown', handler); window.removeEventListener('editor-save', save); window.removeEventListener('open-settings', openSettings); };
   }, [handleSave, activePath]);
 
   const handleTerminalDrag = useCallback((e: React.MouseEvent) => {

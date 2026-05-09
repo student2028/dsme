@@ -1,113 +1,133 @@
 # DSME — DeepSeek Matrix Engine
 
-> **A world-class TUI-style AI IDE** built with Electron, React, Monaco Editor, and DeepSeek.
+> An AI-native code editor built with Electron + Vercel AI SDK
 
-```
- ██████╗  ███████╗ ███╗   ███╗ ███████╗
- ██╔══██╗ ██╔════╝ ████╗ ████║ ██╔════╝
- ██║  ██║ ███████╗ ██╔████╔██║ █████╗
- ██║  ██║ ╚════██║ ██║╚██╔╝██║ ██╔══╝
- ██████╔╝ ███████║ ██║ ╚═╝ ██║ ███████╗
- ╚═════╝  ╚══════╝ ╚═╝     ╚═╝ ╚══════╝
-```
+<p align="center">
+  <img src="public/icon.png" width="120" alt="DSME Logo" />
+</p>
 
 ## Features
 
-### 🤖 Autonomous AI Agent
-- **6 atomic tools**: `read_file`, `write_file`, `replace_in_file`, `list_directory`, `search_codebase`, `run_command`
-- **25-round iterative loop** with automatic error recovery
-- **Real-time token streaming** — watch the AI think character by character
-- **Context-aware**: automatically sends your current file to the agent
-- **Multi-conversation** with persistent history across restarts
+### 🤖 AI Agent
+- **Vercel AI SDK** engine with `streamText` + Zod tool schemas
+- 8 built-in tools: `read_file`, `write_file`, `replace_in_file`, `list_directory`, `search_codebase`, `run_command`, `web_search`, `fetch_url`
+- Real-time streaming with token-level display
+- Multi-step tool chains (up to 25 steps per request)
+- Multimodal support (text + image attachments)
+- Context window management (50-message sliding window)
 
-### 📝 Professional Editor
-- **Monaco Editor** with custom Matrix theme (`dsme-dark`)
-- Multi-tab editing with dirty state detection
-- Auto-save (2s debounce) + manual Ctrl+S
-- Breadcrumb path navigation
-- Full Monaco keybindings (Ctrl+F, Ctrl+H, Ctrl+G, etc.)
+### 📝 Code Editor
+- Monaco-based editor with 16+ language syntax highlighting
+- File tree with git status indicators
+- Tab system with dirty indicators and auto-save
+- Breadcrumb navigation with click-to-copy path
+- Quick Open (⌘P) with fuzzy file search
+- Code search across workspace (⌘⇧F)
 
-### 🖥 Integrated Terminal
-- Real zsh PTY session via `node-pty`
-- Full ANSI color rendering
-- ResizeObserver-driven auto-fit
-- 5000-line scrollback buffer
+### 💻 Integrated Terminal
+- Embedded terminal with shell access
+- Resizable panel with drag handle
+- Command output synced from AI agent tool calls
 
-### 📁 Activity Bar & Sidebar
-- **Explorer**: Recursive file tree with Git status (`[M]` / `[U]`)
-- **Search**: Global grep across workspace (Ctrl+Shift+F)
-- **Git**: View changes, commit directly from the IDE
+### 🎨 UI/UX
+- Dark/Light theme with full CSS variable system
+- Tool call inline cards with slide-in animation
+- Conversation history with persistence
+- Conversation isolation (reset on switch)
+- ErrorBoundary on all panels
+- macOS native menu + keyboard shortcuts
+- Drag-resizable panels (terminal height, chat width)
 
-### ⚡ Silicon Flow Multi-Model
-DeepSeek-V4-Flash, DeepSeek-V3.2, GLM-5, MiniMax-M2.5, Kimi-K2.5, Qwen3, PaddleOCR-VL
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    Electron Main                     │
+│  ┌─────────────────────────────────────────────┐    │
+│  │            VercelAgent (IAgent)              │    │
+│  │  • streamText() with AbortController         │    │
+│  │  • Zod-schema tools × 8                      │    │
+│  │  • pruneHistory() sliding window             │    │
+│  │  • Retry with backoff (max 3)                │    │
+│  └──────────────┬──────────────────────────────┘    │
+│                 │ IPC                                │
+│  chat-stream-{start,token,end} + chat-status        │
+│                 │                                    │
+│  ┌──────────────┴──────────────────────────────┐    │
+│  │           Preload (contextBridge)            │    │
+│  └──────────────┬──────────────────────────────┘    │
+└─────────────────┼───────────────────────────────────┘
+                  │
+┌─────────────────┼───────────────────────────────────┐
+│  ┌──────────────┴──────────────────────────────┐    │
+│  │              React Frontend                  │    │
+│  │  App.tsx → 15 components                     │    │
+│  │  • ChatPanel (streaming + markdown)          │    │
+│  │  • EditorPanel (Monaco)                      │    │
+│  │  • FileTree / GitPanel / SearchPanel          │    │
+│  │  • TerminalPanel / StatusBar                 │    │
+│  └─────────────────────────────────────────────┘    │
+│                 Renderer Process                     │
+└─────────────────────────────────────────────────────┘
+```
+
+## Security
+
+- All 8 `exec()` calls sanitized against shell injection
+- URL validation with protocol whitelist (http/https only)
+- Shell metacharacter escaping for grep, curl, git
+- API keys stored in user data directory, never in source
+
+## Quick Start
+
+```bash
+# Install dependencies
+npm install
+
+# Development (Vite HMR + Electron)
+npm run dev
+
+# Production build
+npm run build
+```
+
+## Configuration
+
+Set your API key via environment variable or Settings (⌘,):
+
+```bash
+export DSME_API_KEY="sk-your-key-here"
+```
+
+Compatible with any OpenAI-format API endpoint:
+- SiliconFlow (default)
+- DeepSeek
+- OpenAI
+- Any OpenAI-compatible provider
 
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
 |----------|--------|
-| `Ctrl+P` | Quick open file |
-| `Ctrl+S` | Save file |
-| `Ctrl+W` | Close tab |
-| `Ctrl+B` | Toggle sidebar |
-| `Ctrl+,` | Settings |
-| `Ctrl+Shift+F` | Search workspace |
-| `Ctrl+?` | Shortcut help |
-
-## Quick Start
-
-```bash
-# Clone & install
-git clone <repo-url> dsme && cd dsme
-npm install
-
-# Development
-npm run dev
-
-# Production build (macOS .dmg)
-npm run build:pkg
-```
-
-## Architecture
-
-```
-dsme/
-├── electron/           # Main process
-│   ├── main.ts         # Window, IPC, PTY, Git, Config
-│   ├── preload.ts      # contextBridge (18 APIs)
-│   └── agent.ts        # Streaming DeepSeek agent
-├── src/                # React renderer
-│   ├── App.tsx         # Layout orchestrator
-│   ├── index.css       # 1100+ lines TUI theme
-│   └── components/     # 17 components
-│       ├── ActivityBar, FileTree, GitPanel
-│       ├── EditorPanel, TerminalPanel
-│       ├── ChatPanel (streaming + persistence)
-│       ├── CommandPalette, SearchPanel
-│       ├── SettingsPanel, WelcomeScreen
-│       ├── StatusBar, Toast, DiffPreview
-│       ├── ErrorBoundary, ShortcutHelp
-│       └── ...
-└── package.json        # electron-builder config
-```
+| ⌘P | Quick Open |
+| ⌘S | Save |
+| ⌘B | Toggle Sidebar |
+| ⌘L | Focus Chat |
+| ⌘, | Settings |
+| ⇧⌘L | Toggle Theme |
+| ⇧⌘F | Search in Files |
+| ⌘? | Keyboard Shortcuts |
+| ⌘W | Close Tab |
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Desktop Shell | Electron 42 |
-| UI Framework | React 19 |
-| Code Editor | Monaco Editor |
-| Terminal | xterm.js 6 |
-| AI Engine | OpenAI SDK → Silicon Flow |
-| Build | Vite 8 + vite-plugin-electron |
-| Package | electron-builder |
+- **Runtime**: Electron 36
+- **Frontend**: React 19 + Vite 7
+- **AI Engine**: Vercel AI SDK (`ai` + `@ai-sdk/openai`)
+- **Schema**: Zod
+- **Editor**: Monaco Editor
+- **Markdown**: marked + highlight.js
 
-## Configuration
+## License
 
-Settings are stored in `~/Library/Application Support/dsme/dsme-config.json`.
-
-Default API: **Silicon Flow** (`https://api.siliconflow.cn/v1`)
-
----
-
-*Built with obsessive attention to detail. Every pixel is intentional.*
+MIT

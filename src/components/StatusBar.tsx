@@ -83,7 +83,10 @@ export const StatusBar: React.FC<Props> = ({ activePath, language, cursorPositio
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
           )}
         </span>
-        <span className={`status-item status-model ${connected ? 'connected' : 'disconnected'}`} title={connected ? `Connected: ${model}` : 'Not connected — check Settings (⌘,)'}>
+        <span className={`status-item status-model ${connected ? 'connected' : 'disconnected'}`}
+          title={connected ? `Connected: ${model}` : 'Not connected — click to open Settings'}
+          onClick={() => window.dispatchEvent(new CustomEvent('open-settings'))}
+          style={{ cursor: 'pointer' }}>
           <span className="status-dot" />
           {model || 'No model'}
         </span>
