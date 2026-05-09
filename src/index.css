@@ -433,6 +433,49 @@ body {
   transform: scale(1.05);
 }
 
+/* ── In-conversation search bar ── */
+.chat-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+}
+.chat-search-input {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  min-width: 0;
+}
+.chat-search-input::placeholder { color: var(--text-muted); }
+.chat-search-count {
+  font-size: 10px;
+  color: var(--accent-color);
+  white-space: nowrap;
+}
+.chat-search-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  transition: color 0.15s;
+}
+.chat-search-close:hover { color: var(--text-primary); }
+
+/* Search dimming for non-matching messages */
+.chat-message.search-dimmed {
+  opacity: 0.2;
+  transition: opacity 0.2s;
+}
+
 /* History toggle button (clock icon) */
 .chat-history-btn {
   background: transparent;
@@ -608,6 +651,22 @@ body {
 .chat-message:hover .chat-msg-copy { opacity: 0.6; }
 .chat-msg-copy:hover { opacity: 1 !important; color: var(--accent-color); background: var(--accent-subtle); }
 .chat-msg-copy:active { transform: scale(0.9); }
+
+.chat-msg-delete {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: all 0.15s;
+}
+.chat-message:hover .chat-msg-delete { opacity: 0.4; }
+.chat-msg-delete:hover { opacity: 1 !important; color: var(--red); background: rgba(240, 96, 96, 0.1); }
+.chat-msg-delete:active { transform: scale(0.9); }
 
 .chat-msg-time {
   font-size: 10px;

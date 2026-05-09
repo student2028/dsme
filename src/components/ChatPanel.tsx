@@ -140,6 +140,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   const [agentStatus, setAgentStatus] = useState<string>('idle');
   const [showHistory, setShowHistory] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -376,6 +377,15 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
     }));
   }, [activeConvId]);
 
+  const handleDeleteMessage = useCallback((msgId: string) => {
+    if (isLoading) return; // Don't delete while streaming
+    setConversations(prev => prev.map(conv => {
+      if (conv.id !== activeConvId) return conv;
+      return { ...conv, messages: conv.messages.filter(m => m.id !== msgId) };
+    }));
+    showToast('消息已删除');
+  }, [activeConvId, isLoading]);
+
   // Auto-resize textarea
   useEffect(() => {
     if (textareaRef.current) {
@@ -550,12 +560,33 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
           <button className="chat-export-btn" onClick={exportConversation} title="导出对话为 Markdown" aria-label="Export conversation">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           </button>
+          <button className={`chat-export-btn${searchQuery ? ' active' : ''}`} onClick={() => setSearchQuery(searchQuery ? '' : ' ')} title="搜索消息" aria-label="Search messages">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          </button>
           <button className="chat-new-btn" onClick={handleNewConversation} title="New conversation (⌘N)" aria-label="New conversation">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           </button>
         </div>
       </div>
 
+      {/* In-conversation search bar */}
+      {searchQuery !== null && searchQuery !== undefined && (
+        <div className="chat-search-bar" style={{ display: searchQuery !== '' ? 'flex' : 'none' }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input
+            className="chat-search-input"
+            type="text"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            placeholder="搜索消息..."
+            autoFocus
+          />
+          <span className="chat-search-count">
+            {searchQuery ? `${activeConv.messages.filter(m => m.content.toLowerCase().includes(searchQuery.toLowerCase())).length} 匹配` : ''}
+          </span>
+          <button className="chat-search-close" onClick={() => setSearchQuery('')}>×</button>
+        </div>
+      )}
       {showHistory ? (
         <div className="chat-history-list">
           <div className="chat-history-header">最近会话 ({Math.min(conversations.length, 10)}/{conversations.length})</div>
@@ -583,8 +614,10 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
         </div>
       ) : (
         <div className="chat-history" ref={scrollRef}>
-          {activeConv.messages.map((msg, i) => (
-            <div key={msg.id} className={`chat-message ${msg.role}`}>
+          {activeConv.messages.map((msg, i) => {
+            const isSearchMatch = !searchQuery || msg.content.toLowerCase().includes(searchQuery.toLowerCase());
+            return (
+            <div key={msg.id} className={`chat-message ${msg.role}${searchQuery && !isSearchMatch ? ' search-dimmed' : ''}`}>
               {msg.role === 'tool' ? (
                 <div className="tool-call-indicator">{msg.content}</div>
               ) : (
@@ -616,6 +649,11 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                         </button>
                       )}
+                      {!isLoading && i > 0 && (
+                        <button className="chat-msg-delete" onClick={() => handleDeleteMessage(msg.id)} title="删除消息">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                        </button>
+                      )}
                       <span className="chat-msg-time">{formatTime(msg.timestamp)}</span>
                     </div>
                   </div>
@@ -632,7 +670,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
                 </>
               )}
             </div>
-          ))}
+          );})}
           {isLoading && !streamingMsgId.current && (
             <div className="chat-message assistant loader">
               <div className="chat-loading-content">
