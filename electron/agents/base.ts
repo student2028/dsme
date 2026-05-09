@@ -50,6 +50,9 @@ export interface IAgent {
   /** Abort the current request */
   abort(): void;
 
+  /** Clean up resources (file watchers, timers) before disposal */
+  destroy(): void;
+
   /** Setup IPC diff handlers (accept/reject) */
   setupDiffHandlers(): void;
 }

@@ -17,7 +17,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('chat-stream-end', () => callback());
   },
   onChatStatus: (callback: (status: string) => void) => {
-    // Don't removeAll — allow multiple subscribers (ChatPanel + StatusBar)
+    ipcRenderer.removeAllListeners('chat-status');
     ipcRenderer.on('chat-status', (_e, v) => callback(v));
   },
 
@@ -36,19 +36,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Terminal
   onTerminalOutput: (callback: (data: string) => void) => {
+    ipcRenderer.removeAllListeners('terminal-output');
     ipcRenderer.on('terminal-output', (_e, d) => callback(d));
   },
   sendTerminalInput: (data: string) => ipcRenderer.send('terminal-input', data),
   updateTitle: (title: string) => ipcRenderer.send('update-title', title),
   onMenuAction: (callback: (action: string) => void) => {
+    ipcRenderer.removeAllListeners('menu-action');
     ipcRenderer.on('menu-action', (_e, action) => callback(action));
   },
 
   // File watcher
   onFileChanged: (callback: (filepath: string) => void) => {
+    ipcRenderer.removeAllListeners('file-changed');
     ipcRenderer.on('file-changed', (_e, fp) => callback(fp));
   },
   onDiffPreview: (callback: (change: any) => void) => {
+    ipcRenderer.removeAllListeners('diff-preview');
     ipcRenderer.on('diff-preview', (_e, change) => callback(change));
   },
   acceptDiff: (changeId: string) => ipcRenderer.send('diff-accept', changeId),

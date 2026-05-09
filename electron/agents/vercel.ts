@@ -311,6 +311,20 @@ export class VercelAgent implements IAgent {
   resetConversation(): void { this.messages = []; this.abort(); this.busy = false; }
   abort(): void { this.abortController?.abort(); this.abortController = null; }
 
+  /** Clean up resources (file watcher, timers) before disposal */
+  destroy(): void {
+    this.abort();
+    if (this.fsWatcher) {
+      this.fsWatcher.close();
+      this.fsWatcher = null;
+      console.log('[VercelAgent] File watcher closed');
+    }
+    if (this.reindexTimer) {
+      clearTimeout(this.reindexTimer);
+      this.reindexTimer = null;
+    }
+  }
+
   /** Keep message history within context window limits */
   private pruneHistory(): void {
     const MAX_MESSAGES = 50;

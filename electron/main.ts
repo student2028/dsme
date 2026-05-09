@@ -183,6 +183,7 @@ ipcMain.on('relaunch-app', async () => {
   console.log('[Main] Reinitializing agent...');
   ipcMain.removeAllListeners('diff-accept');
   ipcMain.removeAllListeners('diff-reject');
+  agent?.destroy();
   agent = null;
   await initAgent();
   win?.webContents.send('chat-stream-start', '');
