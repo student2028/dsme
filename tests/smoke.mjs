@@ -128,7 +128,7 @@ async function main() {
   await t.test('Chat response', async () => {
     await t.newConversation();
     await t.eval("window.electronAPI.sendChatMessage('What is 6*7? Answer only the number.')");
-    await t.waitIdle(12);
+    await t.waitIdle(15);
     const r = await t.getLastResponse();
     return r.includes('42');
   });

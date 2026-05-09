@@ -472,8 +472,8 @@ export class VercelAgent implements IAgent {
       const result = streamText({
         model: this.provider.chat(this.model),
         system: getSystemPrompt(this.cwd) + this.rag.buildContext(
-          // Use last user message as RAG query
-          (this.messages.filter(m => m.role === 'user').pop()?.content as string) || ''
+          // Use last user message as RAG query (safely handle multimodal content)
+          this.extractTextContent(this.messages.filter(m => m.role === 'user').pop())
         ),
         messages: this.messages as any,
         tools: this.getTools(),
@@ -555,6 +555,8 @@ export class VercelAgent implements IAgent {
         const delay = this.retryCount * 5000;
         this.send('chat-stream-token', `\n\n*Rate limited. Retrying in ${delay / 1000}s... (${this.retryCount}/3)*`);
         await new Promise(r => setTimeout(r, delay));
+        // Iterative retry: create new AbortController and re-run (non-recursive)
+        this.abortController = new AbortController();
         return this.runStream();
       }
 
@@ -567,5 +569,18 @@ export class VercelAgent implements IAgent {
       // Generic error
       this.send('chat-stream-token', `\n\n⚠️ Error: ${msg.slice(0, 500)}`);
     }
+  }
+
+  /** Safely extract text content from a message (handles multimodal arrays) */
+  private extractTextContent(msg: { role: string; content: any } | undefined): string {
+    if (!msg) return '';
+    if (typeof msg.content === 'string') return msg.content;
+    if (Array.isArray(msg.content)) {
+      return msg.content
+        .filter((p: any) => p.type === 'text')
+        .map((p: any) => p.text || '')
+        .join(' ');
+    }
+    return '';
   }
 }

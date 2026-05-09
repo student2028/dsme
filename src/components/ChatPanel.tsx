@@ -72,10 +72,10 @@ renderer.code = function({ text, lang }: { text: string; lang?: string }) {
   const numberedLines = lines.map((line, i) =>
     `<span class="code-line"><span class="line-num">${i + 1}</span>${line}</span>`
   ).join('\n');
-  // Escape text for data attribute
-  const escaped = text.replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  // Encode code as Base64 for safe HTML attribute storage (prevents XSS)
+  const b64 = btoa(unescape(encodeURIComponent(text)));
   const lineCount = lines.length;
-  return `<div class="md-code-block"><div class="md-code-header"><span class="md-code-lang">${language || 'code'}</span><span class="md-code-lines">${lineCount} lines</span><button class="md-code-copy" data-code="${escaped}" onclick="var t=this.getAttribute('data-code').replace(/&quot;/g,'\"').replace(/&lt;/g,'<');navigator.clipboard.writeText(t);this.textContent='✓ Copied';this.classList.add('copied');setTimeout(()=>{this.textContent='Copy';this.classList.remove('copied')},2000)">Copy</button></div><pre><code class="hljs has-line-numbers">${numberedLines}</code></pre></div>`;
+  return `<div class="md-code-block"><div class="md-code-header"><span class="md-code-lang">${language || 'code'}</span><span class="md-code-lines">${lineCount} lines</span><button class="md-code-copy" data-code="${b64}" onclick="try{var t=decodeURIComponent(escape(atob(this.getAttribute('data-code'))));navigator.clipboard.writeText(t);this.textContent='✓ Copied';this.classList.add('copied');setTimeout(()=>{this.textContent='Copy';this.classList.remove('copied')},2000)}catch(e){this.textContent='✗ Failed'}">Copy</button></div><pre><code class="hljs has-line-numbers">${numberedLines}</code></pre></div>`;
 };
 marked.use({ renderer });
 
@@ -147,7 +147,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   const streamingMsgId = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const activeConv = conversations.find(c => c.id === activeConvId)!;
+  const activeConv = conversations.find(c => c.id === activeConvId) || conversations[0];
   const isLoading = agentStatus !== 'idle';
 
   // Load conversations from disk
