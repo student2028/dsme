@@ -1169,6 +1169,17 @@ body {
   box-shadow: 0 0 0 3px var(--accent-subtle), 0 2px 8px rgba(0,0,0,0.1);
 }
 
+.chat-input-stats {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 2px 12px 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+  opacity: 0.6;
+}
+
 .chat-input {
   flex: 1;
   background: transparent;

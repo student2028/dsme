@@ -141,6 +141,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   const [showHistory, setShowHistory] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [showSearch, setShowSearch] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -560,7 +561,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
           <button className="chat-export-btn" onClick={exportConversation} title="导出对话为 Markdown" aria-label="Export conversation">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           </button>
-          <button className={`chat-export-btn${searchQuery ? ' active' : ''}`} onClick={() => setSearchQuery(searchQuery ? '' : ' ')} title="搜索消息" aria-label="Search messages">
+          <button className={`chat-export-btn${showSearch ? ' active' : ''}`} onClick={() => { setShowSearch(s => !s); if (showSearch) setSearchQuery(''); }} title="搜索消息" aria-label="Search messages">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           </button>
           <button className="chat-new-btn" onClick={handleNewConversation} title="New conversation (⌘N)" aria-label="New conversation">
@@ -570,8 +571,8 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
       </div>
 
       {/* In-conversation search bar */}
-      {searchQuery !== null && searchQuery !== undefined && (
-        <div className="chat-search-bar" style={{ display: searchQuery !== '' ? 'flex' : 'none' }}>
+      {showSearch && (
+        <div className="chat-search-bar">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input
             className="chat-search-input"
@@ -584,7 +585,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
           <span className="chat-search-count">
             {searchQuery ? `${activeConv.messages.filter(m => m.content.toLowerCase().includes(searchQuery.toLowerCase())).length} 匹配` : ''}
           </span>
-          <button className="chat-search-close" onClick={() => setSearchQuery('')}>×</button>
+          <button className="chat-search-close" onClick={() => { setShowSearch(false); setSearchQuery(''); }}>×</button>
         </div>
       )}
       {showHistory ? (
@@ -615,9 +616,9 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
       ) : (
         <div className="chat-history" ref={scrollRef}>
           {activeConv.messages.map((msg, i) => {
-            const isSearchMatch = !searchQuery || msg.content.toLowerCase().includes(searchQuery.toLowerCase());
+            const isSearchMatch = !searchQuery.trim() || msg.content.toLowerCase().includes(searchQuery.trim().toLowerCase());
             return (
-            <div key={msg.id} className={`chat-message ${msg.role}${searchQuery && !isSearchMatch ? ' search-dimmed' : ''}`}>
+            <div key={msg.id} className={`chat-message ${msg.role}${searchQuery.trim() && !isSearchMatch ? ' search-dimmed' : ''}`}>
               {msg.role === 'tool' ? (
                 <div className="tool-call-indicator">{msg.content}</div>
               ) : (
@@ -740,6 +741,12 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
             </button>
           )}
         </div>
+        {input.length > 50 && (
+          <div className="chat-input-stats">
+            <span>{input.length} 字符</span>
+            <span>~{Math.ceil(input.length / 3.5)} tokens</span>
+          </div>
+        )}
       </div>
     </div>
   );
