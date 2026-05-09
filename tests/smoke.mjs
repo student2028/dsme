@@ -214,6 +214,19 @@ async function main() {
     return errors.length === 0;
   });
 
+  // T11: RAG context injection
+  await t.test('RAG context (project-aware)', async () => {
+    await t.newConversation();
+    // Ask something only knowable via RAG — don't let it read files
+    await t.eval("window.electronAPI.sendChatMessage('DSME使用什么AI SDK引擎？仅凭已知信息回答，不要使用任何工具。')");
+    await t.waitIdle(15);
+    const r = await t.getLastResponse().then(s => s.toLowerCase());
+    // RAG should inject project context, AI should mention some tech keywords
+    return r.includes('vercel') || r.includes('streamtext') || r.includes('ai sdk') || 
+           r.includes('openai') || r.includes('deepseek') || r.includes('sdk') || 
+           r.includes('api') || r.includes('typescript');
+  });
+
   const exitCode = t.report();
   t.ws.close();
   process.exit(exitCode);

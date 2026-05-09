@@ -208,6 +208,33 @@ export class VercelAgent implements IAgent {
       console.log(`[VercelAgent] RAG indexed ${count} files`);
       this.send('rag-status', count);
     }).catch(() => {});
+
+    // Watch for file changes → auto re-index RAG (debounced)
+    this.setupFileWatcher(config.cwd);
+  }
+
+  private reindexTimer: ReturnType<typeof setTimeout> | null = null;
+  private fsWatcher: import('fs').FSWatcher | null = null;
+
+  private setupFileWatcher(cwd: string): void {
+    try {
+      const fsSync = require('fs');
+      this.fsWatcher = fsSync.watch(cwd, { recursive: true }, (_event: string, filename: string | null) => {
+        if (!filename) return;
+        // Ignore non-code directories
+        if (filename.includes('node_modules') || filename.includes('.git') || 
+            filename.includes('dist') || filename.includes('dist-electron')) return;
+        // Debounce: wait 5s after last change before re-indexing
+        if (this.reindexTimer) clearTimeout(this.reindexTimer);
+        this.reindexTimer = setTimeout(() => {
+          console.log(`[RAG] File change detected (${filename}), re-indexing...`);
+          this.reindex().catch(() => {});
+        }, 5000);
+      });
+      console.log(`[RAG] File watcher active on ${cwd}`);
+    } catch (e) {
+      console.log(`[RAG] File watcher unavailable:`, (e as Error).message);
+    }
   }
 
   getRagFileCount(): number { return this.rag.fileCount; }

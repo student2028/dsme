@@ -185,10 +185,13 @@ export class RAGEngine {
   }
 
   private tokenize(text: string): string[] {
-    return text
+    // Split camelCase/PascalCase: 'MemoizedMarkdown' → 'Memoized Markdown'
+    const expanded = text.replace(/([a-z])([A-Z])/g, '$1 $2')
+                         .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+    return expanded
       .toLowerCase()
       .replace(/[^a-z0-9_\u4e00-\u9fff]+/g, ' ')
-      .split(/\s+/)
+      .split(/[_\s]+/)
       .filter(t => t.length >= 2 && t.length <= 50);
   }
 
