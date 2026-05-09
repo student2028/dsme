@@ -977,7 +977,12 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  animation: welcomeCardIn 0.4s ease-out backwards;
 }
+.chat-suggestion-chip:nth-child(1) { animation-delay: 0.1s; }
+.chat-suggestion-chip:nth-child(2) { animation-delay: 0.2s; }
+.chat-suggestion-chip:nth-child(3) { animation-delay: 0.3s; }
+.chat-suggestion-chip:nth-child(4) { animation-delay: 0.4s; }
 .suggestion-icon { font-size: 14px; }
 
 .chat-suggestion-chip:hover {
@@ -1479,6 +1484,7 @@ body {
   display: flex;
   align-items: center;
   gap: 16px;
+  animation: welcomeFadeIn 0.6s ease-out;
 }
 
 .welcome-brand { display: flex; flex-direction: column; }
@@ -1489,6 +1495,10 @@ body {
   letter-spacing: -0.5px;
   color: var(--text-primary);
   line-height: 1;
+  background: linear-gradient(135deg, var(--text-primary), var(--accent-color));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .welcome-tagline {
@@ -1512,6 +1522,25 @@ body {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   overflow: hidden;
+  animation: welcomeCardIn 0.5s ease-out backwards;
+  transition: transform 0.25s, box-shadow 0.25s, border-color 0.25s;
+}
+.welcome-card:nth-child(1) { animation-delay: 0.2s; }
+.welcome-card:nth-child(2) { animation-delay: 0.35s; }
+
+.welcome-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(124, 110, 240, 0.1);
+  border-color: var(--border-focus);
+}
+
+@keyframes welcomeFadeIn {
+  from { opacity: 0; transform: translateY(-12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes welcomeCardIn {
+  from { opacity: 0; transform: translateY(16px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 .welcome-card-header {
@@ -1562,6 +1591,7 @@ body {
   font-size: 12px;
   color: var(--text-muted);
   margin-top: 8px;
+  animation: welcomeCardIn 0.5s ease-out 0.5s backwards;
 }
 
 .welcome-footer kbd {

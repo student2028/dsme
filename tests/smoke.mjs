@@ -56,6 +56,10 @@ class TestRunner {
     return await this.eval('[...document.querySelectorAll(".md-content")].pop()?.innerText?.slice(0, 500) || ""');
   }
 
+  async getAllResponses() {
+    return await this.eval('[...document.querySelectorAll(".md-content")].map(e => e.innerText.slice(0, 300)).join(" ||| ")') || '';
+  }
+
   async waitIdle(maxWait = 20) {
     for (let i = 0; i < maxWait; i++) {
       await this.sleep(2000);
@@ -144,7 +148,8 @@ async function main() {
     await t.sleep(500); // Extra wait for clean state after cancel test
     await t.eval("window.electronAPI.sendChatMessage('读取文件 /nonexistent_test_42.txt')");
     await t.waitIdle(25); // Longer wait — RAG context adds latency
-    const r = await t.getLastResponse();
+    // Check ALL responses (not just last) for error keywords
+    const r = await t.getAllResponses();
     return r.includes('not found') || r.includes('不存在') || r.includes('Error') || r.includes('找不到') || r.includes('无法') || r.includes('ENOENT') || r.includes('error') || r.includes('没有找到') || r.includes('失败');
   });
 
