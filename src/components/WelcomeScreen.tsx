@@ -1,43 +1,60 @@
 import React from 'react';
 
+// Dolphin logo mark for DSME
+const LogoMark = () => (
+  <div style={{
+    width: 56, height: 56, borderRadius: 16,
+    background: 'linear-gradient(135deg, #0ea5e9, #6366f1)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: 32, boxShadow: '0 4px 20px rgba(14,165,233,0.3)'
+  }}>🐬</div>
+);
+
 export const WelcomeScreen: React.FC = () => {
   return (
     <div className="welcome-screen">
-      <div className="welcome-logo">
-{`
- ██████╗  ███████╗ ███╗   ███╗ ███████╗
- ██╔══██╗ ██╔════╝ ████╗ ████║ ██╔════╝
- ██║  ██║ ███████╗ ██╔████╔██║ █████╗
- ██║  ██║ ╚════██║ ██║╚██╔╝██║ ██╔══╝
- ██████╔╝ ███████║ ██║ ╚═╝ ██║ ███████╗
- ╚═════╝  ╚══════╝ ╚═╝     ╚═╝ ╚══════╝
-`}
-      </div>
-      <div className="welcome-subtitle">DeepSeek Matrix Engine</div>
-      <div className="welcome-version">v0.1.0 — Powered by Silicon Flow</div>
-
-      <div className="welcome-shortcuts">
-        <div className="shortcut-group">
-          <div className="shortcut-title">[ KEYBOARD SHORTCUTS ]</div>
-          <div className="shortcut-row"><span className="shortcut-key">Ctrl+P</span><span className="shortcut-desc">Quick Open File</span></div>
-          <div className="shortcut-row"><span className="shortcut-key">Ctrl+S</span><span className="shortcut-desc">Save Current File</span></div>
-          <div className="shortcut-row"><span className="shortcut-key">Ctrl+W</span><span className="shortcut-desc">Close Tab</span></div>
-          <div className="shortcut-row"><span className="shortcut-key">Ctrl+,</span><span className="shortcut-desc">Settings</span></div>
-        </div>
-
-        <div className="shortcut-group">
-          <div className="shortcut-title">[ AGENT CAPABILITIES ]</div>
-          <div className="shortcut-row"><span className="shortcut-key">read_file</span><span className="shortcut-desc">Read any project file</span></div>
-          <div className="shortcut-row"><span className="shortcut-key">write_file</span><span className="shortcut-desc">Create / overwrite files</span></div>
-          <div className="shortcut-row"><span className="shortcut-key">replace</span><span className="shortcut-desc">Surgical code edits</span></div>
-          <div className="shortcut-row"><span className="shortcut-key">grep</span><span className="shortcut-desc">Search entire codebase</span></div>
-          <div className="shortcut-row"><span className="shortcut-key">shell</span><span className="shortcut-desc">Run any terminal command</span></div>
+      <div className="welcome-hero">
+        <LogoMark />
+        <div className="welcome-brand">
+          <h1 className="welcome-title">DSME</h1>
+          <p className="welcome-tagline">DeepSeek Matrix Engine</p>
         </div>
       </div>
 
-      <div className="welcome-tip">
-        Open a file from <span style={{color: 'var(--accent-color)'}}>[ EXPLORER ]</span> or press <span style={{color: 'var(--accent-color)'}}>Ctrl+P</span> to begin.
+      <div className="welcome-grid">
+        <div className="welcome-card">
+          <div className="welcome-card-header">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-color)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3H6a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3V6a3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3h12a3 3 0 0 0 3-3 3 3 0 0 0-3-3z"/></svg>
+            <span>Shortcuts</span>
+          </div>
+          <div className="welcome-card-body">
+            <div className="shortcut-row"><kbd>⌘P</kbd><span>Quick Open</span></div>
+            <div className="shortcut-row"><kbd>⌘S</kbd><span>Save</span></div>
+            <div className="shortcut-row"><kbd>⌘B</kbd><span>Toggle Sidebar</span></div>
+            <div className="shortcut-row"><kbd>⌘L</kbd><span>Focus Chat</span></div>
+            <div className="shortcut-row"><kbd>⌘,</kbd><span>Settings</span></div>
+            <div className="shortcut-row"><kbd>⇧⌘L</kbd><span>Toggle Theme</span></div>
+          </div>
+        </div>
+
+        <div className="welcome-card">
+          <div className="welcome-card-header">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--cyan)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+            <span>AI Assistant</span>
+          </div>
+          <div className="welcome-card-body">
+            <div className="shortcut-row"><kbd>🔍</kbd><span>Web search & real-time info</span></div>
+            <div className="shortcut-row"><kbd>📖</kbd><span>Read & explore files</span></div>
+            <div className="shortcut-row"><kbd>✏️</kbd><span>Create & edit code</span></div>
+            <div className="shortcut-row"><kbd>⚡</kbd><span>Run shell commands</span></div>
+            <div className="shortcut-row"><kbd>🌐</kbd><span>Fetch & read web pages</span></div>
+          </div>
+        </div>
       </div>
+
+      <p className="welcome-footer">
+        Press <kbd>⌘P</kbd> to open a file or use the sidebar to browse your project
+      </p>
     </div>
   );
 };

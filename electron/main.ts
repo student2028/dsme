@@ -3,26 +3,47 @@ import { join } from 'node:path'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { DeepSeekAgent } from './agent'
+import { VercelAgent } from './agents/vercel'
+import type { IAgent } from './agents/base'
 import * as os from 'node:os'
 import * as cp from 'node:child_process'
 import { promisify } from 'node:util'
 
+import * as net from 'node:net';
+
 const execAsync = promisify(cp.exec);
 
+// Electron CDP — using temp ports until zombie 19222 is cleared by reboot
+app.commandLine.appendSwitch('remote-debugging-port', '19223');
+
+// CDP proxy — temp ports until zombie cleared
+const CDP_INTERNAL = 19223;
+const CDP_EXTERNAL = 9419;
+const cdpProxy = net.createServer((src) => {
+  const dst = net.createConnection(CDP_INTERNAL, '127.0.0.1');
+  src.pipe(dst); dst.pipe(src);
+  src.on('error', () => dst.destroy());
+  dst.on('error', () => src.destroy());
+});
+cdpProxy.listen(CDP_EXTERNAL, '0.0.0.0', () => console.log(`[CDP] 0.0.0.0:${CDP_EXTERNAL} ready`));
+cdpProxy.on('error', () => {});
+
 let win: BrowserWindow | null
-let agent: DeepSeekAgent | null = null
+let agent: (DeepSeekAgent | IAgent) | null = null
 let ptyProcess: cp.ChildProcessWithoutNullStreams | null = null
-let currentWorkspacePath = process.cwd()
+// Default workspace: open DSME's own project directory
+let currentWorkspacePath = path.resolve(__dirname, '..')
 
 // Config
 const CONFIG_PATH = join(app.getPath('userData'), 'dsme-config.json');
 
-interface AppConfig { apiKey: string; model: string; baseUrl: string; }
+interface AppConfig { apiKey: string; model: string; baseUrl: string; agentKernel: string; }
 
 const DEFAULT_CONFIG: AppConfig = {
-  apiKey: 'sk-lqowsnopfxvymjqaeaafrbsnncpuxubrqfemorsbqdoyrvjk',
+  apiKey: process.env.DSME_API_KEY || '',
   model: 'deepseek-ai/DeepSeek-V4-Flash',
   baseUrl: 'https://api.siliconflow.cn/v1',
+  agentKernel: 'vercel',  // 'builtin' | 'vercel' — engine selector
 };
 
 async function loadConfig(): Promise<AppConfig> {
@@ -113,13 +134,24 @@ function createWindow() {
 async function initAgent() {
   if (!win) return;
   const config = await loadConfig();
-  agent = new DeepSeekAgent(win, {
+  const agentConfig = {
     apiKey: config.apiKey,
     model: config.model,
     baseUrl: config.baseUrl,
     cwd: currentWorkspacePath,
-  });
-  agent.setupDiffHandlers();
+  };
+
+  if (config.agentKernel === 'vercel') {
+    console.log('[Agent] Using Vercel AI SDK kernel');
+    const va = new VercelAgent();
+    va.init(win, agentConfig);
+    va.setupDiffHandlers();
+    agent = va;
+  } else {
+    console.log('[Agent] Using built-in kernel');
+    agent = new DeepSeekAgent(win, agentConfig);
+    (agent as DeepSeekAgent).setupDiffHandlers();
+  }
 }
 
 function startPty() {
@@ -141,9 +173,47 @@ ipcMain.on('update-title', (_, title: string) => {
   if (win) win.setTitle(title ? `${title} — DSME` : 'DSME — DeepSeek Matrix Engine');
 });
 
-// IPC
-ipcMain.on('chat-message', async (_, msg) => { if (agent) agent.handleUserMessage(msg); });
+// IPC — dispatch to whichever agent kernel is active
+ipcMain.on('chat-message', async (_, msg) => {
+  console.log('[IPC] chat-message received, agent:', agent ? 'exists' : 'null', 'hasHandleUserMessage:', agent ? ('handleUserMessage' in agent) : 'n/a');
+  if (!agent) return;
+  if ('handleUserMessage' in agent) {
+    console.log('[IPC] dispatching to built-in handleUserMessage');
+    (agent as DeepSeekAgent).handleUserMessage(msg);
+  } else {
+    console.log('[IPC] dispatching to IAgent handleMessage');
+    (agent as IAgent).handleMessage(msg);
+  }
+});
+ipcMain.on('chat-message-images', async (_, msg, imageDataUrls) => {
+  if (!agent) return;
+  if ('handleUserMessageWithImages' in agent) (agent as any).handleUserMessageWithImages(msg, imageDataUrls);
+  else (agent as IAgent).handleMessageWithImages(msg, imageDataUrls);
+});
 ipcMain.on('terminal-input', (_, data) => { if (ptyProcess) ptyProcess.stdin.write(data); });
+ipcMain.on('cancel-chat-request', () => {
+  if (agent && 'abort' in agent) (agent as IAgent).abort();
+});
+ipcMain.on('reset-conversation', () => {
+  if (agent && 'resetConversation' in agent) (agent as IAgent).resetConversation();
+});
+
+// Reinitialize agent when kernel config changes (no full app restart needed)
+ipcMain.on('relaunch-app', async () => {
+  console.log('[Main] Reinitializing agent (kernel switch)...');
+  // Clean up old agent's IPC handlers to prevent duplicates
+  ipcMain.removeAllListeners('diff-accept');
+  ipcMain.removeAllListeners('diff-reject');
+  agent = null;
+  await initAgent();
+  const config = await loadConfig();
+  const label = config.agentKernel === 'vercel' ? 'Vercel AI SDK' : 'Built-in';
+  // Send through proper stream protocol so frontend renders correctly
+  win?.webContents.send('chat-stream-start', '');
+  win?.webContents.send('chat-stream-token', `Agent kernel switched to **${label}**. New session started.`);
+  win?.webContents.send('chat-stream-end', '');
+  win?.webContents.send('chat-status', 'idle');
+});
 
 async function getGitBranch(dir: string) {
   try { return (await execAsync('git rev-parse --abbrev-ref HEAD', { cwd: dir })).stdout.trim(); }

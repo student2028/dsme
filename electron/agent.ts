@@ -21,18 +21,69 @@ const agentTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   { type: 'function', function: { name: 'list_directory', description: 'List files in a directory.', parameters: { type: 'object', properties: { dirpath: { type: 'string' } }, required: ['dirpath'] } } },
   { type: 'function', function: { name: 'search_codebase', description: 'Grep search across workspace.', parameters: { type: 'object', properties: { query: { type: 'string' }, is_regex: { type: 'boolean' } }, required: ['query'] } } },
   { type: 'function', function: { name: 'run_command', description: 'Run shell command.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
+  { type: 'function', function: { name: 'web_search', description: 'Search the web for real-time information. Use this when you need current data, news, or anything beyond your training cutoff.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'Search query' } }, required: ['query'] } } },
+  { type: 'function', function: { name: 'fetch_url', description: 'Fetch and read content from a URL. Returns text extracted from the page.', parameters: { type: 'object', properties: { url: { type: 'string', description: 'URL to fetch' } }, required: ['url'] } } },
 ];
 
-const SYSTEM_PROMPT = `You are Antigravity, a world-class autonomous AI coding agent. You operate inside an Electron IDE with full system access.
+function getSystemPrompt(): string {
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
+  const timeStr = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  const osInfo = process.platform === 'darwin' ? 'macOS' : process.platform;
+  const cwd = process.cwd();
 
-Tools: read_file, write_file, replace_in_file, list_directory, search_codebase, run_command
+  return `You are DSME (DeepSeek Matrix Engine), an autonomous AI coding assistant built for pair programming.
+You work inside an Electron-based IDE with full system access. Always prioritize the user's latest request.
 
-Principles:
-1. BE AUTONOMOUS — don't ask, just do
-2. THINK step by step — plan then execute
-3. VERIFY — read files back after editing
-4. HANDLE ERRORS — diagnose and retry
-5. Use Markdown. Be concise but complete.`;
+## Environment
+- OS: ${osInfo}
+- Shell: zsh
+- Current Time: ${dateStr} ${timeStr} (CRITICAL: Strictly use this time. NEVER fall back to your training cutoff date.)
+- Workspace: ${cwd}
+
+## Operating Principles
+- Be concise, direct, and action-oriented. Lead with the answer, not the reasoning.
+- Respond in the same language as the user.
+- Prefer action over description. If a task requires reading, running, or changing something, use tools.
+- Never fabricate tool execution or claim you ran something you did not.
+- If you can say it in one sentence, don't use three. Skip filler words and preamble.
+- For data extraction or list compilation, provide the exhaustive, complete set. Never truncate.
+
+## Tool Usage Rules
+- Tool calls are your primary way to interact with the world.
+- A text-only response is acceptable ONLY for simple conversation or when prior tool results already answer the question.
+- Always read a file before editing it. Prefer minimal, surgical edits.
+- If multiple independent tool calls are needed, batch them in parallel.
+- Prefer specialized tools over generic shell commands.
+
+### Web Search (CRITICAL — Most Important Tool)
+- **AUTO-TRIGGER**: You MUST call web_search automatically whenever:
+  - The user asks about current events, news, weather, prices, or any real-time information
+  - The query involves dates, times, or anything after your training cutoff
+  - You are uncertain about factual claims (people, companies, products, versions)
+  - The user asks "what is X" about something that may have changed recently
+- **NEVER** say "I don't have access to real-time information" — you DO, via web_search
+- **NEVER** say "my knowledge cutoff is..." as an excuse — use web_search instead
+- After searching, use fetch_url to read specific pages for detailed information
+- Synthesize results from multiple sources into a clear, authoritative answer
+
+### File and Command Discipline
+- Use absolute paths for file operations.
+- Prefer minimal, surgical edits that preserve existing style.
+- Avoid standalone cd; set working directory in the tool call.
+
+## Output Quality
+- Treat tool calls as working process; treat the final response as the deliverable.
+- Synthesize findings into a clear answer instead of narrating your search trail.
+- Report outcomes faithfully. Never claim success unless you actually observed it.
+- Use Markdown for readability. Use code fences for code, commands, paths.
+- Match structure to the task: simple requests → short answers; complex research → organized sections.
+
+## Safety
+- Ask before destructive, irreversible, or externally visible actions.
+- Do not modify files outside the workspace unless explicitly asked.
+- Never expose API keys, tokens, or credentials.`;
+}
 
 export class DeepSeekAgent {
   private openai: OpenAI;
@@ -43,14 +94,23 @@ export class DeepSeekAgent {
 
   constructor(private window: BrowserWindow, config: AgentConfig) {
     const key = config.apiKey || 'sk-placeholder';
-    this.openai = new OpenAI({ baseURL: config.baseUrl, apiKey: key });
+    const proxyUrl = process.env.https_proxy || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.HTTP_PROXY;
+    const clientOpts: any = { baseURL: config.baseUrl, apiKey: key, timeout: 60000 };
+    if (proxyUrl) {
+      try {
+        const { HttpsProxyAgent } = require('https-proxy-agent');
+        clientOpts.httpAgent = new HttpsProxyAgent(proxyUrl);
+        console.log('[Agent] Using proxy:', proxyUrl);
+      } catch { console.log('[Agent] https-proxy-agent not available, no proxy'); }
+    }
+    this.openai = new OpenAI(clientOpts);
     this.cwd = config.cwd;
     this.model = config.model;
-    this.messages = [{ role: 'system', content: SYSTEM_PROMPT }];
+    this.messages = [{ role: 'system', content: getSystemPrompt() }];
 
     if (!config.apiKey) {
       this.window.webContents.once('did-finish-load', () => {
-        this.window.webContents.send('chat-reply', '⚠️ No API key. Press Ctrl+, to configure.');
+        this.window.webContents.send('chat-reply', 'No API key configured. Press Ctrl+, to set up.');
       });
     }
   }
@@ -58,8 +118,35 @@ export class DeepSeekAgent {
   public async handleUserMessage(content: string) {
     this.messages.push({ role: 'user', content });
     this.send('chat-status', 'thinking');
-    await this.processLoop(0);
-    this.send('chat-status', 'idle');
+    this.send('chat-stream-start', null);
+    try {
+      await this.processLoop(0);
+    } catch (e: any) {
+      this.send('chat-reply', `\n\nError: ${e?.message || e}`);
+    } finally {
+      this.send('chat-status', 'idle');
+      this.send('chat-stream-end', null);
+    }
+  }
+
+  public async handleUserMessageWithImages(content: string, imageDataUrls: string[]) {
+    // Build multimodal content array for vision models
+    const parts: any[] = [];
+    if (content) parts.push({ type: 'text', text: content });
+    for (const dataUrl of imageDataUrls) {
+      parts.push({ type: 'image_url', image_url: { url: dataUrl } });
+    }
+    this.messages.push({ role: 'user', content: parts } as any);
+    this.send('chat-status', 'thinking');
+    this.send('chat-stream-start', null);
+    try {
+      await this.processLoop(0);
+    } catch (e: any) {
+      this.send('chat-reply', `\n\nError: ${e?.message || e}`);
+    } finally {
+      this.send('chat-status', 'idle');
+      this.send('chat-stream-end', null);
+    }
   }
 
   private send(channel: string, data: any) {
@@ -68,7 +155,7 @@ export class DeepSeekAgent {
 
   private async processLoop(iteration: number) {
     if (iteration >= this.maxIterations) {
-      this.send('chat-reply', '\n\n⚠️ Max iterations reached.');
+      this.send('chat-reply', '\n\n*Max iterations reached.*');
       return;
     }
 
@@ -86,8 +173,7 @@ export class DeepSeekAgent {
       let toolCalls: Map<number, { id: string; name: string; args: string }> = new Map();
       let finishReason = '';
 
-      // Signal new assistant message start
-      this.send('chat-stream-start', null);
+      // Stream-start is sent by handleUserMessage, not here (avoids duplicates on recursive calls)
 
       for await (const chunk of stream) {
         const delta = chunk.choices[0]?.delta;
@@ -114,8 +200,7 @@ export class DeepSeekAgent {
         }
       }
 
-      // Signal stream end
-      this.send('chat-stream-end', null);
+      // NOTE: chat-stream-end is sent by handleUserMessage finally, not here
 
       // Build the assistant message for history
       const assistantMessage: any = { role: 'assistant', content: contentBuffer || null };
@@ -133,11 +218,13 @@ export class DeepSeekAgent {
 
       // Execute tool calls
       for (const tc of toolCalls.values()) {
-        this.send('chat-reply', `\n\n> 🔧 ${tc.name}`);
         this.send('chat-status', `tool:${tc.name}`);
 
         let args: any = {};
         try { args = JSON.parse(tc.args); } catch {}
+
+        const argSummary = this.formatToolArgs(tc.name, args);
+        this.send('chat-reply', `\n\n> **${tc.name}**${argSummary}`);
 
         const result = await this.executeTool(tc.name, args);
         this.messages.push({ role: 'tool', tool_call_id: tc.id, content: result.slice(0, 8000) });
@@ -149,13 +236,32 @@ export class DeepSeekAgent {
     } catch (error: any) {
       const msg = error?.message || String(error);
       if (msg.includes('rate_limit') || msg.includes('429')) {
-        this.send('chat-reply', '\n\n⏳ Rate limited. Retrying...');
+        this.send('chat-reply', '\n\n*Rate limited. Retrying...*');
         await new Promise(r => setTimeout(r, 5000));
         await this.processLoop(iteration);
       } else {
-        this.send('chat-reply', `\n\n❌ Error: ${msg}`);
+        this.send('chat-reply', `\n\nError: ${msg}`);
       }
     }
+  }
+
+  /** Format tool arguments into a human-readable one-liner for display */
+  private formatToolArgs(name: string, args: any): string {
+    try {
+      switch (name) {
+        case 'web_search': return args.query ? ` \`${args.query}\`` : '';
+        case 'fetch_url': return args.url ? ` \`${args.url.slice(0, 80)}${args.url.length > 80 ? '...' : ''}\`` : '';
+        case 'run_command': return args.command ? ` \`${args.command.slice(0, 60)}${args.command.length > 60 ? '...' : ''}\`` : '';
+        case 'read_file': return args.filepath ? ` \`${args.filepath}\`` : '';
+        case 'write_file': return args.filepath ? ` → \`${args.filepath}\`` : '';
+        case 'list_directory': return args.path ? ` \`${args.path}\`` : '';
+        default: {
+          const keys = Object.keys(args).filter(k => typeof args[k] === 'string');
+          if (keys.length > 0) return ` \`${String(args[keys[0]]).slice(0, 60)}\``;
+          return '';
+        }
+      }
+    } catch { return ''; }
   }
 
   private pendingChanges: Map<string, { filepath: string; newContent: string; resolve: (v: string) => void }> = new Map();
@@ -190,71 +296,21 @@ export class DeepSeekAgent {
         case 'write_file': {
           const fp = resolve(args.filepath);
           await fs.mkdir(path.dirname(fp), { recursive: true });
-          let oldContent = '';
-          try { oldContent = await fs.readFile(fp, 'utf8'); } catch {}
-
-          // Emit diff preview and wait for user decision
-          const changeId = `change_${this.changeIdCounter++}`;
-          this.send('diff-preview', {
-            id: changeId,
-            filepath: fp,
-            filename: args.filepath,
-            oldContent,
-            newContent: args.content,
-          });
-
-          const decision = await new Promise<string>(r => {
-            this.pendingChanges.set(changeId, { filepath: fp, newContent: args.content, resolve: r });
-            // Auto-accept after 60s if no response
-            setTimeout(() => {
-              if (this.pendingChanges.has(changeId)) {
-                this.pendingChanges.delete(changeId);
-                r('accepted');
-              }
-            }, 60000);
-          });
-
-          if (decision === 'accepted') {
-            await fs.writeFile(fp, args.content, 'utf8');
-            this.send('file-changed', fp);
-            return `✅ Written (accepted): ${args.filepath}`;
-          } else {
-            return `⏭ Skipped (rejected): ${args.filepath}`;
-          }
+          // Direct write — no diff preview confirmation
+          await fs.writeFile(fp, args.content, 'utf8');
+          this.send('file-changed', fp);
+          return `Written: ${args.filepath}`;
         }
 
         case 'replace_in_file': {
           const fp = resolve(args.filepath);
           const oldContent = await fs.readFile(fp, 'utf8');
-          if (!oldContent.includes(args.target)) return `❌ Target not found in ${args.filepath}`;
+          if (!oldContent.includes(args.target)) return `Target not found in ${args.filepath}`;
           const newContent = oldContent.replace(args.target, args.replacement);
-
-          const changeId = `change_${this.changeIdCounter++}`;
-          this.send('diff-preview', {
-            id: changeId,
-            filepath: fp,
-            filename: args.filepath,
-            oldContent,
-            newContent,
-          });
-
-          const decision = await new Promise<string>(r => {
-            this.pendingChanges.set(changeId, { filepath: fp, newContent, resolve: r });
-            setTimeout(() => {
-              if (this.pendingChanges.has(changeId)) {
-                this.pendingChanges.delete(changeId);
-                r('accepted');
-              }
-            }, 60000);
-          });
-
-          if (decision === 'accepted') {
-            await fs.writeFile(fp, newContent, 'utf8');
-            this.send('file-changed', fp);
-            return `✅ Replaced (accepted): ${args.filepath}`;
-          } else {
-            return `⏭ Skipped (rejected): ${args.filepath}`;
-          }
+          // Direct write — no diff preview confirmation
+          await fs.writeFile(fp, newContent, 'utf8');
+          this.send('file-changed', fp);
+          return `Replaced: ${args.filepath}`;
         }
 
         case 'list_directory': {
@@ -274,6 +330,81 @@ export class DeepSeekAgent {
           const { stdout, stderr } = await execAsync(args.command, { cwd: this.cwd, timeout: 60000, maxBuffer: 2 * 1024 * 1024 });
           this.send('terminal-output', `\r\n$ ${args.command}\r\n${stdout}`);
           return stdout + (stderr ? `\nSTDERR:\n${stderr}` : '');
+        }
+
+        case 'web_search': {
+          const query = args.query || '';
+          if (!query) return 'Error: query is required';
+          this.send('chat-status', 'tool:searching web...');
+          const q = encodeURIComponent(query);
+          const { execSync } = require('child_process');
+          const all: any[] = [];
+
+          // curl-based search (fast, reliable, no Electron SSL issues)
+          const curlSearch = (searchUrl: string, regex: RegExp, engineName: string) => {
+            try {
+              const html = execSync(
+                `curl -sS --connect-timeout 10 --max-time 15 "${searchUrl}" -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" 2>/dev/null`,
+                { encoding: 'utf8', timeout: 20000 }
+              );
+              let match;
+              while ((match = regex.exec(html)) && all.length < 8) {
+                const [, url, title, snippet] = match;
+                if (url && title) all.push({ engine: engineName, title: title.replace(/<[^>]*>/g, '').trim(), url: url.trim(), snippet: (snippet || '').replace(/<[^>]*>/g, '').trim() });
+              }
+              console.log(`[web_search] ${engineName}: ${all.length} results`);
+            } catch (e: any) { console.log(`[web_search] ${engineName} failed: ${e.message}`); }
+          };
+
+          // DuckDuckGo HTML (no JS needed)
+          curlSearch(
+            `https://html.duckduckgo.com/html/?q=${q}`,
+            /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>(.*?)<\/a>/gi,
+            'DuckDuckGo'
+          );
+
+          // Bing as backup
+          if (all.length < 3) {
+            curlSearch(
+              `https://cn.bing.com/search?q=${q}&setlang=zh-Hans`,
+              /<li class="b_algo"[^>]*>[\s\S]*?<a[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>[\s\S]*?<p[^>]*>(.*?)<\/p>/gi,
+              'Bing'
+            );
+          }
+
+          const engines = [...new Set(all.map(r => r.engine))].join('+');
+          if (!all.length) return `No search results found for: ${query}`;
+          return `Search results for "${query}" [${engines}]:\n\n` +
+            all.slice(0, 10).map((r, i) => `[${i+1}] ${r.title}\n${r.url}\n${r.snippet}`).join('\n\n');
+        }
+
+        case 'fetch_url': {
+          const url = args.url || '';
+          if (!url) return 'Error: url is required';
+          this.send('chat-status', 'tool:fetching...');
+
+          try {
+            const { execSync } = require('child_process');
+            const safeUrl = url.replace(/"/g, '\\"');
+            const html = execSync(
+              `curl -sS -L --connect-timeout 10 --max-time 20 "${safeUrl}" -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" 2>/dev/null | head -c 200000`,
+              { encoding: 'utf8', timeout: 25000 }
+            );
+            // Extract title
+            const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+            const title = titleMatch ? titleMatch[1].replace(/<[^>]*>/g, '').trim() : '';
+            // Strip HTML to text
+            const text = html
+              .replace(/<script[\s\S]*?<\/script>/gi, '')
+              .replace(/<style[\s\S]*?<\/style>/gi, '')
+              .replace(/<(header|footer|nav|aside)[\s\S]*?<\/\1>/gi, '')
+              .replace(/<[^>]*>/g, ' ')
+              .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+              .replace(/\s{2,}/g, ' ').replace(/\n{3,}/g, '\n\n')
+              .trim();
+            const content = text.slice(0, 15000);
+            return `Title: ${title}\nURL: ${url}\n\n${content}`;
+          } catch (e: any) { return `Fetch error: ${e.message}`; }
         }
 
         default: return `Unknown tool: ${name}`;

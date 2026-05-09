@@ -9,6 +9,7 @@ interface FileNode {
 
 interface Props {
   onFileSelect: (filepath: string, name: string) => void;
+  activePath?: string;
 }
 
 interface TreeNode extends FileNode {
@@ -17,7 +18,7 @@ interface TreeNode extends FileNode {
   depth: number;
 }
 
-export const FileTree: React.FC<Props> = ({ onFileSelect }) => {
+export const FileTree: React.FC<Props> = ({ onFileSelect, activePath }) => {
   const [nodes, setNodes] = useState<TreeNode[]>([]);
   const [workspaceName, setWorkspaceName] = useState<string>('PROJECT');
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
@@ -99,40 +100,68 @@ export const FileTree: React.FC<Props> = ({ onFileSelect }) => {
     return '';
   };
 
-  const getFileIcon = (name: string) => {
+  const getFileIcon = (name: string): string => {
     const ext = name.split('.').pop()?.toLowerCase() || '';
     const icons: Record<string, string> = {
-      'ts': '⟨⟩', 'tsx': '⟨⟩', 'js': '◇', 'jsx': '◇',
-      'css': '◆', 'html': '◈', 'json': '{}',
-      'md': '¶', 'py': '⊕', 'rs': '⊗', 'go': '◎',
-      'kt': '◉', 'dart': '◊', 'swift': '⊙', 'java': '☕',
-      'sh': '$', 'yaml': '≡', 'yml': '≡', 'toml': '≡',
-      'sql': '⊞', 'xml': '≤≥', 'svg': '▲', 'png': '▣',
-      'jpg': '▣', 'gif': '▣', 'lock': '🔒',
+      'ts': 'TS', 'tsx': 'TX', 'js': 'JS', 'jsx': 'JX',
+      'css': '#', 'scss': '#', 'less': '#',
+      'html': '<>', 'json': '{}',
+      'md': 'M↓', 'py': 'Py', 'rs': 'Rs', 'go': 'Go',
+      'kt': 'Kt', 'dart': 'Da', 'swift': 'Sw', 'java': 'Jv',
+      'sh': '$_', 'zsh': '$_', 'bash': '$_',
+      'yaml': '≡', 'yml': '≡', 'toml': '≡', 'env': '≡',
+      'sql': 'SQ', 'xml': '<>', 'svg': '◇',
+      'png': '▪', 'jpg': '▪', 'jpeg': '▪', 'gif': '▪', 'webp': '▪', 'ico': '▪',
+      'lock': '🔒', 'gitignore': '⊘',
+      'c': 'C', 'cpp': 'C+', 'h': 'H',
+      'vue': 'V', 'svelte': 'S',
     };
     return icons[ext] || '·';
+  };
+
+  const getFileIconColor = (name: string): string => {
+    const ext = name.split('.').pop()?.toLowerCase() || '';
+    const colors: Record<string, string> = {
+      'ts': '#3178c6', 'tsx': '#3178c6',
+      'js': '#f7df1e', 'jsx': '#f7df1e',
+      'css': '#1572b6', 'scss': '#cc6699', 'less': '#1d365d',
+      'html': '#e34f26', 'json': '#a8b034',
+      'md': '#519aba', 'py': '#3776ab', 'rs': '#dea584', 'go': '#00add8',
+      'kt': '#a97bff', 'swift': '#fa7343', 'java': '#007396',
+      'sh': '#89e051', 'zsh': '#89e051',
+      'yaml': '#cb171e', 'yml': '#cb171e', 'toml': '#9c4121',
+      'sql': '#e38c00', 'xml': '#e34f26', 'svg': '#ffb13b',
+      'png': '#a074c4', 'jpg': '#a074c4', 'gif': '#a074c4',
+      'vue': '#42b883', 'svelte': '#ff3e00',
+      'c': '#555555', 'cpp': '#f34b7d', 'h': '#555555',
+    };
+    return colors[ext] || 'var(--text-muted)';
   };
 
   return (
     <div className="filetree-panel">
       <div className="filetree-header">
-        <span>[ {workspaceName.toUpperCase()} ]</span>
+        <span>{workspaceName.toUpperCase()}</span>
         <button className="filetree-open-btn" onClick={handleOpenWorkspace}>OPEN</button>
       </div>
       <div className="filetree-list">
         {nodes.map(node => (
           <div
             key={node.path}
-            className="filetree-item"
+            className={`filetree-item ${!node.isDirectory && node.path === activePath ? 'active' : ''}`}
             onClick={() => node.isDirectory ? toggleDir(node) : onFileSelect(node.path, node.name)}
             style={{
               paddingLeft: `${16 + node.depth * 16}px`,
               color: getStatusColor(node.gitStatus),
             }}
           >
-            <span className="filetree-icon">
+            <span className="filetree-icon" style={{ 
+              color: node.isDirectory ? 'var(--accent-color)' : getFileIconColor(node.name),
+              fontSize: node.isDirectory ? '10px' : '9px',
+              fontWeight: node.isDirectory ? 400 : 700,
+            }}>
               {node.isDirectory 
-                ? (expandedDirs.has(node.path) ? '▼' : '▶') 
+                ? (expandedDirs.has(node.path) ? '▾' : '▸') 
                 : getFileIcon(node.name)
               }
             </span>
@@ -146,3 +175,4 @@ export const FileTree: React.FC<Props> = ({ onFileSelect }) => {
     </div>
   );
 };
+

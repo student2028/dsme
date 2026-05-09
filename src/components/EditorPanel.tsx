@@ -1,5 +1,6 @@
-import React, { useRef } from 'react';
+import React, { useRef, useEffect } from 'react';
 import Editor from '@monaco-editor/react';
+import { useTheme } from '../ThemeContext';
 
 interface Props {
   content: string;
@@ -10,6 +11,8 @@ interface Props {
 
 export const EditorPanel: React.FC<Props> = ({ content, onChange, filename, onCursorChange }) => {
   const editorRef = useRef<any>(null);
+  const monacoRef = useRef<any>(null);
+  const { theme } = useTheme();
 
   const getLanguage = (name: string) => {
     const ext = name.split('.').pop()?.toLowerCase();
@@ -26,8 +29,16 @@ export const EditorPanel: React.FC<Props> = ({ content, onChange, filename, onCu
     return map[ext || ''] || 'plaintext';
   };
 
+  // Sync Monaco theme with app theme
+  useEffect(() => {
+    if (monacoRef.current) {
+      monacoRef.current.editor.setTheme(theme === 'light' ? 'dsme-light' : 'dsme-dark');
+    }
+  }, [theme]);
+
   const handleEditorMount = (editor: any, monaco: any) => {
     editorRef.current = editor;
+    monacoRef.current = monaco;
 
     // Track cursor position
     editor.onDidChangeCursorPosition((e: any) => {
@@ -40,35 +51,68 @@ export const EditorPanel: React.FC<Props> = ({ content, onChange, filename, onCu
       window.dispatchEvent(new CustomEvent('editor-save'));
     });
 
-    // Custom dark theme matching our TUI
+    // Dark theme
     monaco.editor.defineTheme('dsme-dark', {
       base: 'vs-dark',
       inherit: true,
       rules: [
-        { token: '', foreground: '00ff00', background: '000000' },
-        { token: 'comment', foreground: '006600', fontStyle: 'italic' },
-        { token: 'keyword', foreground: '00ccff' },
-        { token: 'string', foreground: 'ffaa00' },
-        { token: 'number', foreground: 'ff6600' },
-        { token: 'type', foreground: '00ffaa' },
-        { token: 'function', foreground: 'ffff00' },
-        { token: 'variable', foreground: '00ff00' },
-        { token: 'operator', foreground: 'ffffff' },
+        { token: 'comment', foreground: '6a9955', fontStyle: 'italic' },
+        { token: 'keyword', foreground: 'c586c0' },
+        { token: 'string', foreground: 'ce9178' },
+        { token: 'number', foreground: 'b5cea8' },
+        { token: 'type', foreground: '4ec9b0' },
+        { token: 'function', foreground: 'dcdcaa' },
+        { token: 'variable', foreground: '9cdcfe' },
+        { token: 'operator', foreground: 'd4d4d4' },
       ],
       colors: {
-        'editor.background': '#000000',
-        'editor.foreground': '#00ff00',
-        'editor.lineHighlightBackground': '#0a1a0a',
-        'editor.selectionBackground': '#003300',
-        'editorCursor.foreground': '#00ff00',
-        'editorLineNumber.foreground': '#004400',
-        'editorLineNumber.activeForeground': '#00ff00',
-        'editorIndentGuide.background1': '#111111',
-        'editor.selectionHighlightBackground': '#002200',
-        'editorGutter.background': '#000000',
+        'editor.background': '#0d1117',
+        'editor.foreground': '#c9d1d9',
+        'editor.lineHighlightBackground': '#161b22',
+        'editor.selectionBackground': '#264f78',
+        'editorCursor.foreground': '#7c6ef0',
+        'editorLineNumber.foreground': '#484f58',
+        'editorLineNumber.activeForeground': '#c9d1d9',
+        'editorIndentGuide.background1': '#21262d',
+        'editor.selectionHighlightBackground': '#1a3050',
+        'editorGutter.background': '#0d1117',
+        'editorWidget.background': '#161b22',
+        'editorWidget.border': '#30363d',
       }
     });
-    monaco.editor.setTheme('dsme-dark');
+
+    // Light theme
+    monaco.editor.defineTheme('dsme-light', {
+      base: 'vs',
+      inherit: true,
+      rules: [
+        { token: 'comment', foreground: '6a737d', fontStyle: 'italic' },
+        { token: 'keyword', foreground: 'd73a49' },
+        { token: 'string', foreground: '032f62' },
+        { token: 'number', foreground: '005cc5' },
+        { token: 'type', foreground: '6f42c1' },
+        { token: 'function', foreground: '6f42c1' },
+        { token: 'variable', foreground: '24292e' },
+        { token: 'operator', foreground: '24292e' },
+      ],
+      colors: {
+        'editor.background': '#ffffff',
+        'editor.foreground': '#24292e',
+        'editor.lineHighlightBackground': '#f6f8fa',
+        'editor.selectionBackground': '#c8d3f5',
+        'editorCursor.foreground': '#6c5ce7',
+        'editorLineNumber.foreground': '#bfc8d2',
+        'editorLineNumber.activeForeground': '#24292e',
+        'editorIndentGuide.background1': '#eaecef',
+        'editor.selectionHighlightBackground': '#dde6f5',
+        'editorGutter.background': '#ffffff',
+        'editorWidget.background': '#ffffff',
+        'editorWidget.border': '#e1e4e8',
+      }
+    });
+
+    // Apply theme based on current app theme
+    monaco.editor.setTheme(theme === 'light' ? 'dsme-light' : 'dsme-dark');
   };
 
   return (
@@ -76,7 +120,7 @@ export const EditorPanel: React.FC<Props> = ({ content, onChange, filename, onCu
       <Editor
         height="100%"
         language={getLanguage(filename)}
-        theme="dsme-dark"
+        theme={theme === 'light' ? 'dsme-light' : 'dsme-dark'}
         value={content || "// NO FILE SELECTED\n// USE [ EXPLORER ] OR Ctrl+P TO OPEN A FILE"}
         onChange={onChange}
         onMount={handleEditorMount}

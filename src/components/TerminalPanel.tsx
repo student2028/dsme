@@ -1,37 +1,64 @@
 import React, { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { useTheme } from '../ThemeContext';
 import '@xterm/xterm/css/xterm.css';
+
+const DARK_THEME = {
+  background: '#0d1117',
+  foreground: '#c9d1d9',
+  cursor: '#7c6ef0',
+  cursorAccent: '#0d1117',
+  selectionBackground: 'rgba(124, 110, 240, 0.25)',
+  black: '#1e2030',
+  red: '#f06060',
+  green: '#4ade80',
+  yellow: '#e6c84d',
+  blue: '#56d4e6',
+  magenta: '#c084fc',
+  cyan: '#56d4e6',
+  white: '#e2e4f0',
+};
+
+const LIGHT_THEME = {
+  background: '#f5f6f8',
+  foreground: '#24292e',
+  cursor: '#6c5ce7',
+  cursorAccent: '#f5f6f8',
+  selectionBackground: 'rgba(108, 92, 231, 0.2)',
+  black: '#24292e',
+  red: '#d73a49',
+  green: '#22863a',
+  yellow: '#b08800',
+  blue: '#005cc5',
+  magenta: '#6f42c1',
+  cyan: '#0ea5e9',
+  white: '#fafbfc',
+};
 
 export const TerminalPanel: React.FC = () => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termInstance = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const { theme } = useTheme();
+
+  // Sync terminal theme with app theme
+  useEffect(() => {
+    if (termInstance.current) {
+      termInstance.current.options.theme = theme === 'light' ? LIGHT_THEME : DARK_THEME;
+    }
+  }, [theme]);
 
   useEffect(() => {
     if (!terminalRef.current || termInstance.current) return;
 
     const term = new Terminal({
-      theme: {
-        background: '#000000',
-        foreground: '#00ff00',
-        cursor: '#00ff00',
-        cursorAccent: '#000000',
-        selectionBackground: 'rgba(0, 255, 0, 0.3)',
-        black: '#000000',
-        red: '#ff4444',
-        green: '#00ff00',
-        yellow: '#eab308',
-        blue: '#00ccff',
-        magenta: '#cc66ff',
-        cyan: '#00ccff',
-        white: '#ffffff',
-      },
+      theme: theme === 'light' ? LIGHT_THEME : DARK_THEME,
       fontFamily: "'JetBrains Mono', monospace",
       fontSize: 13,
-      lineHeight: 1.2,
+      lineHeight: 1.3,
       cursorBlink: true,
-      cursorStyle: 'block',
+      cursorStyle: 'bar',
       scrollback: 5000,
       allowProposedApi: true,
     });
@@ -47,9 +74,7 @@ export const TerminalPanel: React.FC = () => {
       fitAddon.fit();
     });
 
-    term.writeln('\x1b[1;32m╔══════════════════════════════════════╗\x1b[0m');
-    term.writeln('\x1b[1;32m║   DSME Terminal — zsh PTY Session    ║\x1b[0m');
-    term.writeln('\x1b[1;32m╚══════════════════════════════════════╝\x1b[0m');
+    term.writeln('\x1b[38;2;124;110;240m  DSME Terminal \x1b[38;2;139;143;167m— Ready\x1b[0m');
     term.writeln('');
 
     if (window.electronAPI) {
@@ -87,7 +112,10 @@ export const TerminalPanel: React.FC = () => {
 
   return (
     <div className="terminal-panel">
-      <div className="terminal-header">[ ZSH PTY SESSION ]</div>
+      <div className="terminal-header">
+        <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--green)', flexShrink: 0 }} />
+        Terminal
+      </div>
       <div ref={terminalRef} className="terminal-content" />
     </div>
   );

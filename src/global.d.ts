@@ -33,8 +33,12 @@ declare global {
       rejectDiff: (changeId: string) => void;
       getConfig: () => Promise<any>;
       saveConfig: (config: any) => Promise<any>;
+      relaunchApp: () => void;
+      sendChatMessageWithImages: (message: string, imageDataUrls: string[]) => void;
       saveConversations: (data: string) => Promise<boolean>;
       loadConversations: () => Promise<string | null>;
+      cancelChatRequest: () => void;
+      resetConversation: () => void;
     };
   }
 }

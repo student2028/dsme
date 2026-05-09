@@ -3,19 +3,25 @@ import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('electronAPI', {
   // Chat
   sendChatMessage: (message: string) => ipcRenderer.send('chat-message', message),
+  sendChatMessageWithImages: (message: string, imageDataUrls: string[]) => ipcRenderer.send('chat-message-images', message, imageDataUrls),
   onChatReply: (callback: (reply: string) => void) => {
+    ipcRenderer.removeAllListeners('chat-reply');
     ipcRenderer.on('chat-reply', (_e, v) => callback(v));
   },
   onChatStreamStart: (callback: () => void) => {
+    ipcRenderer.removeAllListeners('chat-stream-start');
     ipcRenderer.on('chat-stream-start', () => callback());
   },
   onChatStreamToken: (callback: (token: string) => void) => {
+    ipcRenderer.removeAllListeners('chat-stream-token');
     ipcRenderer.on('chat-stream-token', (_e, v) => callback(v));
   },
   onChatStreamEnd: (callback: () => void) => {
+    ipcRenderer.removeAllListeners('chat-stream-end');
     ipcRenderer.on('chat-stream-end', () => callback());
   },
   onChatStatus: (callback: (status: string) => void) => {
+    // Don't removeAll — allow multiple subscribers (ChatPanel + StatusBar)
     ipcRenderer.on('chat-status', (_e, v) => callback(v));
   },
 
@@ -55,6 +61,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Config
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config: any) => ipcRenderer.invoke('save-config', config),
+  relaunchApp: () => ipcRenderer.send('relaunch-app'),
+  cancelChatRequest: () => ipcRenderer.send('cancel-chat-request'),
+  resetConversation: () => ipcRenderer.send('reset-conversation'),
   saveConversations: (data: string) => ipcRenderer.invoke('save-conversations', data),
   loadConversations: () => ipcRenderer.invoke('load-conversations'),
 });

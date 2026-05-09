@@ -8,13 +8,14 @@ import { CommandPalette } from './components/CommandPalette';
 import { SettingsPanel } from './components/SettingsPanel';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { SearchPanel } from './components/SearchPanel';
-import { ShortcutHelp } from './components/ShortcutHelp';
+import { ShortcutsHelp } from './components/ShortcutsHelp';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ActivityBar } from './components/ActivityBar';
 import { GitPanel } from './components/GitPanel';
 import { DiffPreview } from './components/DiffPreview';
 import type { DiffChange } from './components/DiffPreview';
 import { ToastContainer, showToast } from './components/Toast';
+import { useTheme } from './ThemeContext';
 import './index.css';
 
 interface Tab { path: string; name: string; content: string; isDirty: boolean; }
@@ -28,11 +29,13 @@ function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(220);
-  const [chatWidth, setChatWidth] = useState(420);
+  const [chatWidth, setChatWidth] = useState(460);
   const [gitBranch, setGitBranch] = useState('');
   const [sidePanel, setSidePanel] = useState<string>('explorer');
   const [diffChanges, setDiffChanges] = useState<DiffChange[]>([]);
   const autoSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { toggleTheme } = useTheme();
+  const [tabMenu, setTabMenu] = useState<{x: number; y: number; path: string} | null>(null);
 
   const activeTab = tabs.find(t => t.path === activePath);
 
@@ -139,6 +142,8 @@ function App() {
       if (mod && e.shiftKey && e.key === 'F') { e.preventDefault(); setSearchOpen(p => !p); }
       if (mod && e.key === '?') { e.preventDefault(); setHelpOpen(p => !p); }
       if (mod && e.key === 'b') { e.preventDefault(); setSidePanel(p => p ? '' : 'explorer'); }
+      if (mod && e.shiftKey && e.key === 'L') { e.preventDefault(); toggleTheme(); }
+      if (mod && e.key === 'l' && !e.shiftKey) { e.preventDefault(); window.dispatchEvent(new Event('focus-chat')); }
     };
     window.addEventListener('keydown', handler);
     const save = () => handleSave();
@@ -155,7 +160,7 @@ function App() {
 
   const handleChatDrag = useCallback((e: React.MouseEvent) => {
     e.preventDefault(); const sX = e.clientX, sW = chatWidth;
-    const move = (ev: MouseEvent) => setChatWidth(Math.max(300, Math.min(700, sW + (sX - ev.clientX))));
+    const move = (ev: MouseEvent) => setChatWidth(Math.max(280, Math.min(800, sW + (sX - ev.clientX))));
     const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
     document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
   }, [chatWidth]);
@@ -179,7 +184,7 @@ function App() {
         <div className="side-panel">
           {sidePanel === 'explorer' && (
             <ErrorBoundary fallbackMessage="File tree crashed">
-              <FileTree onFileSelect={handleFileSelect} />
+              <FileTree onFileSelect={handleFileSelect} activePath={activePath} />
             </ErrorBoundary>
           )}
           {sidePanel === 'search' && (
@@ -194,20 +199,25 @@ function App() {
       )}
 
       <main className="main-content">
-        <div className="tab-bar">
+        <div className="tab-bar" onDoubleClick={() => setCmdPaletteOpen(true)}>
           {tabs.map(tab => (
-            <div key={tab.path} onClick={() => setActivePath(tab.path)} className={`tab-item ${activePath === tab.path ? 'active' : ''}`}>
-              <span className="tab-name">{tab.name}{tab.isDirty ? ' ●' : ''}</span>
+            <div key={tab.path} onClick={() => setActivePath(tab.path)}
+              onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); handleCloseTab(e as any, tab.path); } }}
+              onContextMenu={(e) => { e.preventDefault(); setTabMenu({x: e.clientX, y: e.clientY, path: tab.path}); }}
+              className={`tab-item ${activePath === tab.path ? 'active' : ''}`}>
+              <span className="tab-name">{tab.name}</span>
+              {tab.isDirty && <span className="tab-dirty">●</span>}
               <span className="tab-close" onClick={(e) => handleCloseTab(e, tab.path)}>×</span>
             </div>
           ))}
-          {tabs.length === 0 && <div className="tab-empty">Ctrl+P open · Ctrl+B sidebar · Ctrl+, settings</div>}
+          {tabs.length === 0 && <div className="tab-empty">⌘P open file · ⌘L chat · ⌘B sidebar · double-click to open</div>}
         </div>
 
         {activeTab && (
-          <div className="breadcrumb">
+          <div className="breadcrumb" title={activeTab.path}
+            onClick={() => { navigator.clipboard.writeText(activeTab.path); showToast('Path copied', 'success'); }}>
             {activeTab.path.split('/').slice(-3).map((part, i, arr) => (
-              <span key={i}>{i > 0 && <span className="breadcrumb-sep">/</span>}<span className={i === arr.length - 1 ? 'breadcrumb-active' : ''}>{part}</span></span>
+              <span key={i}>{i > 0 && <span className="breadcrumb-sep">›</span>}<span className={i === arr.length - 1 ? 'breadcrumb-active' : ''}>{part}</span></span>
             ))}
           </div>
         )}
@@ -237,7 +247,7 @@ function App() {
       <CommandPalette isOpen={cmdPaletteOpen} onClose={() => setCmdPaletteOpen(false)} onFileSelect={handleFileSelect} />
       <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
       {searchOpen && <SearchPanel isOpen={searchOpen} onClose={() => setSearchOpen(false)} onResultSelect={handleFileSelect} />}
-      <ShortcutHelp isOpen={helpOpen} onClose={() => setHelpOpen(false)} />
+      {helpOpen && <ShortcutsHelp onClose={() => setHelpOpen(false)} />}
 
       {/* Agent Diff Preview */}
       {diffChanges.filter(c => c.status === 'pending').length > 0 && (
@@ -259,6 +269,28 @@ function App() {
           }}
           onClose={() => setDiffChanges([])}
         />
+      )}
+
+      {/* Tab context menu */}
+      {tabMenu && (
+        <div className="command-palette-overlay" onClick={() => setTabMenu(null)} style={{background: 'transparent'}}>
+          <div className="tab-context-menu" style={{left: tabMenu.x, top: tabMenu.y}} onClick={e => e.stopPropagation()}>
+            <div className="tab-context-item" onClick={() => {
+              const e = new MouseEvent('click'); handleCloseTab(e as any, tabMenu.path); setTabMenu(null);
+            }}>Close</div>
+            <div className="tab-context-item" onClick={() => {
+              setTabs(prev => { const nt = prev.filter(t => t.path === tabMenu.path); setActivePath(tabMenu.path); return nt; });
+              setTabMenu(null);
+            }}>Close Others</div>
+            <div className="tab-context-item" onClick={() => {
+              setTabs([]); setActivePath(''); setTabMenu(null);
+            }}>Close All</div>
+            <div className="tab-context-sep" />
+            <div className="tab-context-item" onClick={() => {
+              navigator.clipboard.writeText(tabMenu.path); showToast('Path copied', 'success'); setTabMenu(null);
+            }}>Copy Path</div>
+          </div>
+        </div>
       )}
 
       <ToastContainer />

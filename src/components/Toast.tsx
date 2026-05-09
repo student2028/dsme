@@ -5,6 +5,7 @@ interface Toast {
   message: string;
   type: 'success' | 'error' | 'info';
   timestamp: number;
+  exiting?: boolean;
 }
 
 let toastId = 0;
@@ -22,10 +23,14 @@ export const ToastContainer: React.FC = () => {
   useEffect(() => {
     const handler = (toast: Toast) => {
       setToasts(prev => [...prev, toast]);
-      // Auto-remove after 3s
+      // Start exit animation
+      setTimeout(() => {
+        setToasts(prev => prev.map(t => t.id === toast.id ? { ...t, exiting: true } : t));
+      }, 2200);
+      // Remove after exit animation
       setTimeout(() => {
         setToasts(prev => prev.filter(t => t.id !== toast.id));
-      }, 3000);
+      }, 2500);
     };
     toastListeners.push(handler);
     return () => {
@@ -39,7 +44,7 @@ export const ToastContainer: React.FC = () => {
   return (
     <div className="toast-container">
       {toasts.map(t => (
-        <div key={t.id} className={`toast toast-${t.type}`}>
+        <div key={t.id} className={`toast toast-${t.type}${t.exiting ? ' toast-exit' : ''}`}>
           <span className="toast-icon">
             {t.type === 'success' ? '✓' : t.type === 'error' ? '✗' : 'ℹ'}
           </span>
