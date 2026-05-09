@@ -84,16 +84,16 @@ You work inside an Electron-based IDE with full system access. Always prioritize
 async function webSearch(query: string): Promise<string> {
   if (!query) return 'Error: query is required';
   const q = encodeURIComponent(query);
-  const proxyArgs = process.env.https_proxy ? ['--proxy', process.env.https_proxy] : [];
+  const proxyArgs = process.env.https_proxy ? `--proxy ${process.env.https_proxy}` : '';
 
   try {
-    // Use DuckDuckGo HTML for search (no JS needed)
-    const cmd = `curl -sS --max-time 15 ${proxyArgs.join(' ')} -H "User-Agent: Mozilla/5.0" "https://html.duckduckgo.com/html/?q=${q}" | grep -oP 'class="result__a"[^>]*href="[^"]*"[^>]*>[^<]*' | head -8`;
+    // DuckDuckGo HTML search — BSD grep compatible (no -P flag)
+    const cmd = `curl -sS --max-time 15 ${proxyArgs} -H "User-Agent: Mozilla/5.0" "https://html.duckduckgo.com/html/?q=${q}" | sed -n 's/.*class="result__a"[^>]*>\\([^<]*\\)<.*/\\1/p' | head -8`;
     const { stdout } = await execAsync(cmd, { timeout: 20000, maxBuffer: 1024 * 1024 });
 
     if (!stdout.trim()) {
-      // Fallback: Google via curl
-      const cmd2 = `curl -sS --max-time 15 ${proxyArgs.join(' ')} -H "User-Agent: Mozilla/5.0" "https://www.google.com/search?q=${q}&hl=zh-CN" | grep -oP '<h3[^>]*>[^<]+</h3>' | head -6`;
+      // Fallback: Bing (more reliable than Google for scraping)
+      const cmd2 = `curl -sS --max-time 15 ${proxyArgs} -H "User-Agent: Mozilla/5.0" "https://cn.bing.com/search?q=${q}" | grep -Eo '<h2><a[^>]*>[^<]+</a></h2>' | sed 's/<[^>]*>//g' | head -6`;
       const { stdout: s2 } = await execAsync(cmd2, { timeout: 20000, maxBuffer: 1024 * 1024 });
       if (s2.trim()) return `Search results for "${query}":\n${s2}`;
       return `No results found for: ${query}`;

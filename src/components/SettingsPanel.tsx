@@ -6,7 +6,7 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
   const [showKey, setShowKey] = useState(false);
   const [model, setModel] = useState('deepseek-chat');
   const [baseUrl, setBaseUrl] = useState('https://api.deepseek.com/v1');
-  const [agentKernel, setAgentKernel] = useState('builtin');
+
   const [saved, setSaved] = useState(false);
   const { theme, toggleTheme } = useTheme();
 
@@ -15,8 +15,7 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
       window.electronAPI.getConfig().then((config: any) => {
         setApiKey(config.apiKey || '');
         setModel(config.model || 'deepseek-chat');
-        setBaseUrl(config.baseUrl || 'https://api.deepseek.com/v1');
-        setAgentKernel(config.agentKernel || 'builtin');
+        setBaseUrl(config.baseUrl || 'https://api.siliconflow.cn/v1');
       });
       setShowKey(false);
     }
@@ -24,18 +23,11 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
 
   const handleSave = useCallback(async () => {
     if (window.electronAPI) {
-      const oldConfig = await window.electronAPI.getConfig();
-      const kernelChanged = (oldConfig.agentKernel || 'builtin') !== agentKernel;
-      await window.electronAPI.saveConfig({ apiKey, model, baseUrl, agentKernel });
+      await window.electronAPI.saveConfig({ apiKey, model, baseUrl });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-
-      // If kernel changed, need to reinitialize agent
-      if (kernelChanged && window.electronAPI.relaunchApp) {
-        window.electronAPI.relaunchApp();
-      }
     }
-  }, [apiKey, model, baseUrl, agentKernel]);
+  }, [apiKey, model, baseUrl]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -83,16 +75,11 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
           </div>
         </div>
 
-        {/* Agent Kernel Section */}
-        <div className="settings-section-label">Agent Kernel</div>
+        {/* Engine Info */}
+        <div className="settings-section-label">Engine</div>
         <div className="settings-group">
-          <label className="settings-label">Engine</label>
-          <select className="settings-input" value={agentKernel} onChange={e => setAgentKernel(e.target.value)}>
-            <option value="builtin">Built-in (OpenAI API direct)</option>
-            <option value="vercel">Vercel AI SDK (streamText + Zod)</option>
-          </select>
-          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
-            {agentKernel === 'vercel' ? '⚡ Vercel SDK: auto tool loop, type-safe, streaming' : '🔧 Built-in: lightweight, zero-dependency, manual control'}
+          <div style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            ⚡ Vercel AI SDK — streamText + Zod tool schemas
           </div>
         </div>
 
