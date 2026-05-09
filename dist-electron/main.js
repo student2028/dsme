@@ -24487,6 +24487,16 @@ var VercelAgent = class {
 		this.abortController?.abort();
 		this.abortController = null;
 	}
+	/** Keep message history within context window limits */
+	pruneHistory() {
+		const MAX_MESSAGES = 50;
+		const MAX_CONTENT_LEN = 3e3;
+		if (this.messages.length > MAX_MESSAGES) {
+			this.messages = [...this.messages.slice(0, 2), ...this.messages.slice(-(MAX_MESSAGES - 2))];
+			console.log(`[VercelAgent] Pruned history to ${this.messages.length} messages`);
+		}
+		for (const msg of this.messages) if (typeof msg.content === "string" && msg.content.length > MAX_CONTENT_LEN && msg.role !== "user") msg.content = msg.content.slice(0, MAX_CONTENT_LEN) + "\n...(truncated for context)";
+	}
 	setupDiffHandlers() {
 		electron.ipcMain.on("diff-accept", (_e, changeId) => {
 			const p = this.pendingChanges.get(changeId);
@@ -24651,6 +24661,7 @@ var VercelAgent = class {
 				role: "assistant",
 				content: fullText.trim()
 			});
+			this.pruneHistory();
 		} catch (err) {
 			if (err.name === "AbortError") return;
 			const msg = err?.message || String(err);

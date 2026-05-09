@@ -214,6 +214,27 @@ export class VercelAgent implements IAgent {
   resetConversation(): void { this.messages = []; this.abort(); this.busy = false; }
   abort(): void { this.abortController?.abort(); this.abortController = null; }
 
+  /** Keep message history within context window limits */
+  private pruneHistory(): void {
+    const MAX_MESSAGES = 50;
+    const MAX_CONTENT_LEN = 3000; // per-message content cap
+    // Sliding window: drop oldest messages (keep system-relevant context)
+    if (this.messages.length > MAX_MESSAGES) {
+      // Keep first 2 (initial context) + most recent messages
+      this.messages = [
+        ...this.messages.slice(0, 2),
+        ...this.messages.slice(-(MAX_MESSAGES - 2)),
+      ];
+      console.log(`[VercelAgent] Pruned history to ${this.messages.length} messages`);
+    }
+    // Truncate oversized tool results to prevent context bloat
+    for (const msg of this.messages) {
+      if (typeof msg.content === 'string' && msg.content.length > MAX_CONTENT_LEN && msg.role !== 'user') {
+        msg.content = msg.content.slice(0, MAX_CONTENT_LEN) + '\n...(truncated for context)';
+      }
+    }
+  }
+
   setupDiffHandlers(): void {
     ipcMain.on('diff-accept', (_e, changeId: string) => {
       const p = this.pendingChanges.get(changeId);
@@ -390,6 +411,9 @@ export class VercelAgent implements IAgent {
       } else if (fullText.trim()) {
         this.messages.push({ role: 'assistant', content: fullText.trim() });
       }
+
+      // Context window management: sliding window + content truncation
+      this.pruneHistory();
 
     } catch (err: any) {
       if (err.name === 'AbortError') return;
