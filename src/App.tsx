@@ -41,6 +41,13 @@ function App() {
     f(); const i = setInterval(f, 10000); return () => clearInterval(i);
   }, []);
 
+  // Dynamic window title
+  useEffect(() => {
+    if (window.electronAPI) {
+      window.electronAPI.updateTitle(activeTab?.name || '');
+    }
+  }, [activeTab?.name]);
+
   const handleFileSelect = useCallback(async (filepath: string, name: string) => {
     if (tabs.find(t => t.path === filepath)) { setActivePath(filepath); return; }
     if (window.electronAPI) {
@@ -60,6 +67,21 @@ function App() {
       showToast(`Saved: ${tab.name}`, 'success');
     }
   }, [tabs, activePath]);
+
+  // Native menu actions
+  useEffect(() => {
+    if (!window.electronAPI) return;
+    window.electronAPI.onMenuAction((action: string) => {
+      switch (action) {
+        case 'settings': setSettingsOpen(p => !p); break;
+        case 'quick-open': setCmdPaletteOpen(p => !p); break;
+        case 'search': setSearchOpen(p => !p); break;
+        case 'shortcuts': setHelpOpen(p => !p); break;
+        case 'toggle-sidebar': setSidePanel(p => p ? '' : 'explorer'); break;
+        case 'save': handleSave(); break;
+      }
+    });
+  }, [handleSave]);
 
   const handleEditorChange = useCallback((v: string | undefined) => {
     if (v !== undefined) {

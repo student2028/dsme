@@ -24,7 +24,7 @@
     ],
     "mac": {
       "target": "dmg",
-      "icon": null
+      "icon": "build/icon.png"
     }
   },
   "dependencies": {

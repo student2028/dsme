@@ -25,6 +25,8 @@ declare global {
       gitCommit: (msg: string) => Promise<string>;
       onTerminalOutput: (callback: (data: string) => void) => void;
       sendTerminalInput: (data: string) => void;
+      updateTitle: (title: string) => void;
+      onMenuAction: (callback: (action: string) => void) => void;
       onFileChanged: (callback: (filepath: string) => void) => void;
       onDiffPreview: (callback: (change: any) => void) => void;
       acceptDiff: (changeId: string) => void;

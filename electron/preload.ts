@@ -37,6 +37,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('terminal-output', (_e, d) => callback(d));
   },
   sendTerminalInput: (data: string) => ipcRenderer.send('terminal-input', data),
+  updateTitle: (title: string) => ipcRenderer.send('update-title', title),
+  onMenuAction: (callback: (action: string) => void) => {
+    ipcRenderer.on('menu-action', (_e, action) => callback(action));
+  },
 
   // File watcher
   onFileChanged: (callback: (filepath: string) => void) => {

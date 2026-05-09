@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
 import { join } from 'node:path'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
@@ -36,11 +36,64 @@ async function saveConfig(config: Partial<AppConfig>) {
   return merged;
 }
 
+// Native macOS Menu
+function buildMenu() {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'DSME',
+      submenu: [
+        { label: 'About DSME', role: 'about' },
+        { type: 'separator' },
+        { label: 'Settings', accelerator: 'CmdOrCtrl+,', click: () => win?.webContents.send('menu-action', 'settings') },
+        { type: 'separator' },
+        { label: 'Quit', accelerator: 'CmdOrCtrl+Q', role: 'quit' },
+      ]
+    },
+    {
+      label: 'File',
+      submenu: [
+        { label: 'Open Workspace...', accelerator: 'CmdOrCtrl+O', click: () => win?.webContents.send('menu-action', 'open-workspace') },
+        { label: 'Quick Open', accelerator: 'CmdOrCtrl+P', click: () => win?.webContents.send('menu-action', 'quick-open') },
+        { type: 'separator' },
+        { label: 'Save', accelerator: 'CmdOrCtrl+S', click: () => win?.webContents.send('menu-action', 'save') },
+        { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => win?.webContents.send('menu-action', 'close-tab') },
+      ]
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' }, { role: 'redo' }, { type: 'separator' },
+        { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' },
+        { type: 'separator' },
+        { label: 'Find in Files', accelerator: 'CmdOrCtrl+Shift+F', click: () => win?.webContents.send('menu-action', 'search') },
+      ]
+    },
+    {
+      label: 'View',
+      submenu: [
+        { label: 'Toggle Sidebar', accelerator: 'CmdOrCtrl+B', click: () => win?.webContents.send('menu-action', 'toggle-sidebar') },
+        { type: 'separator' },
+        { role: 'toggleDevTools' },
+        { role: 'togglefullscreen' },
+        { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'resetZoom' },
+      ]
+    },
+    {
+      label: 'Help',
+      submenu: [
+        { label: 'Keyboard Shortcuts', accelerator: 'CmdOrCtrl+?', click: () => win?.webContents.send('menu-action', 'shortcuts') },
+      ]
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 // Window
 function createWindow() {
   win = new BrowserWindow({
     width: 1500, height: 950, minWidth: 900, minHeight: 600,
     titleBarStyle: 'hiddenInset', backgroundColor: '#000000',
+    title: 'DSME — DeepSeek Matrix Engine',
     webPreferences: {
       preload: join(__dirname, '../dist-electron/preload.js'),
       nodeIntegration: true, contextIsolation: true,
@@ -53,6 +106,7 @@ function createWindow() {
     win.loadFile(join(__dirname, '../dist/index.html'))
   }
 
+  buildMenu();
   initAgent(); startPty();
 }
 
@@ -80,6 +134,11 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 app.whenReady().then(() => {
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+});
+
+// Dynamic window title
+ipcMain.on('update-title', (_, title: string) => {
+  if (win) win.setTitle(title ? `${title} — DSME` : 'DSME — DeepSeek Matrix Engine');
 });
 
 // IPC
