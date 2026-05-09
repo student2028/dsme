@@ -2281,10 +2281,50 @@ body {
 .md-content blockquote {
   border-left: 3px solid var(--accent-color);
   margin: 8px 0;
-  padding: 6px 14px;
+  padding: 8px 14px;
   color: var(--text-secondary);
   background: var(--accent-subtle);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  position: relative;
+  animation: toolCallSlide 0.3s ease-out;
+}
+
+/* Tool call card — blockquotes containing bold text (tool names) */
+.md-content blockquote strong {
+  color: var(--cyan);
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  text-transform: none;
+}
+
+.md-content blockquote code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+@keyframes toolCallSlide {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* Thinking dots animation (injected when streaming is active) */
+@keyframes thinkingDots {
+  0%, 20% { opacity: 0.2; }
+  50% { opacity: 1; }
+  80%, 100% { opacity: 0.2; }
+}
+
+.md-content p:last-child:empty::after,
+.chat-msg.assistant .md-content:empty::after {
+  content: '●  ●  ●';
+  color: var(--accent-color);
+  font-size: 10px;
+  letter-spacing: 3px;
+  animation: thinkingDots 1.4s infinite ease-in-out;
 }
 
 .md-content ul, .md-content ol {
