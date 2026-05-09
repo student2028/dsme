@@ -3,10 +3,6 @@ let electron = require("electron");
 electron.contextBridge.exposeInMainWorld("electronAPI", {
 	sendChatMessage: (message) => electron.ipcRenderer.send("chat-message", message),
 	sendChatMessageWithImages: (message, imageDataUrls) => electron.ipcRenderer.send("chat-message-images", message, imageDataUrls),
-	onChatReply: (callback) => {
-		electron.ipcRenderer.removeAllListeners("chat-reply");
-		electron.ipcRenderer.on("chat-reply", (_e, v) => callback(v));
-	},
 	onChatStreamStart: (callback) => {
 		electron.ipcRenderer.removeAllListeners("chat-stream-start");
 		electron.ipcRenderer.on("chat-stream-start", () => callback());

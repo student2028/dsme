@@ -4,10 +4,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Chat
   sendChatMessage: (message: string) => ipcRenderer.send('chat-message', message),
   sendChatMessageWithImages: (message: string, imageDataUrls: string[]) => ipcRenderer.send('chat-message-images', message, imageDataUrls),
-  onChatReply: (callback: (reply: string) => void) => {
-    ipcRenderer.removeAllListeners('chat-reply');
-    ipcRenderer.on('chat-reply', (_e, v) => callback(v));
-  },
   onChatStreamStart: (callback: () => void) => {
     ipcRenderer.removeAllListeners('chat-stream-start');
     ipcRenderer.on('chat-stream-start', () => callback());

@@ -294,9 +294,16 @@ export class VercelAgent implements IAgent {
         description: 'Run shell command.',
         parameters: z.object({ command: z.string() }),
         execute: async ({ command }) => {
-          const { stdout, stderr } = await execAsync(command, { cwd, timeout: 60000, maxBuffer: 2 * 1024 * 1024 });
-          send('terminal-output', `\r\n$ ${command}\r\n${stdout}`);
-          return stdout + (stderr ? `\nSTDERR:\n${stderr}` : '');
+          try {
+            const { stdout, stderr } = await execAsync(command, { cwd, timeout: 60000, maxBuffer: 2 * 1024 * 1024 });
+            send('terminal-output', `\r\n$ ${command}\r\n${stdout}`);
+            let result = stdout + (stderr ? `\nSTDERR:\n${stderr}` : '');
+            return result.length > 16000 ? result.slice(0, 16000) + '\n...(truncated)' : result;
+          } catch (e: any) {
+            const out = (e.stdout || '') + (e.stderr ? `\nSTDERR:\n${e.stderr}` : '');
+            send('terminal-output', `\r\n$ ${command}\r\n${out || e.message}`);
+            return out || `Command failed: ${e.message}`;
+          }
         },
       }),
 

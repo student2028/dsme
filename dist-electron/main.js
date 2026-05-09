@@ -24569,13 +24569,20 @@ var VercelAgent = class {
 				description: "Run shell command.",
 				parameters: object$1({ command: string() }),
 				execute: async ({ command }) => {
-					const { stdout, stderr } = await execAsync$1(command, {
-						cwd,
-						timeout: 6e4,
-						maxBuffer: 2 * 1024 * 1024
-					});
-					send("terminal-output", `\r\n$ ${command}\r\n${stdout}`);
-					return stdout + (stderr ? `\nSTDERR:\n${stderr}` : "");
+					try {
+						const { stdout, stderr } = await execAsync$1(command, {
+							cwd,
+							timeout: 6e4,
+							maxBuffer: 2 * 1024 * 1024
+						});
+						send("terminal-output", `\r\n$ ${command}\r\n${stdout}`);
+						let result = stdout + (stderr ? `\nSTDERR:\n${stderr}` : "");
+						return result.length > 16e3 ? result.slice(0, 16e3) + "\n...(truncated)" : result;
+					} catch (e) {
+						const out = (e.stdout || "") + (e.stderr ? `\nSTDERR:\n${e.stderr}` : "");
+						send("terminal-output", `\r\n$ ${command}\r\n${out || e.message}`);
+						return out || `Command failed: ${e.message}`;
+					}
 				}
 			}),
 			web_search: tool({

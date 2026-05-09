@@ -178,19 +178,18 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
 
   // Track activeConvId in a ref so IPC callbacks always see the latest value
   const activeConvIdRef = useRef(activeConvId);
-  useEffect(() => { activeConvIdRef.current = activeConvId; }, [activeConvId]);
+  useEffect(() => {
+    const prev = activeConvIdRef.current;
+    activeConvIdRef.current = activeConvId;
+    // When switching conversations, reset backend context to prevent cross-talk
+    if (prev !== activeConvId && window.electronAPI?.resetConversation) {
+      window.electronAPI.resetConversation();
+    }
+  }, [activeConvId]);
 
   // Streaming IPC — register ONCE
   useEffect(() => {
     if (!window.electronAPI) return;
-    window.electronAPI.onChatReply((text: string) => {
-      if (streamingMsgId.current) {
-        setConversations(prev => prev.map(conv => {
-          if (conv.id !== activeConvIdRef.current) return conv;
-          return { ...conv, messages: conv.messages.map(m => m.id === streamingMsgId.current ? { ...m, content: m.content + text } : m) };
-        }));
-      }
-    });
     window.electronAPI.onChatStreamStart(() => {
       const mid = newId();
       streamingMsgId.current = mid;

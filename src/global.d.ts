@@ -9,7 +9,6 @@ declare global {
   interface Window {
     electronAPI: {
       sendChatMessage: (message: string) => void;
-      onChatReply: (callback: (reply: string) => void) => void;
       onChatStreamStart: (callback: () => void) => void;
       onChatStreamToken: (callback: (token: string) => void) => void;
       onChatStreamEnd: (callback: () => void) => void;
