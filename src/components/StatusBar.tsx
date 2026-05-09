@@ -12,6 +12,7 @@ export const StatusBar: React.FC<Props> = ({ activePath, language, cursorPositio
   const [model, setModel] = useState('');
   const [connected, setConnected] = useState(false);
   const [agentStatus, setAgentStatus] = useState('idle');
+  const [ragFiles, setRagFiles] = useState(0);
   const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
@@ -33,6 +34,7 @@ export const StatusBar: React.FC<Props> = ({ activePath, language, cursorPositio
   useEffect(() => {
     if (!window.electronAPI) return;
     window.electronAPI.onChatStatus((status: string) => setAgentStatus(status));
+    window.electronAPI.onRagStatus((count: number) => setRagFiles(count));
   }, []);
 
   const getStatusText = () => {
@@ -90,7 +92,12 @@ export const StatusBar: React.FC<Props> = ({ activePath, language, cursorPositio
           <span className="status-dot" />
           {model || 'No model'}
         </span>
-        <span className="status-item status-version">🐬 DSME v1.0</span>
+        {ragFiles > 0 && (
+          <span className="status-item" title={`RAG: ${ragFiles} project files indexed for context retrieval`} style={{ opacity: 0.7 }}>
+            🧠 {ragFiles}
+          </span>
+        )}
+        <span className="status-item status-version">🐬 DSME v2.0</span>
       </div>
     </div>
   );

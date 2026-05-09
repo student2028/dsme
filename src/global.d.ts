@@ -38,6 +38,7 @@ declare global {
       loadConversations: () => Promise<string | null>;
       cancelChatRequest: () => void;
       resetConversation: () => void;
+      onRagStatus: (callback: (count: number) => void) => void;
     };
   }
 }

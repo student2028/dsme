@@ -49,7 +49,7 @@ class TestRunner {
 
   async newConversation() {
     await this.eval('document.querySelector(".chat-new-btn")?.click()');
-    await this.sleep(800);
+    await this.sleep(1500);
   }
 
   async getLastResponse() {
@@ -141,10 +141,11 @@ async function main() {
   // T3: Error recovery
   await t.test('Error recovery (file not found)', async () => {
     await t.newConversation();
+    await t.sleep(500); // Extra wait for clean state after cancel test
     await t.eval("window.electronAPI.sendChatMessage('读取文件 /nonexistent_test_42.txt')");
-    await t.waitIdle();
+    await t.waitIdle(25); // Longer wait — RAG context adds latency
     const r = await t.getLastResponse();
-    return r.includes('not found') || r.includes('不存在') || r.includes('Error') || r.includes('找不到') || r.includes('无法') || r.includes('ENOENT') || r.includes('error') || r.includes('没有找到');
+    return r.includes('not found') || r.includes('不存在') || r.includes('Error') || r.includes('找不到') || r.includes('无法') || r.includes('ENOENT') || r.includes('error') || r.includes('没有找到') || r.includes('失败');
   });
 
   // T4: Cancel

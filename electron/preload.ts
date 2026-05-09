@@ -62,4 +62,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   resetConversation: () => ipcRenderer.send('reset-conversation'),
   saveConversations: (data: string) => ipcRenderer.invoke('save-conversations', data),
   loadConversations: () => ipcRenderer.invoke('load-conversations'),
+
+  // RAG
+  onRagStatus: (callback: (count: number) => void) => {
+    ipcRenderer.removeAllListeners('rag-status');
+    ipcRenderer.on('rag-status', (_e, count) => callback(count));
+  },
 });

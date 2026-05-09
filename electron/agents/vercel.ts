@@ -206,7 +206,16 @@ export class VercelAgent implements IAgent {
     // Index project files for RAG (non-blocking)
     this.rag.index(config.cwd).then(count => {
       console.log(`[VercelAgent] RAG indexed ${count} files`);
+      this.send('rag-status', count);
     }).catch(() => {});
+  }
+
+  getRagFileCount(): number { return this.rag.fileCount; }
+
+  async reindex(): Promise<number> {
+    const count = await this.rag.index(this.cwd);
+    this.send('rag-status', count);
+    return count;
   }
 
   private send(channel: string, ...args: any[]) {
