@@ -17,12 +17,6 @@ export const GitPanel: React.FC = () => {
     if (!window.electronAPI) return;
     try {
       setBranch(await window.electronAPI.getGitBranch());
-    } catch {}
-
-    // Fetch git status via searchCodebase workaround — we'll parse it
-    try {
-      const b = await window.electronAPI.getGitBranch();
-      setBranch(b);
       const statusRaw = await window.electronAPI.getGitStatus();
       setFiles(statusRaw);
     } catch {}
@@ -69,6 +63,7 @@ export const GitPanel: React.FC = () => {
         <input
           className="git-commit-input"
           placeholder="Commit message..."
+          aria-label="Commit message"
           value={commitMsg}
           onChange={e => setCommitMsg(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') handleCommit(); }}
@@ -78,6 +73,7 @@ export const GitPanel: React.FC = () => {
           className="git-commit-btn"
           onClick={handleCommit}
           disabled={!commitMsg.trim() || isCommitting}
+          aria-label="Commit changes"
         >
           {isCommitting ? '...' : '✓'}
         </button>

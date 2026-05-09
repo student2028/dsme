@@ -102,6 +102,7 @@ export const SearchPanel: React.FC<Props> = ({ isOpen, onClose, onResultSelect }
             ref={inputRef}
             className="command-palette-input"
             placeholder="Search in workspace..."
+            aria-label="Search in workspace"
             value={query}
             onChange={e => handleQueryChange(e.target.value)}
             onKeyDown={handleKeyDown}
