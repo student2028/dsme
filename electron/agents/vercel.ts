@@ -95,22 +95,36 @@ async function webSearch(query: string): Promise<string> {
   if (!query) return 'Error: query is required';
   const q = encodeURIComponent(query);
   const proxyArgs = process.env.https_proxy ? `--proxy ${process.env.https_proxy}` : '';
+  const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 
   try {
-    // DuckDuckGo HTML search — BSD grep compatible (no -P flag)
-    const cmd = `curl -sS --max-time 15 ${proxyArgs} -H "User-Agent: Mozilla/5.0" "https://html.duckduckgo.com/html/?q=${q}" | sed -n 's/.*class="result__a"[^>]*>\\([^<]*\\)<.*/\\1/p' | head -8`;
-    const { stdout } = await execAsync(cmd, { timeout: 20000, maxBuffer: 1024 * 1024 });
+    // Strategy 1: DuckDuckGo Lite (most stable HTML structure)
+    const cmd1 = `curl -sS --max-time 15 ${proxyArgs} -H "User-Agent: ${ua}" "https://lite.duckduckgo.com/lite/?q=${q}" 2>/dev/null | sed -n '/<a.*result-link/,/<\\/a>/p; /result-snippet/p' | sed 's/<[^>]*>//g; s/^[[:space:]]*//' | head -20`;
+    const { stdout: s1 } = await execAsync(cmd1, { timeout: 20000, maxBuffer: 1024 * 1024 });
 
-    if (!stdout.trim()) {
-      // Fallback: Bing (more reliable than Google for scraping)
-      const cmd2 = `curl -sS --max-time 15 ${proxyArgs} -H "User-Agent: Mozilla/5.0" "https://cn.bing.com/search?q=${q}" | grep -Eo '<h2><a[^>]*>[^<]+</a></h2>' | sed 's/<[^>]*>//g' | head -6`;
-      const { stdout: s2 } = await execAsync(cmd2, { timeout: 20000, maxBuffer: 1024 * 1024 });
-      if (s2.trim()) return `Search results for "${query}":\n${s2}`;
-      return `No results found for: ${query}`;
+    if (s1.trim()) {
+      return `Web search results for "${query}":\n${s1.trim()}`;
     }
-    return `Search results for "${query}":\n${stdout}`;
+
+    // Strategy 2: DuckDuckGo HTML (classic)
+    const cmd2 = `curl -sS --max-time 15 ${proxyArgs} -H "User-Agent: ${ua}" "https://html.duckduckgo.com/html/?q=${q}" 2>/dev/null | grep -E 'result__a|result__snippet' | sed 's/<[^>]*>//g; s/^[[:space:]]*//' | head -16`;
+    const { stdout: s2 } = await execAsync(cmd2, { timeout: 20000, maxBuffer: 1024 * 1024 });
+
+    if (s2.trim()) {
+      return `Web search results for "${query}":\n${s2.trim()}`;
+    }
+
+    // Strategy 3: Bing fallback
+    const cmd3 = `curl -sS --max-time 15 ${proxyArgs} -H "User-Agent: ${ua}" "https://cn.bing.com/search?q=${q}" 2>/dev/null | grep -Eo '<h2><a[^>]*>[^<]+</a></h2>|<p>[^<]{20,}</p>' | sed 's/<[^>]*>//g' | head -10`;
+    const { stdout: s3 } = await execAsync(cmd3, { timeout: 20000, maxBuffer: 1024 * 1024 });
+
+    if (s3.trim()) {
+      return `Web search results for "${query}" (via Bing):\n${s3.trim()}`;
+    }
+
+    return `No search results found for: "${query}". Try rephrasing the query.`;
   } catch (e: any) {
-    return `Search error: ${e.message}`;
+    return `Search error: ${e.message}. Try a simpler query.`;
   }
 }
 

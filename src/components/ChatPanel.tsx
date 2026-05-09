@@ -494,6 +494,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
 
   return (
     <div className={`chat-panel ${isDragOver ? 'drag-over' : ''}`}
+         role="complementary" aria-label="AI Chat Panel"
          onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDropWithState}>
       <div className="chat-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -521,7 +522,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
           <button className={`chat-history-btn ${showHistory ? 'active' : ''}`} onClick={() => setShowHistory(!showHistory)} title={`会话历史 (${conversations.length})`}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           </button>
-          <button className="chat-new-btn" onClick={handleNewConversation} title="New conversation (⌘N)">
+          <button className="chat-new-btn" onClick={handleNewConversation} title="New conversation (⌘N)" aria-label="New conversation">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           </button>
         </div>
@@ -648,11 +649,12 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
           </div>
         )}
         <div className="chat-input-wrapper">
-          <button className="chat-attach-btn" onClick={() => fileInputRef.current?.click()} title="Attach file">
+          <button className="chat-attach-btn" onClick={() => fileInputRef.current?.click()} title="Attach file" aria-label="Attach file">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
           </button>
           <input ref={fileInputRef} type="file" style={{ display: 'none' }} multiple onChange={handleFileSelect} accept="*/*" />
           <textarea ref={textareaRef} className="chat-input" placeholder="Ask anything... ⏎ Send · ⇧⏎ New line"
+            aria-label="Chat message input"
             value={input} onChange={(e) => {
               setInput(e.target.value);
               // Auto-resize textarea
@@ -663,11 +665,11 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
             onPaste={handlePaste}
             disabled={isLoading} spellCheck="false" rows={1} />
           <button className="chat-submit-btn" onClick={handleSubmit} disabled={(!input.trim() && attachments.length === 0) || isLoading}
-            title="Send message" style={{ display: isLoading ? 'none' : undefined }}>
+            title="Send message" aria-label="Send message" style={{ display: isLoading ? 'none' : undefined }}>
             <SendIcon />
           </button>
           {isLoading && (
-            <button className="chat-stop-btn" onClick={handleStop} title="Stop generating">
+            <button className="chat-stop-btn" onClick={handleStop} title="Stop generating" aria-label="Stop generating">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
             </button>
           )}
