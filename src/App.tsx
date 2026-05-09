@@ -34,6 +34,8 @@ function App() {
   const [sidePanel, setSidePanel] = useState<string>('explorer');
   const [diffChanges, setDiffChanges] = useState<DiffChange[]>([]);
   const autoSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activePathRef = useRef(activePath);
+  activePathRef.current = activePath;
   const { toggleTheme } = useTheme();
   const [tabMenu, setTabMenu] = useState<{x: number; y: number; path: string} | null>(null);
 
@@ -85,6 +87,22 @@ function App() {
         case 'find': window.dispatchEvent(new CustomEvent('dsme-find')); break;
         case 'new-conversation': window.dispatchEvent(new CustomEvent('dsme-new-conversation')); break;
         case 'focus-chat': document.querySelector<HTMLTextAreaElement>('.chat-input')?.focus(); break;
+        case 'close-tab': {
+          const path = activePathRef.current;
+          if (path) {
+            setTabs(prev => {
+              const nt = prev.filter(t => t.path !== path);
+              setActivePath(nt.length > 0 ? nt[nt.length - 1].path : '');
+              return nt;
+            });
+          }
+          break;
+        }
+        case 'open-workspace':
+          window.electronAPI?.openWorkspace().then(dir => {
+            if (dir) { showToast(`Opened: ${dir}`, 'success'); }
+          }).catch(() => {});
+          break;
       }
     });
   }, [handleSave]);

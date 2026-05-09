@@ -8,33 +8,33 @@ const shortcuts = [
   {
     group: 'General',
     items: [
-      { keys: ['⌘', 'P'], desc: 'Command Palette / Open file' },
-      { keys: ['⌘', 'L'], desc: 'Focus chat input' },
-      { keys: ['⌘', ','], desc: 'Open settings' },
-      { keys: ['⇧', '⌘', 'L'], desc: 'Toggle light/dark theme' },
-      { keys: ['⌘', '/'], desc: 'Keyboard shortcuts help' },
+      { keys: ['⌘', 'P'], desc: 'Quick Open (file)' },
+      { keys: ['⌘', ','], desc: 'Settings' },
+      { keys: ['⌘', 'B'], desc: 'Toggle sidebar' },
+      { keys: ['⌘', 'O'], desc: 'Open workspace' },
+      { keys: ['⇧', '⌘', 'L'], desc: 'Toggle theme' },
+      { keys: ['⌘', '?'], desc: 'This help panel' },
     ],
   },
   {
     group: 'Chat',
     items: [
+      { keys: ['⌘', 'N'], desc: 'New conversation' },
+      { keys: ['⌘', 'L'], desc: 'Focus chat input' },
+      { keys: ['⌘', 'F'], desc: 'Find in conversation' },
       { keys: ['Enter'], desc: 'Send message' },
-      { keys: ['⇧', 'Enter'], desc: 'New line in message' },
-      { keys: ['⌘', 'V'], desc: 'Paste image from clipboard' },
-    ],
-  },
-  {
-    group: 'Settings',
-    items: [
-      { keys: ['⌘', 'S'], desc: 'Save settings' },
-      { keys: ['Esc'], desc: 'Close settings / overlay' },
+      { keys: ['⇧', 'Enter'], desc: 'New line' },
+      { keys: ['⌘', 'V'], desc: 'Paste image' },
+      { keys: ['Esc'], desc: 'Close search bar' },
     ],
   },
   {
     group: 'Editor',
     items: [
+      { keys: ['⌘', 'S'], desc: 'Save file' },
+      { keys: ['⌘', 'W'], desc: 'Close tab' },
+      { keys: ['⇧', '⌘', 'F'], desc: 'Find in files' },
       { keys: ['Middle Click'], desc: 'Close tab' },
-      { keys: ['Double Click'], desc: 'New tab (on tab bar)' },
     ],
   },
 ];
