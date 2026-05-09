@@ -24381,13 +24381,21 @@ async function webSearch(query) {
 }
 async function fetchUrl(url) {
 	if (!url) return "Error: url is required";
-	const proxyArgs = process.env.https_proxy ? ["--proxy", process.env.https_proxy] : [];
 	try {
-		const { stdout } = await execAsync$1(`curl -sS --max-time 20 ${proxyArgs.join(" ")} -L -H "User-Agent: Mozilla/5.0" "${url}"`, {
+		const u = new URL(url);
+		if (!["http:", "https:"].includes(u.protocol)) return "Error: only http/https URLs supported";
+	} catch {
+		return "Error: invalid URL";
+	}
+	const safeUrl = url.replace(/[;&|`$(){}!#]/g, "");
+	const proxyArgs = process.env.https_proxy ? `--proxy ${process.env.https_proxy}` : "";
+	try {
+		const { stdout } = await execAsync$1(`curl -sS --max-time 20 ${proxyArgs} -L -H "User-Agent: Mozilla/5.0" '${safeUrl}'`, {
 			timeout: 25e3,
 			maxBuffer: 2 * 1024 * 1024
 		});
-		return `URL: ${url}\n\n${stdout.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s{2,}/g, " ").trim().slice(0, 15e3)}`;
+		const text = stdout.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s{2,}/g, " ").trim().slice(0, 15e3);
+		return text ? `URL: ${url}\n\n${text}` : `No content from: ${url}`;
 	} catch (e) {
 		return `Fetch error: ${e.message}`;
 	}
@@ -24679,8 +24687,7 @@ var CONFIG_PATH = (0, node_path.join)(electron.app.getPath("userData"), "dsme-co
 var DEFAULT_CONFIG = {
 	apiKey: process.env.DSME_API_KEY || "",
 	model: "deepseek-ai/DeepSeek-V4-Flash",
-	baseUrl: "https://api.siliconflow.cn/v1",
-	agentKernel: "vercel"
+	baseUrl: "https://api.siliconflow.cn/v1"
 };
 async function loadConfig() {
 	try {
@@ -24865,14 +24872,13 @@ electron.ipcMain.on("terminal-input", (_, data) => {
 electron.ipcMain.on("cancel-chat-request", () => agent?.abort());
 electron.ipcMain.on("reset-conversation", () => agent?.resetConversation());
 electron.ipcMain.on("relaunch-app", async () => {
-	console.log("[Main] Reinitializing agent (kernel switch)...");
+	console.log("[Main] Reinitializing agent...");
 	electron.ipcMain.removeAllListeners("diff-accept");
 	electron.ipcMain.removeAllListeners("diff-reject");
 	agent = null;
 	await initAgent();
-	const label = (await loadConfig()).agentKernel === "vercel" ? "Vercel AI SDK" : "Built-in";
 	win?.webContents.send("chat-stream-start", "");
-	win?.webContents.send("chat-stream-token", `Agent kernel switched to **${label}**. New session started.`);
+	win?.webContents.send("chat-stream-token", "Agent reinitialized. New session started.");
 	win?.webContents.send("chat-stream-end", "");
 	win?.webContents.send("chat-status", "idle");
 });
@@ -24935,7 +24941,7 @@ electron.ipcMain.handle("get-git-status", async () => {
 });
 electron.ipcMain.handle("git-commit", async (_, msg) => {
 	await execAsync("git add -A", { cwd: currentWorkspacePath });
-	const { stdout } = await execAsync(`git commit -m "${msg.replace(/"/g, "\\\"")}"`, { cwd: currentWorkspacePath });
+	const { stdout } = await execAsync(`git commit -m "${msg.replace(/[`$\\!]/g, "").replace(/"/g, "\\\"")}"`, { cwd: currentWorkspacePath });
 	return stdout;
 });
 electron.ipcMain.handle("open-workspace", async () => {
@@ -25008,7 +25014,7 @@ electron.ipcMain.handle("load-conversations", async () => {
 });
 electron.ipcMain.handle("search-codebase", async (_, query) => {
 	try {
-		const { stdout } = await execAsync(`grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude-dir=dist-electron "${query.replace(/"/g, "\\\"")}" .`, {
+		const { stdout } = await execAsync(`grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude-dir=dist-electron "${query.replace(/[;&|`$(){}!#"'\\]/g, "\\$&")}" .`, {
 			cwd: currentWorkspacePath,
 			maxBuffer: 2 * 1024 * 1024
 		});

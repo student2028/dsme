@@ -36,13 +36,12 @@ let currentWorkspacePath = path.resolve(__dirname, '..')
 // Config
 const CONFIG_PATH = join(app.getPath('userData'), 'dsme-config.json');
 
-interface AppConfig { apiKey: string; model: string; baseUrl: string; agentKernel: string; }
+interface AppConfig { apiKey: string; model: string; baseUrl: string; }
 
 const DEFAULT_CONFIG: AppConfig = {
   apiKey: process.env.DSME_API_KEY || '',
   model: 'deepseek-ai/DeepSeek-V4-Flash',
   baseUrl: 'https://api.siliconflow.cn/v1',
-  agentKernel: 'vercel',
 };
 
 async function loadConfig(): Promise<AppConfig> {
@@ -179,19 +178,15 @@ ipcMain.on('terminal-input', (_, data) => { if (ptyProcess) ptyProcess.stdin.wri
 ipcMain.on('cancel-chat-request', () => agent?.abort());
 ipcMain.on('reset-conversation', () => agent?.resetConversation());
 
-// Reinitialize agent when kernel config changes (no full app restart needed)
+// Reinitialize agent when config changes (no full app restart needed)
 ipcMain.on('relaunch-app', async () => {
-  console.log('[Main] Reinitializing agent (kernel switch)...');
-  // Clean up old agent's IPC handlers to prevent duplicates
+  console.log('[Main] Reinitializing agent...');
   ipcMain.removeAllListeners('diff-accept');
   ipcMain.removeAllListeners('diff-reject');
   agent = null;
   await initAgent();
-  const config = await loadConfig();
-  const label = config.agentKernel === 'vercel' ? 'Vercel AI SDK' : 'Built-in';
-  // Send through proper stream protocol so frontend renders correctly
   win?.webContents.send('chat-stream-start', '');
-  win?.webContents.send('chat-stream-token', `Agent kernel switched to **${label}**. New session started.`);
+  win?.webContents.send('chat-stream-token', 'Agent reinitialized. New session started.');
   win?.webContents.send('chat-stream-end', '');
   win?.webContents.send('chat-status', 'idle');
 });
@@ -245,7 +240,9 @@ ipcMain.handle('get-git-status', async () => {
 
 ipcMain.handle('git-commit', async (_, msg: string) => {
   await execAsync('git add -A', { cwd: currentWorkspacePath });
-  const { stdout } = await execAsync(`git commit -m "${msg.replace(/"/g, '\\"')}"`, { cwd: currentWorkspacePath });
+  // Sanitize commit message to prevent shell injection
+  const safeMsg = msg.replace(/[`$\\!]/g, '').replace(/"/g, '\\"');
+  const { stdout } = await execAsync(`git commit -m "${safeMsg}"`, { cwd: currentWorkspacePath });
   return stdout;
 });
 
@@ -306,7 +303,9 @@ ipcMain.handle('load-conversations', async () => {
 
 ipcMain.handle('search-codebase', async (_, query: string) => {
   try {
-    const cmd = `grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude-dir=dist-electron "${query.replace(/"/g, '\\"')}" .`;
+    // Sanitize query to prevent shell injection
+    const safeQuery = query.replace(/[;&|`$(){}!#"'\\]/g, '\\$&');
+    const cmd = `grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude-dir=dist-electron "${safeQuery}" .`;
     const { stdout } = await execAsync(cmd, { cwd: currentWorkspacePath, maxBuffer: 2 * 1024 * 1024 });
     return stdout || '';
   } catch (e: any) { return e.stdout || ''; }

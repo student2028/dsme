@@ -106,9 +106,14 @@ async function webSearch(query: string): Promise<string> {
 
 async function fetchUrl(url: string): Promise<string> {
   if (!url) return 'Error: url is required';
-  const proxyArgs = process.env.https_proxy ? ['--proxy', process.env.https_proxy] : [];
+  // Validate URL format to prevent shell injection
+  try { const u = new URL(url); if (!['http:', 'https:'].includes(u.protocol)) return 'Error: only http/https URLs supported'; }
+  catch { return 'Error: invalid URL'; }
+  // Sanitize: remove shell metacharacters
+  const safeUrl = url.replace(/[;&|`$(){}!#]/g, '');
+  const proxyArgs = process.env.https_proxy ? `--proxy ${process.env.https_proxy}` : '';
   try {
-    const cmd = `curl -sS --max-time 20 ${proxyArgs.join(' ')} -L -H "User-Agent: Mozilla/5.0" "${url}"`;
+    const cmd = `curl -sS --max-time 20 ${proxyArgs} -L -H "User-Agent: Mozilla/5.0" '${safeUrl}'`;
     const { stdout } = await execAsync(cmd, { timeout: 25000, maxBuffer: 2 * 1024 * 1024 });
     // Strip HTML tags, extract text
     const text = stdout
@@ -118,7 +123,7 @@ async function fetchUrl(url: string): Promise<string> {
       .replace(/\s{2,}/g, ' ')
       .trim()
       .slice(0, 15000);
-    return `URL: ${url}\n\n${text}`;
+    return text ? `URL: ${url}\n\n${text}` : `No content from: ${url}`;
   } catch (e: any) {
     return `Fetch error: ${e.message}`;
   }
