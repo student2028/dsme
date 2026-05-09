@@ -12,7 +12,7 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
 
   useEffect(() => {
     if (isOpen && window.electronAPI) {
-      window.electronAPI.getConfig().then((config: any) => {
+      window.electronAPI.getConfig().then(config => {
         setApiKey(config.apiKey || '');
         setModel(config.model || 'deepseek-chat');
         setBaseUrl(config.baseUrl || 'https://api.siliconflow.cn/v1');

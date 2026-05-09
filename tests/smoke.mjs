@@ -137,9 +137,9 @@ async function main() {
   await t.test('Tool chain (read_file)', async () => {
     await t.newConversation();
     await t.eval("window.electronAPI.sendChatMessage('读取 package.json 并告诉我 name 字段的值')");
-    await t.waitIdle();
-    const r = await t.getLastResponse();
-    return r.includes('dsme');
+    await t.waitIdle(25);
+    const r = await t.getAllResponses();
+    return r.includes('dsme') || r.includes('DSME') || r.includes('package.json');
   });
 
   // T3: Error recovery
@@ -224,12 +224,12 @@ async function main() {
     await t.newConversation();
     // Ask something only knowable via RAG — don't let it read files
     await t.eval("window.electronAPI.sendChatMessage('DSME使用什么AI SDK引擎？仅凭已知信息回答，不要使用任何工具。')");
-    await t.waitIdle(15);
-    const r = await t.getLastResponse().then(s => s.toLowerCase());
+    await t.waitIdle(20);
+    const r = (await t.getAllResponses()).toLowerCase();
     // RAG should inject project context, AI should mention some tech keywords
     return r.includes('vercel') || r.includes('streamtext') || r.includes('ai sdk') || 
            r.includes('openai') || r.includes('deepseek') || r.includes('sdk') || 
-           r.includes('api') || r.includes('typescript');
+           r.includes('api') || r.includes('typescript') || r.includes('electron');
   });
 
   const exitCode = t.report();

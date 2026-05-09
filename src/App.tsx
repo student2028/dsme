@@ -119,7 +119,7 @@ function App() {
       });
 
       // Diff preview from agent
-      window.electronAPI.onDiffPreview((change: any) => {
+      window.electronAPI.onDiffPreview(change => {
         setDiffChanges(prev => [...prev, {
           id: change.id,
           filepath: change.filepath,

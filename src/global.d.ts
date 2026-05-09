@@ -5,6 +5,20 @@ interface FileNode {
   gitStatus?: 'modified' | 'untracked' | 'clean';
 }
 
+interface DiffChange {
+  id: string;
+  filepath: string;
+  filename: string;
+  oldContent: string;
+  newContent: string;
+}
+
+interface AppConfig {
+  apiKey: string;
+  model: string;
+  baseUrl: string;
+}
+
 declare global {
   interface Window {
     electronAPI: {
@@ -27,11 +41,11 @@ declare global {
       updateTitle: (title: string) => void;
       onMenuAction: (callback: (action: string) => void) => void;
       onFileChanged: (callback: (filepath: string) => void) => void;
-      onDiffPreview: (callback: (change: any) => void) => void;
+      onDiffPreview: (callback: (change: DiffChange) => void) => void;
       acceptDiff: (changeId: string) => void;
       rejectDiff: (changeId: string) => void;
-      getConfig: () => Promise<any>;
-      saveConfig: (config: any) => Promise<any>;
+      getConfig: () => Promise<AppConfig>;
+      saveConfig: (config: Partial<AppConfig>) => Promise<AppConfig>;
       relaunchApp: () => void;
       sendChatMessageWithImages: (message: string, imageDataUrls: string[]) => void;
       saveConversations: (data: string) => Promise<boolean>;

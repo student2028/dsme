@@ -18,9 +18,9 @@ export const StatusBar: React.FC<Props> = ({ activePath, language, cursorPositio
   useEffect(() => {
     const checkConfig = () => {
       if (window.electronAPI) {
-        window.electronAPI.getConfig().then((c: any) => {
+        window.electronAPI.getConfig().then(c => {
           const m = c?.model || '';
-          setModel(m.includes('/') ? m.split('/').pop() : m || 'Not configured');
+          setModel(m.includes('/') ? m.split('/').pop() || m : m || 'Not configured');
           setConnected(!!(c?.apiKey && c.apiKey.length > 5 && c?.baseUrl));
         }).catch(() => setConnected(false));
       }
