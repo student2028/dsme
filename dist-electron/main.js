@@ -24408,7 +24408,9 @@ function formatToolArgs(name, args) {
 			case "run_command": return args.command ? ` \`${args.command.slice(0, 60)}${args.command.length > 60 ? "..." : ""}\`` : "";
 			case "read_file": return args.filepath ? ` \`${args.filepath}\`` : "";
 			case "write_file": return args.filepath ? ` → \`${args.filepath}\`` : "";
+			case "replace_in_file": return args.filepath ? ` \`${args.filepath}\`` : "";
 			case "list_directory": return args.dirpath ? ` \`${args.dirpath}\`` : "";
+			case "search_codebase": return args.query ? ` \`${args.query.slice(0, 40)}${args.query.length > 40 ? "..." : ""}\`` : "";
 			default: return "";
 		}
 	} catch {
@@ -24551,9 +24553,13 @@ var VercelAgent = class {
 				description: "Read a file.",
 				parameters: object$1({ filepath: string() }),
 				execute: async ({ filepath }) => {
-					const content = await node_fs_promises.readFile(resolve(filepath), "utf-8");
-					if (content.length > 5e4) return content.slice(0, 5e4) + `\n\n...(truncated, ${content.length} total chars)`;
-					return content;
+					try {
+						const content = await node_fs_promises.readFile(resolve(filepath), "utf-8");
+						if (content.length > 5e4) return content.slice(0, 5e4) + `\n\n...(truncated, ${content.length} total chars)`;
+						return content;
+					} catch (e) {
+						return `Error reading ${filepath}: ${e.code === "ENOENT" ? "File not found" : e.message}`;
+					}
 				}
 			}),
 			write_file: tool({
@@ -24563,34 +24569,47 @@ var VercelAgent = class {
 					content: string()
 				}),
 				execute: async ({ filepath, content }) => {
-					const fp = resolve(filepath);
-					await node_fs_promises.mkdir(node_path.dirname(fp), { recursive: true });
-					await node_fs_promises.writeFile(fp, content, "utf8");
-					send("file-changed", fp);
-					return `Written: ${filepath}`;
+					try {
+						const fp = resolve(filepath);
+						await node_fs_promises.mkdir(node_path.dirname(fp), { recursive: true });
+						await node_fs_promises.writeFile(fp, content, "utf8");
+						send("file-changed", fp);
+						return `Written: ${filepath}`;
+					} catch (e) {
+						return `Error writing ${filepath}: ${e.message}`;
+					}
 				}
 			}),
 			replace_in_file: tool({
-				description: "Replace exact substring in a file.",
+				description: "Replace exact substring in a file. Replaces the first occurrence.",
 				parameters: object$1({
 					filepath: string(),
 					target: string(),
 					replacement: string()
 				}),
 				execute: async ({ filepath, target, replacement }) => {
-					const fp = resolve(filepath);
-					const old = await node_fs_promises.readFile(fp, "utf8");
-					if (!old.includes(target)) return `Target not found in ${filepath}`;
-					await node_fs_promises.writeFile(fp, old.replace(target, replacement), "utf8");
-					send("file-changed", fp);
-					return `Replaced in ${filepath}`;
+					try {
+						const fp = resolve(filepath);
+						const old = await node_fs_promises.readFile(fp, "utf8");
+						if (!old.includes(target)) return `Target not found in ${filepath}. Verify exact whitespace/indentation.`;
+						const occurrences = old.split(target).length - 1;
+						await node_fs_promises.writeFile(fp, old.replace(target, replacement), "utf8");
+						send("file-changed", fp);
+						return `Replaced in ${filepath}` + (occurrences > 1 ? ` (1 of ${occurrences} occurrences)` : "");
+					} catch (e) {
+						return `Error editing ${filepath}: ${e.code === "ENOENT" ? "File not found" : e.message}`;
+					}
 				}
 			}),
 			list_directory: tool({
 				description: "List files in a directory.",
 				parameters: object$1({ dirpath: string() }),
 				execute: async ({ dirpath }) => {
-					return (await node_fs_promises.readdir(resolve(dirpath), { withFileTypes: true })).filter((e) => !["node_modules", ".git"].includes(e.name)).map((e) => `${e.isDirectory() ? "[DIR]" : "[FILE]"} ${e.name}`).join("\n");
+					try {
+						return (await node_fs_promises.readdir(resolve(dirpath), { withFileTypes: true })).filter((e) => !["node_modules", ".git"].includes(e.name)).map((e) => `${e.isDirectory() ? "[DIR]" : "[FILE]"} ${e.name}`).join("\n");
+					} catch (e) {
+						return `Error listing ${dirpath}: ${e.code === "ENOENT" ? "Directory not found" : e.message}`;
+					}
 				}
 			}),
 			search_codebase: tool({

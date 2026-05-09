@@ -138,7 +138,9 @@ function formatToolArgs(name: string, args: any): string {
       case 'run_command': return args.command ? ` \`${args.command.slice(0, 60)}${args.command.length > 60 ? '...' : ''}\`` : '';
       case 'read_file': return args.filepath ? ` \`${args.filepath}\`` : '';
       case 'write_file': return args.filepath ? ` → \`${args.filepath}\`` : '';
+      case 'replace_in_file': return args.filepath ? ` \`${args.filepath}\`` : '';
       case 'list_directory': return args.dirpath ? ` \`${args.dirpath}\`` : '';
+      case 'search_codebase': return args.query ? ` \`${args.query.slice(0, 40)}${args.query.length > 40 ? '...' : ''}\`` : '';
       default: return '';
     }
   } catch { return ''; }
@@ -285,11 +287,15 @@ export class VercelAgent implements IAgent {
         description: 'Read a file.',
         parameters: z.object({ filepath: z.string() }),
         execute: async ({ filepath }) => {
-          const content = await fs.readFile(resolve(filepath), 'utf-8');
-          if (content.length > 50000) {
-            return content.slice(0, 50000) + `\n\n...(truncated, ${content.length} total chars)`;
+          try {
+            const content = await fs.readFile(resolve(filepath), 'utf-8');
+            if (content.length > 50000) {
+              return content.slice(0, 50000) + `\n\n...(truncated, ${content.length} total chars)`;
+            }
+            return content;
+          } catch (e: any) {
+            return `Error reading ${filepath}: ${e.code === 'ENOENT' ? 'File not found' : e.message}`;
           }
-          return content;
         },
       }),
 
@@ -297,24 +303,33 @@ export class VercelAgent implements IAgent {
         description: 'Create/overwrite a file.',
         parameters: z.object({ filepath: z.string(), content: z.string() }),
         execute: async ({ filepath, content }) => {
-          const fp = resolve(filepath);
-          await fs.mkdir(path.dirname(fp), { recursive: true });
-          await fs.writeFile(fp, content, 'utf8');
-          send('file-changed', fp);
-          return `Written: ${filepath}`;
+          try {
+            const fp = resolve(filepath);
+            await fs.mkdir(path.dirname(fp), { recursive: true });
+            await fs.writeFile(fp, content, 'utf8');
+            send('file-changed', fp);
+            return `Written: ${filepath}`;
+          } catch (e: any) {
+            return `Error writing ${filepath}: ${e.message}`;
+          }
         },
       }),
 
       replace_in_file: tool({
-        description: 'Replace exact substring in a file.',
+        description: 'Replace exact substring in a file. Replaces the first occurrence.',
         parameters: z.object({ filepath: z.string(), target: z.string(), replacement: z.string() }),
         execute: async ({ filepath, target, replacement }) => {
-          const fp = resolve(filepath);
-          const old = await fs.readFile(fp, 'utf8');
-          if (!old.includes(target)) return `Target not found in ${filepath}`;
-          await fs.writeFile(fp, old.replace(target, replacement), 'utf8');
-          send('file-changed', fp);
-          return `Replaced in ${filepath}`;
+          try {
+            const fp = resolve(filepath);
+            const old = await fs.readFile(fp, 'utf8');
+            if (!old.includes(target)) return `Target not found in ${filepath}. Verify exact whitespace/indentation.`;
+            const occurrences = old.split(target).length - 1;
+            await fs.writeFile(fp, old.replace(target, replacement), 'utf8');
+            send('file-changed', fp);
+            return `Replaced in ${filepath}` + (occurrences > 1 ? ` (1 of ${occurrences} occurrences)` : '');
+          } catch (e: any) {
+            return `Error editing ${filepath}: ${e.code === 'ENOENT' ? 'File not found' : e.message}`;
+          }
         },
       }),
 
@@ -322,9 +337,13 @@ export class VercelAgent implements IAgent {
         description: 'List files in a directory.',
         parameters: z.object({ dirpath: z.string() }),
         execute: async ({ dirpath }) => {
-          const entries = await fs.readdir(resolve(dirpath), { withFileTypes: true });
-          return entries.filter(e => !['node_modules', '.git'].includes(e.name))
-            .map(e => `${e.isDirectory() ? '[DIR]' : '[FILE]'} ${e.name}`).join('\n');
+          try {
+            const entries = await fs.readdir(resolve(dirpath), { withFileTypes: true });
+            return entries.filter(e => !['node_modules', '.git'].includes(e.name))
+              .map(e => `${e.isDirectory() ? '[DIR]' : '[FILE]'} ${e.name}`).join('\n');
+          } catch (e: any) {
+            return `Error listing ${dirpath}: ${e.code === 'ENOENT' ? 'Directory not found' : e.message}`;
+          }
         },
       }),
 
