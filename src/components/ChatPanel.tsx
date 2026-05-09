@@ -485,6 +485,31 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
     handleDrop(e);
   };
 
+  // Export conversation as Markdown
+  const exportConversation = useCallback(() => {
+    const conv = activeConv;
+    const date = new Date(conv.createdAt).toISOString().slice(0, 10);
+    const lines = [
+      `# ${conv.title}`,
+      `> Exported from DSME v2.0 — ${new Date().toLocaleString()}`,
+      `> Messages: ${conv.messages.length}`,
+      '',
+    ];
+    for (const msg of conv.messages) {
+      const time = new Date(msg.timestamp).toLocaleTimeString();
+      const role = msg.role === 'user' ? '👤 You' : '🐬 DSME';
+      lines.push(`## ${role} — ${time}`, '', msg.content, '');
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dsme-${conv.title.replace(/[^a-zA-Z0-9\u4e00-\u9fff]+/g, '-').slice(0, 40)}-${date}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Conversation exported as Markdown');
+  }, [activeConv]);
+
   // SVG Send icon
   const SendIcon = () => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -521,6 +546,9 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
           {getStatusLabel() && <span className="agent-status-badge">{getStatusLabel()}</span>}
           <button className={`chat-history-btn ${showHistory ? 'active' : ''}`} onClick={() => setShowHistory(!showHistory)} title={`会话历史 (${conversations.length})`}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          </button>
+          <button className="chat-export-btn" onClick={exportConversation} title="导出对话为 Markdown" aria-label="Export conversation">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           </button>
           <button className="chat-new-btn" onClick={handleNewConversation} title="New conversation (⌘N)" aria-label="New conversation">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>

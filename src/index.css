@@ -407,6 +407,25 @@ body {
   transition: all var(--transition);
 }
 
+.chat-export-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  transition: all var(--transition);
+}
+.chat-export-btn:hover {
+  background: rgba(74, 222, 128, 0.1);
+  color: var(--green);
+  border-color: var(--green);
+}
+
 .chat-new-btn:hover {
   background: var(--accent-subtle);
   color: var(--accent-color);
