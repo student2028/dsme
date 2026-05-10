@@ -133,7 +133,7 @@ const newId = () => `msg_${Date.now()}_${msgId++}`;
 export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   const [conversations, setConversations] = useState<Conversation[]>([{
     id: 'conv_0', title: 'New Session',
-    messages: [{ id: newId(), role: 'assistant' as const, content: 'New session started. How can I help you?', timestamp: Date.now() }],
+    messages: [{ id: newId(), role: 'assistant' as const, content: '你好！有什么我可以帮你的？\n\n我能**搜索网络**、**读写文件**、**运行命令**，还能帮你写代码和调试。', timestamp: Date.now() }],
     createdAt: Date.now()
   }]);
   const [activeConvId, setActiveConvId] = useState('conv_0');
@@ -246,13 +246,22 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
       streamingMsgId.current = null;
       streamStartTime.current = 0;
       setAgentStatus('idle');
-      // Store response duration in the assistant message
-      if (finishedMsgId && duration) {
+      // Clean up: remove empty assistant messages (tool-only responses)
+      // AND store duration on non-empty ones
+      if (finishedMsgId) {
         setConversations(prev => prev.map(conv => {
           if (conv.id !== activeConvIdRef.current) return conv;
-          return { ...conv, messages: conv.messages.map(m =>
-            m.id === finishedMsgId ? { ...m, duration: `${duration}s` } : m
-          ) };
+          const msg = conv.messages.find(m => m.id === finishedMsgId);
+          if (msg && !msg.content.trim()) {
+            // Remove ghost empty message
+            return { ...conv, messages: conv.messages.filter(m => m.id !== finishedMsgId) };
+          }
+          if (duration) {
+            return { ...conv, messages: conv.messages.map(m =>
+              m.id === finishedMsgId ? { ...m, duration: `${duration}s` } : m
+            ) };
+          }
+          return conv;
         }));
       }
     });
@@ -369,7 +378,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   const handleNewConversation = () => {
     const c: Conversation = {
       id: `conv_${Date.now()}`, title: 'New Session',
-      messages: [{ id: newId(), role: 'assistant' as const, content: 'Hi! How can I help you today? \n\nI can **search the web**, **read/write files**, **run commands**, and help with coding tasks.', timestamp: Date.now() }],
+      messages: [{ id: newId(), role: 'assistant' as const, content: '你好！有什么我可以帮你的？\n\n我能**搜索网络**、**读写文件**、**运行命令**，还能帮你写代码和调试。', timestamp: Date.now() }],
       createdAt: Date.now()
     };
     setConversations(prev => [...prev, c]);

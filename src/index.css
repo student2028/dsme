@@ -724,6 +724,7 @@ body {
   border: 1px solid var(--border-color);
   align-self: flex-start;
   max-width: 100%;
+  overflow: hidden; /* Prevent table/code/pre overflow */
 }
 
 .chat-message.tool {
@@ -853,11 +854,8 @@ body {
   white-space: nowrap;
 }
 
-/* ── Markdown content ── */
+/* ── Markdown content (base) — full styles in MARKDOWN RENDERING section below ── */
 .md-content { white-space: normal; }
-.md-content p { margin: 4px 0; }
-.md-content ul, .md-content ol { margin: 6px 0; padding-left: 20px; }
-.md-content li { margin: 2px 0; }
 
 /* Streaming cursor */
 .md-content.streaming::after {
@@ -874,27 +872,6 @@ body {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
 }
-
-.md-content table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 10px 0;
-  font-size: 12px;
-}
-
-.md-content th, .md-content td {
-  border: 1px solid var(--border-color);
-  padding: 6px 10px;
-  text-align: left;
-}
-
-.md-content th {
-  background: var(--bg-primary);
-  font-weight: 600;
-  color: var(--accent-color);
-}
-
-.md-content tr:hover td { background: rgba(124, 110, 240, 0.04); }
 
 /* ── Code blocks ── */
 .md-code-block {
@@ -1662,6 +1639,10 @@ body {
 @keyframes welcomeCardIn {
   from { opacity: 0; transform: translateY(16px) scale(0.97); }
   to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes logoPulse {
+  0%, 100% { box-shadow: 0 8px 32px rgba(14,165,233,0.25), 0 0 0 1px rgba(99,102,241,0.2); }
+  50% { box-shadow: 0 8px 40px rgba(14,165,233,0.35), 0 0 0 1px rgba(99,102,241,0.3), 0 0 20px rgba(99,102,241,0.15); }
 }
 
 .welcome-card-header {
@@ -2451,7 +2432,12 @@ body {
   border-collapse: collapse;
   margin: 8px 0;
   font-size: 12px;
+  display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
+
+.md-content tr:hover td { background: rgba(124, 110, 240, 0.04); }
 
 .md-content th, .md-content td {
   border: 1px solid var(--border-color);
