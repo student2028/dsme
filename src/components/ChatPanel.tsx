@@ -236,10 +236,11 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
     window.electronAPI.onChatStatus((status: string) => setAgentStatus(status));
   }, []);
 
-  // Menu shortcut listeners (⌘F, ⌘N)
+  // Menu shortcut listeners (⌘F, ⌘N) — ref set after handleNewConversation defined below
+  const newConvRef = useRef<() => void>(() => {});
   useEffect(() => {
     const handleFind = () => setShowSearch(s => !s);
-    const handleNewConv = () => handleNewConversation();
+    const handleNewConv = () => newConvRef.current();
     window.addEventListener('dsme-find', handleFind);
     window.addEventListener('dsme-new-conversation', handleNewConv);
     return () => {
@@ -352,6 +353,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
     // Reset the agent conversation
     if (window.electronAPI?.resetConversation) window.electronAPI.resetConversation();
   };
+  newConvRef.current = handleNewConversation;
 
   const handleDeleteConversation = (e: React.MouseEvent, convId: string) => {
     e.stopPropagation();
