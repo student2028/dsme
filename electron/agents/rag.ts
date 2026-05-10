@@ -155,7 +155,8 @@ export class RAGEngine {
 
   // ── Private helpers ──
 
-  private async walkDir(dir: string): Promise<string[]> {
+  private async walkDir(dir: string, depth = 0): Promise<string[]> {
+    if (depth > 10) return []; // Prevent excessive recursion in deep trees
     const results: string[] = [];
     try {
       const entries = await readdir(dir, { withFileTypes: true });
@@ -165,7 +166,7 @@ export class RAGEngine {
 
         if (entry.isDirectory()) {
           if (!IGNORE_DIRS.has(entry.name)) {
-            const sub = await this.walkDir(fullPath);
+            const sub = await this.walkDir(fullPath, depth + 1);
             results.push(...sub);
           }
         } else if (entry.isFile()) {
@@ -200,7 +201,11 @@ export class RAGEngine {
     for (const t of tokens) {
       freq.set(t, (freq.get(t) || 0) + 1);
     }
-    const maxFreq = Math.max(...freq.values(), 1);
+    // Safe max: avoid Math.max(...spread) stack overflow for large token sets
+    let maxFreq = 1;
+    for (const c of freq.values()) {
+      if (c > maxFreq) maxFreq = c;
+    }
     const tf = new Map<string, number>();
     for (const [term, count] of freq) {
       tf.set(term, 0.5 + 0.5 * (count / maxFreq)); // Augmented TF

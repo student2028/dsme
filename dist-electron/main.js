@@ -24425,7 +24425,8 @@ var RAGEngine = class {
 	get isReady() {
 		return this.indexed;
 	}
-	async walkDir(dir) {
+	async walkDir(dir, depth = 0) {
+		if (depth > 10) return [];
 		const results = [];
 		try {
 			const entries = await (0, fs_promises.readdir)(dir, { withFileTypes: true });
@@ -24434,7 +24435,7 @@ var RAGEngine = class {
 				const fullPath = (0, path.join)(dir, entry.name);
 				if (entry.isDirectory()) {
 					if (!IGNORE_DIRS.has(entry.name)) {
-						const sub = await this.walkDir(fullPath);
+						const sub = await this.walkDir(fullPath, depth + 1);
 						results.push(...sub);
 					}
 				} else if (entry.isFile()) {
@@ -24453,7 +24454,8 @@ var RAGEngine = class {
 	computeTF(tokens) {
 		const freq = /* @__PURE__ */ new Map();
 		for (const t of tokens) freq.set(t, (freq.get(t) || 0) + 1);
-		const maxFreq = Math.max(...freq.values(), 1);
+		let maxFreq = 1;
+		for (const c of freq.values()) if (c > maxFreq) maxFreq = c;
 		const tf = /* @__PURE__ */ new Map();
 		for (const [term, count] of freq) tf.set(term, .5 + .5 * (count / maxFreq));
 		return tf;
