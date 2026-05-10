@@ -63,6 +63,20 @@ You work inside an Electron-based IDE with full system access. Always prioritize
 - After searching, use fetch_url to read specific pages for detailed information
 - Synthesize results from multiple sources into a clear, authoritative answer
 
+### Browse Page (Interactive Browser)
+- Use browse_page when you need to interact with a page: click buttons, fill forms, navigate tabs, scroll, or extract data from JS-rendered SPAs.
+- **Step 1 — Reconnaissance**: First call browse_page with a simple script like \`document.title + '\\n' + document.body.innerText.slice(0, 3000)\` to understand the page structure.
+- **Step 2 — Action**: Write a self-contained async JS script that performs clicks, waits, and extracts data. Example:
+  \`\`\`javascript
+  document.querySelector('.filter-btn').click();
+  await new Promise(r => setTimeout(r, 1500));
+  document.querySelector('[data-value="target"]').click();
+  await new Promise(r => setTimeout(r, 2000));
+  return Array.from(document.querySelectorAll('table tr')).map(r => r.textContent.trim()).join('\\n');
+  \`\`\`
+- The script runs in page context with full DOM access. It MUST return a string.
+- Prefer browse_page over fetch_url for any page that uses client-side rendering (React, Vue, dynamic tables, etc.).
+
 ### File and Command Discipline
 - Use absolute paths for file operations.
 - Prefer minimal, surgical edits that preserve existing style.
@@ -250,6 +264,87 @@ async function fetchUrl(url: string): Promise<string> {
   }
 }
 
+// ── Browse page via Electron BrowserWindow (full JS rendering + interaction) ──
+async function browsePage(url: string, script: string, waitMs: number = 2000, timeoutMs: number = 30000): Promise<string> {
+  if (!url) return 'Error: url is required';
+  if (!script) return 'Error: script is required';
+  try { const u = new URL(url); if (!['http:', 'https:'].includes(u.protocol)) return 'Error: only http/https URLs supported'; }
+  catch { return 'Error: invalid URL'; }
+
+  const { BrowserWindow: BW } = require('electron');
+
+  return new Promise((resolve) => {
+    const win = new BW({
+      width: 1280, height: 900,
+      show: true,  // Visible so user can observe the browsing process
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        // Allow pages to run their own JS normally
+        javascript: true,
+      },
+    });
+
+    // Set a realistic user agent
+    win.webContents.setUserAgent(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    );
+
+    // Hard timeout: clean up no matter what
+    const hardTimeout = setTimeout(() => {
+      try { win.destroy(); } catch {}
+      resolve(`Error: browse_page timed out after ${timeoutMs}ms. The page may be too slow or the script may hang.`);
+    }, timeoutMs);
+
+    win.webContents.on('did-finish-load', async () => {
+      try {
+        // Wait for dynamic content to render
+        await new Promise(r => setTimeout(r, waitMs));
+
+        // Wrap the user script in an async IIFE so it can use await
+        // The script MUST return a string
+        const wrappedScript = `
+          (async () => {
+            try {
+              ${script}
+            } catch (e) {
+              return 'Script error: ' + (e.message || String(e));
+            }
+          })()
+        `;
+
+        const result = await win.webContents.executeJavaScript(wrappedScript);
+        clearTimeout(hardTimeout);
+        win.destroy();
+
+        if (result === null || result === undefined) {
+          resolve('browse_page: script returned null/undefined. Make sure your script ends with a return statement.');
+        } else {
+          const text = String(result);
+          // Cap output to avoid context bloat
+          resolve(text.length > 20000 ? text.slice(0, 20000) + '\n...(truncated, total ' + text.length + ' chars)' : text);
+        }
+      } catch (e: any) {
+        clearTimeout(hardTimeout);
+        win.destroy();
+        resolve(`Script execution error: ${e.message}`);
+      }
+    });
+
+    win.webContents.on('did-fail-load', (_event: any, errorCode: number, errorDesc: string) => {
+      clearTimeout(hardTimeout);
+      win.destroy();
+      resolve(`Page load failed: ${errorDesc} (code ${errorCode})`);
+    });
+
+    win.loadURL(url).catch((e: any) => {
+      clearTimeout(hardTimeout);
+      win.destroy();
+      resolve(`Failed to open URL: ${e.message}`);
+    });
+  });
+}
+
 // ── Format tool args for display ──
 function formatToolArgs(name: string, args: any): string {
   try {
@@ -262,6 +357,7 @@ function formatToolArgs(name: string, args: any): string {
       case 'replace_in_file': return args.filepath ? ` \`${args.filepath}\`` : '';
       case 'list_directory': return args.dirpath ? ` \`${args.dirpath}\`` : '';
       case 'search_codebase': return args.query ? ` \`${args.query.slice(0, 40)}${args.query.length > 40 ? '...' : ''}\`` : '';
+      case 'browse_page': return args.url ? ` \`${args.url.slice(0, 60)}${args.url.length > 60 ? '...' : ''}\`` : '';
       default: return '';
     }
   } catch { return ''; }
@@ -566,10 +662,23 @@ export class VercelAgent implements IAgent {
       }),
 
       fetch_url: tool({
-        description: 'Fetch and read content from a URL. Returns text extracted from the page.',
+        description: 'Fetch and read content from a URL. Returns text extracted from the page. Does NOT execute JavaScript — for JS-rendered pages, use browse_page instead.',
         parameters: z.object({ url: z.string().describe('URL to fetch') }),
         execute: async ({ url }) => {
           return await fetchUrl(url);
+        },
+      }),
+
+      browse_page: tool({
+        description: 'Open a URL in a real browser with full JavaScript rendering, then execute a custom script to interact with and extract data from the page. Use this for: (1) JS-rendered SPAs (React/Vue/dynamic tables), (2) pages requiring clicks/scrolls/form fills, (3) data extraction from complex layouts. The script runs in page context with full DOM access and can use async/await. It MUST return a string.',
+        parameters: z.object({
+          url: z.string().describe('URL to open'),
+          script: z.string().describe('JavaScript to execute in page context. Can use async/await for multi-step interactions (click → wait → extract). MUST return a string.'),
+          wait_before_script: z.number().optional().describe('Milliseconds to wait after page loads before running script. Default: 2000. Increase for slow-loading pages.'),
+          timeout: z.number().optional().describe('Total timeout in milliseconds. Default: 30000.'),
+        }),
+        execute: async ({ url, script, wait_before_script, timeout }) => {
+          return await browsePage(url, script, wait_before_script ?? 2000, timeout ?? 30000);
         },
       }),
     };

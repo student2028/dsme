@@ -84,7 +84,7 @@ export const GitPanel: React.FC = () => {
         {files.length === 0 ? (
           <div className="git-empty">No changes detected</div>
         ) : (
-          files.map((f, i) => {
+          files.map((f, _i) => {
             const { icon, color } = getStatusIcon(f.status);
             return (
               <div key={f.path} className="git-file-item">

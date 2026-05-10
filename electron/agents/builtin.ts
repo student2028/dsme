@@ -39,7 +39,8 @@ Use tools liberally — action over description.
 - read_file / write_file / replace_in_file: File operations
 - list_directory / search_codebase: Navigation
 - run_command: Shell execution
-- web_search / fetch_url: Web access
+- web_search / fetch_url: Web access (static pages)
+- browse_page: Interactive browser with full JS rendering (for SPAs, dynamic tables, clicking/scrolling)
 
 ## Rules
 - Be concise, direct, action-oriented.
@@ -47,6 +48,13 @@ Use tools liberally — action over description.
 - Never fabricate tool results.
 - For web_search: auto-trigger for weather, news, real-time data.
 - NEVER say "I don't have access to real-time information" — use web_search.
+
+### browse_page Usage
+- Use browse_page when you need to interact with a page: click, scroll, extract data from JS-rendered content.
+- Step 1: Call with a simple script (\`return document.title + '\\n' + document.body.innerText.slice(0, 3000)\`) to scout the page.
+- Step 2: Write async JS that clicks/waits/extracts. The script MUST return a string.
+- Prefer browse_page over fetch_url for any dynamic/SPA page.
+
 - **CRITICAL**: Never create temporary, test, or isolated files directly in the workspace root. ALWAYS place unrelated scripts or generated standalone documents inside a \`scratch/\` folder (create it if missing).`;
 }
 
@@ -59,7 +67,8 @@ const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   { type: 'function', function: { name: 'search_codebase', description: 'Grep search across workspace.', parameters: { type: 'object', properties: { query: { type: 'string' }, is_regex: { type: 'boolean' } }, required: ['query'] } } },
   { type: 'function', function: { name: 'run_command', description: 'Run shell command.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
   { type: 'function', function: { name: 'web_search', description: 'Search the web for real-time info.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } } },
-  { type: 'function', function: { name: 'fetch_url', description: 'Fetch and read content from a URL.', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
+  { type: 'function', function: { name: 'fetch_url', description: 'Fetch and read content from a URL (static HTML only, no JS rendering).', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
+  { type: 'function', function: { name: 'browse_page', description: 'Open a URL in a real browser with full JS rendering, then execute a custom script to interact with and extract data from the page. Use for SPAs, dynamic tables, clicking/scrolling. Script runs in page context, can use async/await, MUST return a string.', parameters: { type: 'object', properties: { url: { type: 'string', description: 'URL to open' }, script: { type: 'string', description: 'JavaScript to execute in page context. MUST return a string.' }, wait_before_script: { type: 'number', description: 'Ms to wait after page load. Default: 2000' }, timeout: { type: 'number', description: 'Total timeout ms. Default: 30000' } }, required: ['url', 'script'] } } },
 ];
 
 // ── Web search via BrowserWindow ──
@@ -127,6 +136,77 @@ async function fetchUrl(url: string): Promise<string> {
   } catch (e: any) { return `Fetch error: ${e.message}`; }
 }
 
+// ── Browse page via Electron BrowserWindow (full JS rendering + interaction) ──
+async function browsePage(url: string, script: string, waitMs: number = 2000, timeoutMs: number = 30000): Promise<string> {
+  if (!url) return 'Error: url is required';
+  if (!script) return 'Error: script is required';
+  try { const u = new URL(url); if (!['http:', 'https:'].includes(u.protocol)) return 'Error: only http/https URLs supported'; }
+  catch { return 'Error: invalid URL'; }
+
+  const { BrowserWindow: BW } = require('electron');
+
+  return new Promise((resolve) => {
+    const win = new BW({
+      width: 1280, height: 900,
+      show: true,  // Visible so user can observe the browsing process
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        javascript: true,
+      },
+    });
+
+    win.webContents.setUserAgent(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    );
+
+    const hardTimeout = setTimeout(() => {
+      try { win.destroy(); } catch {}
+      resolve(`Error: browse_page timed out after ${timeoutMs}ms.`);
+    }, timeoutMs);
+
+    win.webContents.on('did-finish-load', async () => {
+      try {
+        await new Promise(r => setTimeout(r, waitMs));
+        const wrappedScript = `
+          (async () => {
+            try {
+              ${script}
+            } catch (e) {
+              return 'Script error: ' + (e.message || String(e));
+            }
+          })()
+        `;
+        const result = await win.webContents.executeJavaScript(wrappedScript);
+        clearTimeout(hardTimeout);
+        win.destroy();
+        if (result === null || result === undefined) {
+          resolve('browse_page: script returned null/undefined. Make sure your script ends with a return statement.');
+        } else {
+          const text = String(result);
+          resolve(text.length > 20000 ? text.slice(0, 20000) + '\n...(truncated)' : text);
+        }
+      } catch (e: any) {
+        clearTimeout(hardTimeout);
+        win.destroy();
+        resolve(`Script execution error: ${e.message}`);
+      }
+    });
+
+    win.webContents.on('did-fail-load', (_: any, code: number, desc: string) => {
+      clearTimeout(hardTimeout);
+      win.destroy();
+      resolve(`Page load failed: ${desc} (code ${code})`);
+    });
+
+    win.loadURL(url).catch((e: any) => {
+      clearTimeout(hardTimeout);
+      win.destroy();
+      resolve(`Failed to open URL: ${e.message}`);
+    });
+  });
+}
+
 // ── Agent implementation ────────────────────────────────────────────
 export class BuiltinAgent implements IAgent {
   readonly name = 'Built-in';
@@ -153,7 +233,7 @@ export class BuiltinAgent implements IAgent {
       apiKey: config.apiKey || 'sk-placeholder',
     });
 
-    console.log(`[BuiltinAgent] Initialized, model=${this.model}`);
+    console.log(`[BuiltinAgent] Initialized, model=${this.model}, apiKey=${config.apiKey ? config.apiKey.slice(0, 8) + '...' : 'EMPTY'}, baseUrl=${config.baseUrl}`);
 
     // RAG index
     this.rag.index(config.cwd).then(c => {
@@ -396,6 +476,7 @@ export class BuiltinAgent implements IAgent {
         }
         case 'web_search': return await webSearch(args.query);
         case 'fetch_url': return await fetchUrl(args.url);
+        case 'browse_page': return await browsePage(args.url, args.script, args.wait_before_script ?? 2000, args.timeout ?? 30000);
         default: return `Unknown tool: ${name}`;
       }
     } catch (e: any) {

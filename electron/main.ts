@@ -13,6 +13,13 @@ import * as net from 'node:net';
 
 const execAsync = promisify(cp.exec);
 
+// Prevent EPIPE crashes when stdout pipe breaks (remote terminal disconnects)
+process.stdout.on('error', (e: any) => { if (e.code !== 'EPIPE') throw e; });
+process.stderr.on('error', (e: any) => { if (e.code !== 'EPIPE') throw e; });
+
+// Ensure consistent userData path regardless of launch method (npx electron vs packaged)
+app.name = 'dsme';
+
 // Electron CDP — using temp ports until zombie 19222 is cleared by reboot
 app.commandLine.appendSwitch('remote-debugging-port', '19223');
 
@@ -47,8 +54,12 @@ const DEFAULT_CONFIG: AppConfig = {
 };
 
 async function loadConfig(): Promise<AppConfig> {
-  try { return { ...DEFAULT_CONFIG, ...JSON.parse(await fs.readFile(CONFIG_PATH, 'utf8')) }; }
-  catch { return { ...DEFAULT_CONFIG }; }
+  try {
+    const parsed = JSON.parse(await fs.readFile(CONFIG_PATH, 'utf8'));
+    return { ...DEFAULT_CONFIG, ...parsed };
+  } catch {
+    return { ...DEFAULT_CONFIG };
+  }
 }
 
 async function saveConfig(config: Partial<AppConfig>) {
@@ -136,6 +147,7 @@ async function createWindow() {
     minWidth: 900, minHeight: 600,
     titleBarStyle: 'hiddenInset', backgroundColor: '#000000',
     title: 'DSME — DeepSeek Matrix Engine',
+    icon: join(__dirname, '../assets/icon.png'),
     webPreferences: {
       preload: join(__dirname, '../dist-electron/preload.js'),
       nodeIntegration: true, contextIsolation: true,
@@ -181,6 +193,7 @@ async function initAgent() {
     baseUrl: config.baseUrl,
     cwd: currentWorkspacePath,
   };
+  console.log(`[Agent] Config: apiKey=${config.apiKey ? config.apiKey.slice(0, 8) + '...' : 'EMPTY'}, model=${config.model}, baseUrl=${config.baseUrl}`);
 
   if (currentKernel === 'builtin') {
     console.log('[Agent] Initializing Built-in kernel');
@@ -216,6 +229,12 @@ app.on('before-quit', () => {
   cdpProxy.close();
 });
 app.whenReady().then(() => {
+  // Set macOS dock icon
+  if (process.platform === 'darwin' && app.dock) {
+    const { nativeImage } = require('electron');
+    const iconPath = join(__dirname, '../assets/icon.png');
+    try { app.dock.setIcon(nativeImage.createFromPath(iconPath)); } catch {}
+  }
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
