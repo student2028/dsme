@@ -67,6 +67,7 @@ You work inside an Electron-based IDE with full system access. Always prioritize
 - Use absolute paths for file operations.
 - Prefer minimal, surgical edits that preserve existing style.
 - Avoid standalone cd; set working directory in the tool call.
+- **CRITICAL**: Never create temporary, test, or isolated files directly in the workspace root. ALWAYS place unrelated scripts or generated standalone documents inside a \`scratch/\` folder (create it if missing).
 
 ## Output Quality
 - Treat tool calls as working process; treat the final response as the deliverable.
@@ -111,7 +112,7 @@ async function webSearch(query: string): Promise<string> {
       const timeout = setTimeout(() => {
         searchWin.destroy();
         resolve(null);
-      }, 15000);
+      }, 8000);
 
       searchWin.webContents.on('did-finish-load', async () => {
         try {
@@ -180,16 +181,43 @@ async function webSearch(query: string): Promise<string> {
     })()
   `;
 
-  try {
-    // Strategy 1: Google (via proxy)
-    const googleUrl = `https://www.google.com/search?q=${q}&hl=zh-CN`;
-    const googleResult = await searchViaWebview(googleUrl, googleExtract, 'Google');
-    if (googleResult) return googleResult;
+  // JS to extract search results from Bing
+  const bingExtract = `
+    (function() {
+      var results = [];
+      document.querySelectorAll('.b_algo').forEach(function(item) {
+        var title = item.querySelector('h2');
+        var snippet = item.querySelector('.b_caption p, .b_algoSlug, .b_snippet');
+        if (title) {
+          var text = title.innerText;
+          if (snippet) text += ' — ' + snippet.innerText;
+          if (text.length > 10) results.push(text);
+        }
+      });
+      return results.slice(0, 8).join('\\n');
+    })()
+  `;
 
-    // Strategy 2: Sogou (direct, no proxy needed in China)
-    const sogouUrl = `https://www.sogou.com/web?query=${q}`;
-    const sogouResult = await searchViaWebview(sogouUrl, sogouExtract, 'Sogou');
-    if (sogouResult) return sogouResult;
+  try {
+    const promises = [
+      searchViaWebview(`https://cn.bing.com/search?q=${q}`, bingExtract, 'Bing'),
+      searchViaWebview(`https://www.sogou.com/web?query=${q}`, sogouExtract, 'Sogou'),
+      searchViaWebview(`https://www.google.com/search?q=${q}&hl=zh-CN`, googleExtract, 'Google')
+    ];
+
+    const firstSuccess = await new Promise<string | null>((resolve) => {
+      let count = promises.length;
+      for (const p of promises) {
+        p.then(res => {
+          if (res) resolve(res);
+          else if (--count === 0) resolve(null);
+        }).catch(() => {
+          if (--count === 0) resolve(null);
+        });
+      }
+    });
+
+    if (firstSuccess) return firstSuccess;
 
     return `No results found for "${query}". Search engines did not return usable content.`;
   } catch (e: any) {

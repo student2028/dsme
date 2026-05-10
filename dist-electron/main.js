@@ -24566,6 +24566,7 @@ You work inside an Electron-based IDE with full system access. Always prioritize
 - Use absolute paths for file operations.
 - Prefer minimal, surgical edits that preserve existing style.
 - Avoid standalone cd; set working directory in the tool call.
+- **CRITICAL**: Never create temporary, test, or isolated files directly in the workspace root. ALWAYS place unrelated scripts or generated standalone documents inside a \`scratch/\` folder (create it if missing).
 
 ## Output Quality
 - Treat tool calls as working process; treat the final response as the deliverable.
@@ -24607,7 +24608,7 @@ async function webSearch$1(query) {
 			const timeout = setTimeout(() => {
 				searchWin.destroy();
 				resolve(null);
-			}, 15e3);
+			}, 8e3);
 			searchWin.webContents.on("did-finish-load", async () => {
 				try {
 					await new Promise((r) => setTimeout(r, 1500));
@@ -24664,11 +24665,37 @@ async function webSearch$1(query) {
       return results.slice(0, 8).join('\\n');
     })()
   `;
+	const bingExtract = `
+    (function() {
+      var results = [];
+      document.querySelectorAll('.b_algo').forEach(function(item) {
+        var title = item.querySelector('h2');
+        var snippet = item.querySelector('.b_caption p, .b_algoSlug, .b_snippet');
+        if (title) {
+          var text = title.innerText;
+          if (snippet) text += ' — ' + snippet.innerText;
+          if (text.length > 10) results.push(text);
+        }
+      });
+      return results.slice(0, 8).join('\\n');
+    })()
+  `;
 	try {
-		const googleResult = await searchViaWebview(`https://www.google.com/search?q=${q}&hl=zh-CN`, googleExtract, "Google");
-		if (googleResult) return googleResult;
-		const sogouResult = await searchViaWebview(`https://www.sogou.com/web?query=${q}`, sogouExtract, "Sogou");
-		if (sogouResult) return sogouResult;
+		const promises = [
+			searchViaWebview(`https://cn.bing.com/search?q=${q}`, bingExtract, "Bing"),
+			searchViaWebview(`https://www.sogou.com/web?query=${q}`, sogouExtract, "Sogou"),
+			searchViaWebview(`https://www.google.com/search?q=${q}&hl=zh-CN`, googleExtract, "Google")
+		];
+		const firstSuccess = await new Promise((resolve) => {
+			let count = promises.length;
+			for (const p of promises) p.then((res) => {
+				if (res) resolve(res);
+				else if (--count === 0) resolve(null);
+			}).catch(() => {
+				if (--count === 0) resolve(null);
+			});
+		});
+		if (firstSuccess) return firstSuccess;
 		return `No results found for "${query}". Search engines did not return usable content.`;
 	} catch (e) {
 		return `Search error: ${e.message}`;
@@ -25134,7 +25161,8 @@ Use tools liberally — action over description.
 - Respond in the same language as the user.
 - Never fabricate tool results.
 - For web_search: auto-trigger for weather, news, real-time data.
-- NEVER say "I don't have access to real-time information" — use web_search.`;
+- NEVER say "I don't have access to real-time information" — use web_search.
+- **CRITICAL**: Never create temporary, test, or isolated files directly in the workspace root. ALWAYS place unrelated scripts or generated standalone documents inside a \`scratch/\` folder (create it if missing).`;
 }
 var TOOLS = [
 	{
@@ -25266,7 +25294,7 @@ async function webSearch(query) {
 			const t = setTimeout(() => {
 				w.destroy();
 				resolve(null);
-			}, 15e3);
+			}, 8e3);
 			w.webContents.on("did-finish-load", async () => {
 				try {
 					await new Promise((r) => setTimeout(r, 1500));
@@ -25294,11 +25322,23 @@ async function webSearch(query) {
 	}
 	const googleJS = `(function(){var r=[];document.querySelectorAll('#search .g, #rso .g').forEach(function(g){var t=g.querySelector('h3');var s=g.querySelector('.VwiC3b, .IsZvec, [data-sncf]');if(t){var x=t.innerText;if(s)x+=' — '+s.innerText;if(x.length>10)r.push(x)}});return r.slice(0,8).join('\\n')})()`;
 	const sogouJS = `(function(){var r=[];document.querySelectorAll('.vrwrap, .rb').forEach(function(i){var t=i.querySelector('h3, .vrTitle');var s=i.querySelector('.space-txt, .str-text-info, p');if(t){var x=t.innerText;if(s)x+=' — '+s.innerText;if(x.length>10)r.push(x)}});return r.slice(0,8).join('\\n')})()`;
+	const bingJS = `(function(){var r=[];document.querySelectorAll('.b_algo').forEach(function(i){var t=i.querySelector('h2');var s=i.querySelector('.b_caption p, .b_algoSlug, .b_snippet');if(t){var x=t.innerText;if(s)x+=' — '+s.innerText;if(x.length>10)r.push(x)}});return r.slice(0,8).join('\\n')})()`;
 	try {
-		const g = await searchVia(`https://www.google.com/search?q=${q}&hl=zh-CN`, googleJS, "Google");
-		if (g) return g;
-		const s = await searchVia(`https://www.sogou.com/web?query=${q}`, sogouJS, "Sogou");
-		if (s) return s;
+		const promises = [
+			searchVia(`https://cn.bing.com/search?q=${q}`, bingJS, "Bing"),
+			searchVia(`https://www.sogou.com/web?query=${q}`, sogouJS, "Sogou"),
+			searchVia(`https://www.google.com/search?q=${q}&hl=zh-CN`, googleJS, "Google")
+		];
+		const firstSuccess = await new Promise((resolve) => {
+			let count = promises.length;
+			for (const p of promises) p.then((res) => {
+				if (res) resolve(res);
+				else if (--count === 0) resolve(null);
+			}).catch(() => {
+				if (--count === 0) resolve(null);
+			});
+		});
+		if (firstSuccess) return firstSuccess;
 		return `No results for "${query}".`;
 	} catch (e) {
 		return `Search error: ${e.message}`;

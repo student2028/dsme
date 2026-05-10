@@ -46,7 +46,8 @@ Use tools liberally — action over description.
 - Respond in the same language as the user.
 - Never fabricate tool results.
 - For web_search: auto-trigger for weather, news, real-time data.
-- NEVER say "I don't have access to real-time information" — use web_search.`;
+- NEVER say "I don't have access to real-time information" — use web_search.
+- **CRITICAL**: Never create temporary, test, or isolated files directly in the workspace root. ALWAYS place unrelated scripts or generated standalone documents inside a \`scratch/\` folder (create it if missing).`;
 }
 
 // ── Tool definitions (OpenAI function calling format) ──
@@ -70,7 +71,7 @@ async function webSearch(query: string): Promise<string> {
   async function searchVia(url: string, extractJS: string, label: string): Promise<string | null> {
     return new Promise((resolve) => {
       const w = new BW({ width: 1024, height: 768, show: false, webPreferences: { nodeIntegration: false, contextIsolation: true } });
-      const t = setTimeout(() => { w.destroy(); resolve(null); }, 15000);
+      const t = setTimeout(() => { w.destroy(); resolve(null); }, 8000);
       w.webContents.on('did-finish-load', async () => {
         try {
           await new Promise(r => setTimeout(r, 1500));
@@ -86,12 +87,28 @@ async function webSearch(query: string): Promise<string> {
 
   const googleJS = `(function(){var r=[];document.querySelectorAll('#search .g, #rso .g').forEach(function(g){var t=g.querySelector('h3');var s=g.querySelector('.VwiC3b, .IsZvec, [data-sncf]');if(t){var x=t.innerText;if(s)x+=' — '+s.innerText;if(x.length>10)r.push(x)}});return r.slice(0,8).join('\\n')})()`;
   const sogouJS = `(function(){var r=[];document.querySelectorAll('.vrwrap, .rb').forEach(function(i){var t=i.querySelector('h3, .vrTitle');var s=i.querySelector('.space-txt, .str-text-info, p');if(t){var x=t.innerText;if(s)x+=' — '+s.innerText;if(x.length>10)r.push(x)}});return r.slice(0,8).join('\\n')})()`;
+  const bingJS = `(function(){var r=[];document.querySelectorAll('.b_algo').forEach(function(i){var t=i.querySelector('h2');var s=i.querySelector('.b_caption p, .b_algoSlug, .b_snippet');if(t){var x=t.innerText;if(s)x+=' — '+s.innerText;if(x.length>10)r.push(x)}});return r.slice(0,8).join('\\n')})()`;
 
   try {
-    const g = await searchVia(`https://www.google.com/search?q=${q}&hl=zh-CN`, googleJS, 'Google');
-    if (g) return g;
-    const s = await searchVia(`https://www.sogou.com/web?query=${q}`, sogouJS, 'Sogou');
-    if (s) return s;
+    const promises = [
+      searchVia(`https://cn.bing.com/search?q=${q}`, bingJS, 'Bing'),
+      searchVia(`https://www.sogou.com/web?query=${q}`, sogouJS, 'Sogou'),
+      searchVia(`https://www.google.com/search?q=${q}&hl=zh-CN`, googleJS, 'Google')
+    ];
+
+    const firstSuccess = await new Promise<string | null>((resolve) => {
+      let count = promises.length;
+      for (const p of promises) {
+        p.then(res => {
+          if (res) resolve(res);
+          else if (--count === 0) resolve(null);
+        }).catch(() => {
+          if (--count === 0) resolve(null);
+        });
+      }
+    });
+
+    if (firstSuccess) return firstSuccess;
     return `No results for "${query}".`;
   } catch (e: any) { return `Search error: ${e.message}`; }
 }
