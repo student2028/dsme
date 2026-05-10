@@ -203,10 +203,10 @@ async function fetchUrl(url: string): Promise<string> {
   try { const u = new URL(url); if (!['http:', 'https:'].includes(u.protocol)) return 'Error: only http/https URLs supported'; }
   catch { return 'Error: invalid URL'; }
   // Sanitize: remove shell metacharacters
-  const safeUrl = url.replace(/[;&|`$(){}!#]/g, '');
+  const safeUrl = url.replace(/[;&|`$(){}!#']/g, '');
   const proxyArgs = process.env.https_proxy ? `--proxy ${process.env.https_proxy}` : '';
   try {
-    const cmd = `curl -sS --max-time 20 ${proxyArgs} -L -H "User-Agent: Mozilla/5.0" '${safeUrl}'`;
+    const cmd = `curl -sS --max-time 20 ${proxyArgs} -L -H "User-Agent: Mozilla/5.0" "${safeUrl}"`;
     const { stdout } = await execAsync(cmd, { timeout: 25000, maxBuffer: 2 * 1024 * 1024 });
     // Strip HTML tags, extract text
     const text = stdout
@@ -549,6 +549,8 @@ export class VercelAgent implements IAgent {
 
   // ── Main stream using Vercel AI SDK streamText ──
   private async runStream(): Promise<void> {
+    // True iterative retry loop (no recursion, no stack growth)
+    while (true) {
     this.abortController = new AbortController();
     try {
       const result = streamText({
@@ -626,7 +628,7 @@ export class VercelAgent implements IAgent {
         return;
       }
 
-      // Rate limit → retry with cap
+      // Rate limit → retry via while loop (no recursion)
       if (msg.includes('rate_limit') || msg.includes('429')) {
         this.retryCount = (this.retryCount || 0) + 1;
         if (this.retryCount > 3) {
@@ -637,8 +639,7 @@ export class VercelAgent implements IAgent {
         const delay = this.retryCount * 5000;
         this.send('chat-stream-token', `\n\n*Rate limited. Retrying in ${delay / 1000}s... (${this.retryCount}/3)*`);
         await new Promise(r => setTimeout(r, delay));
-        // Iterative retry: re-enter runStream via tail call (non-recursive stack)
-        return void await this.runStream();
+        continue; // True iterative retry via while(true) loop
       }
 
       // Network errors → friendly message
@@ -650,6 +651,8 @@ export class VercelAgent implements IAgent {
       // Generic error
       this.send('chat-stream-token', `\n\n⚠️ Error: ${msg.slice(0, 500)}`);
     }
+    break; // Exit while(true) on non-retriable errors or success
+    } // end while(true)
   }
 
   /** Safely extract text content from a message (handles multimodal arrays) */

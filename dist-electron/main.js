@@ -24678,10 +24678,10 @@ async function fetchUrl(url) {
 	} catch {
 		return "Error: invalid URL";
 	}
-	const safeUrl = url.replace(/[;&|`$(){}!#]/g, "");
+	const safeUrl = url.replace(/[;&|`$(){}!#']/g, "");
 	const proxyArgs = process.env.https_proxy ? `--proxy ${process.env.https_proxy}` : "";
 	try {
-		const { stdout } = await execAsync$1(`curl -sS --max-time 20 ${proxyArgs} -L -H "User-Agent: Mozilla/5.0" '${safeUrl}'`, {
+		const { stdout } = await execAsync$1(`curl -sS --max-time 20 ${proxyArgs} -L -H "User-Agent: Mozilla/5.0" "${safeUrl}"`, {
 			timeout: 25e3,
 			maxBuffer: 2 * 1024 * 1024
 		});
@@ -25005,75 +25005,77 @@ var VercelAgent = class {
 		};
 	}
 	async runStream() {
-		this.abortController = new AbortController();
-		try {
-			const result = streamText({
-				model: this.provider.chat(this.model),
-				system: getSystemPrompt(this.cwd) + this.rag.buildContext(this.extractTextContent(this.messages.filter((m) => m.role === "user").pop())),
-				messages: this.messages,
-				tools: this.getTools(),
-				stopWhen: stepCountIs(25),
-				abortSignal: this.abortController.signal,
-				onStepFinish: ({ stepNumber, text, toolCalls, toolResults }) => {
-					console.log(`[VercelAgent] Step ${stepNumber} finished: text=${text?.length || 0}ch, tools=${toolCalls?.length || 0}`);
-				},
-				experimental_onToolCallStart: ({ toolName, input }) => {
-					console.log(`[VercelAgent] Tool start: ${toolName}`, JSON.stringify(input).slice(0, 200));
-					this.send("chat-status", `tool:${toolName}`);
-					const argSummary = formatToolArgs(toolName, input);
-					this.send("chat-stream-token", `\n\n> **${toolName}**${argSummary}\n`);
-				},
-				experimental_onToolCallFinish: ({ toolName, durationMs, error }) => {
-					if (error) console.error(`[VercelAgent] Tool ${toolName} failed after ${durationMs}ms:`, error);
-					else console.log(`[VercelAgent] Tool ${toolName} done in ${durationMs}ms`);
-					this.send("chat-status", "thinking");
+		while (true) {
+			this.abortController = new AbortController();
+			try {
+				const result = streamText({
+					model: this.provider.chat(this.model),
+					system: getSystemPrompt(this.cwd) + this.rag.buildContext(this.extractTextContent(this.messages.filter((m) => m.role === "user").pop())),
+					messages: this.messages,
+					tools: this.getTools(),
+					stopWhen: stepCountIs(25),
+					abortSignal: this.abortController.signal,
+					onStepFinish: ({ stepNumber, text, toolCalls, toolResults }) => {
+						console.log(`[VercelAgent] Step ${stepNumber} finished: text=${text?.length || 0}ch, tools=${toolCalls?.length || 0}`);
+					},
+					experimental_onToolCallStart: ({ toolName, input }) => {
+						console.log(`[VercelAgent] Tool start: ${toolName}`, JSON.stringify(input).slice(0, 200));
+						this.send("chat-status", `tool:${toolName}`);
+						const argSummary = formatToolArgs(toolName, input);
+						this.send("chat-stream-token", `\n\n> **${toolName}**${argSummary}\n`);
+					},
+					experimental_onToolCallFinish: ({ toolName, durationMs, error }) => {
+						if (error) console.error(`[VercelAgent] Tool ${toolName} failed after ${durationMs}ms:`, error);
+						else console.log(`[VercelAgent] Tool ${toolName} done in ${durationMs}ms`);
+						this.send("chat-status", "thinking");
+					}
+				});
+				let fullText = "";
+				for await (const part of result.fullStream) switch (part.type) {
+					case "text-delta":
+						fullText += part.text ?? "";
+						this.send("chat-stream-token", part.text ?? "");
+						break;
+					case "error":
+						console.error("[VercelAgent] Stream error:", part.error);
+						break;
 				}
-			});
-			let fullText = "";
-			for await (const part of result.fullStream) switch (part.type) {
-				case "text-delta":
-					fullText += part.text ?? "";
-					this.send("chat-stream-token", part.text ?? "");
-					break;
-				case "error":
-					console.error("[VercelAgent] Stream error:", part.error);
-					break;
-			}
-			const response = await result.response;
-			console.log(`[VercelAgent] Stream complete: text=${fullText.length}ch`);
-			if (response.messages?.length) for (const msg of response.messages) this.messages.push(msg);
-			else if (fullText.trim()) this.messages.push({
-				role: "assistant",
-				content: fullText.trim()
-			});
-			this.pruneHistory();
-			this.retryCount = 0;
-		} catch (err) {
-			if (err.name === "AbortError") return;
-			const msg = err?.message || String(err);
-			console.error("[VercelAgent] ERROR:", msg);
-			if (msg.includes("401") || msg.includes("Unauthorized") || msg.includes("invalid_api_key")) {
-				this.send("chat-stream-token", "\n\n⚠️ **认证失败** — API Key 无效或已过期。\n\n请在 Settings (⌘,) 中更新你的 API Key。");
-				return;
-			}
-			if (msg.includes("rate_limit") || msg.includes("429")) {
-				this.retryCount = (this.retryCount || 0) + 1;
-				if (this.retryCount > 3) {
-					this.retryCount = 0;
-					this.send("chat-stream-token", "\n\n⚠️ **请求频率超限**，已重试 3 次仍失败。请稍后再试。");
+				const response = await result.response;
+				console.log(`[VercelAgent] Stream complete: text=${fullText.length}ch`);
+				if (response.messages?.length) for (const msg of response.messages) this.messages.push(msg);
+				else if (fullText.trim()) this.messages.push({
+					role: "assistant",
+					content: fullText.trim()
+				});
+				this.pruneHistory();
+				this.retryCount = 0;
+			} catch (err) {
+				if (err.name === "AbortError") return;
+				const msg = err?.message || String(err);
+				console.error("[VercelAgent] ERROR:", msg);
+				if (msg.includes("401") || msg.includes("Unauthorized") || msg.includes("invalid_api_key")) {
+					this.send("chat-stream-token", "\n\n⚠️ **认证失败** — API Key 无效或已过期。\n\n请在 Settings (⌘,) 中更新你的 API Key。");
 					return;
 				}
-				const delay = this.retryCount * 5e3;
-				this.send("chat-stream-token", `\n\n*Rate limited. Retrying in ${delay / 1e3}s... (${this.retryCount}/3)*`);
-				await new Promise((r) => setTimeout(r, delay));
-				await this.runStream();
-				return;
+				if (msg.includes("rate_limit") || msg.includes("429")) {
+					this.retryCount = (this.retryCount || 0) + 1;
+					if (this.retryCount > 3) {
+						this.retryCount = 0;
+						this.send("chat-stream-token", "\n\n⚠️ **请求频率超限**，已重试 3 次仍失败。请稍后再试。");
+						return;
+					}
+					const delay = this.retryCount * 5e3;
+					this.send("chat-stream-token", `\n\n*Rate limited. Retrying in ${delay / 1e3}s... (${this.retryCount}/3)*`);
+					await new Promise((r) => setTimeout(r, delay));
+					continue;
+				}
+				if (msg.includes("ECONNRESET") || msg.includes("ETIMEDOUT") || msg.includes("fetch failed") || msg.includes("network")) {
+					this.send("chat-stream-token", "\n\n⚠️ **网络连接异常** — 请检查网络连接和代理设置。");
+					return;
+				}
+				this.send("chat-stream-token", `\n\n⚠️ Error: ${msg.slice(0, 500)}`);
 			}
-			if (msg.includes("ECONNRESET") || msg.includes("ETIMEDOUT") || msg.includes("fetch failed") || msg.includes("network")) {
-				this.send("chat-stream-token", "\n\n⚠️ **网络连接异常** — 请检查网络连接和代理设置。");
-				return;
-			}
-			this.send("chat-stream-token", `\n\n⚠️ Error: ${msg.slice(0, 500)}`);
+			break;
 		}
 	}
 	/** Safely extract text content from a message (handles multimodal arrays) */
