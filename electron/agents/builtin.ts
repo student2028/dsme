@@ -402,6 +402,12 @@ export class BuiltinAgent implements IAgent {
           } catch (e: any) { return e.stdout || 'No matches.'; }
         }
         case 'run_command': {
+          // Safety: block catastrophically destructive commands
+          const lower = args.command.toLowerCase().replace(/\s+/g, ' ');
+          const BANNED = [/rm\s+-rf\s+\/(?!\w)/, /mkfs\./, /dd\s+.*of=\/dev\//, /:(){ :\|:& };:/, />\s*\/dev\/sd[a-z]/];
+          if (BANNED.some((re: RegExp) => re.test(lower))) {
+            return 'Error: Command blocked for safety.';
+          }
           const { stdout, stderr } = await execAsync(args.command, { cwd: this.cwd, timeout: 60000, maxBuffer: 2 * 1024 * 1024 });
           this.send('terminal-output', `\r\n$ ${args.command}\r\n${stdout}`);
           return (stdout + (stderr ? `\nSTDERR:\n${stderr}` : '')).slice(0, 16000);

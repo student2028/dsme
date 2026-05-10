@@ -562,6 +562,18 @@ export class VercelAgent implements IAgent {
         description: 'Run shell command.',
         parameters: z.object({ command: z.string() }),
         execute: async ({ command }) => {
+          // Safety: block catastrophically destructive commands
+          const lower = command.toLowerCase().replace(/\s+/g, ' ');
+          const BANNED = [
+            /rm\s+-rf\s+\/(?!\w)/,     // rm -rf / (but allow /some/path)
+            /mkfs\./,                   // format filesystem
+            /dd\s+.*of=\/dev\//,        // disk overwrite
+            /:(){ :\|:& };:/,           // fork bomb
+            />\s*\/dev\/sd[a-z]/,       // raw disk write
+          ];
+          if (BANNED.some(re => re.test(lower))) {
+            return 'Error: Command blocked for safety. This command could cause catastrophic data loss.';
+          }
           try {
             const { stdout, stderr } = await execAsync(command, { cwd, timeout: 60000, maxBuffer: 2 * 1024 * 1024 });
             send('terminal-output', `\r\n$ ${command}\r\n${stdout}`);

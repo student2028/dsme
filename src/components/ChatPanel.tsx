@@ -524,6 +524,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
       const labels: Record<string, string> = {
         web_search: '🔍 Searching...',
         fetch_url: '🌐 Reading page...',
+        browse_page: '🖥️ Browsing...',
         read_file: '📖 Reading file...',
         write_file: '✏️ Writing file...',
         replace_in_file: '🔧 Editing file...',
