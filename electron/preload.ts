@@ -80,4 +80,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('rag-status');
     ipcRenderer.on('rag-status', (_e, count) => callback(count));
   },
+
+  // Kernel switching
+  switchKernel: (kernel: string) => ipcRenderer.send('switch-kernel', kernel),
+  onKernelChanged: (callback: (kernel: string) => void) => {
+    ipcRenderer.removeAllListeners('kernel-changed');
+    ipcRenderer.on('kernel-changed', (_e, kernel) => callback(kernel));
+  },
 });

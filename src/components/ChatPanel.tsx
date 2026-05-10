@@ -143,6 +143,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
+  const [kernel, setKernel] = useState<'vercel' | 'builtin'>('vercel');
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -256,6 +257,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
       }
     });
     window.electronAPI.onChatStatus((status: string) => setAgentStatus(status));
+    window.electronAPI?.onKernelChanged?.((k: string) => setKernel(k as any));
   }, [flushTokenBuffer]);
 
 
@@ -599,8 +601,16 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
             )}
           </span>
           {!showHistory && (
-            <span className="chat-kernel-toggle" title="Vercel AI SDK Engine">
-              ⚡ VERCEL
+            <span className="chat-kernel-toggle" 
+              title={`Current: ${kernel === 'vercel' ? 'Vercel AI SDK' : 'Built-in'} — Click to switch`}
+              onClick={() => {
+                const next = kernel === 'vercel' ? 'builtin' : 'vercel';
+                setKernel(next);
+                (window as any).electronAPI?.switchKernel(next);
+              }}
+              style={{ cursor: 'pointer' }}
+            >
+              {kernel === 'vercel' ? '⚡ VERCEL' : '🔧 BUILTIN'}
             </span>
           )}
         </div>

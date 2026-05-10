@@ -65,6 +65,11 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
 	onRagStatus: (callback) => {
 		electron.ipcRenderer.removeAllListeners("rag-status");
 		electron.ipcRenderer.on("rag-status", (_e, count) => callback(count));
+	},
+	switchKernel: (kernel) => electron.ipcRenderer.send("switch-kernel", kernel),
+	onKernelChanged: (callback) => {
+		electron.ipcRenderer.removeAllListeners("kernel-changed");
+		electron.ipcRenderer.on("kernel-changed", (_e, kernel) => callback(kernel));
 	}
 });
 //#endregion

@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { VercelAgent } from './agents/vercel'
+import { BuiltinAgent } from './agents/builtin'
 import type { IAgent } from './agents/base'
 import * as os from 'node:os'
 import * as cp from 'node:child_process'
@@ -30,6 +31,7 @@ cdpProxy.on('error', () => {});
 let win: BrowserWindow | null
 let agent: IAgent | null = null
 let ptyProcess: cp.ChildProcessWithoutNullStreams | null = null
+let currentKernel: 'vercel' | 'builtin' = 'vercel' // Pluggable engine selector
 // Default workspace: open DSME's own project directory
 let currentWorkspacePath = path.resolve(__dirname, '..')
 
@@ -170,6 +172,8 @@ async function createWindow() {
 
 async function initAgent() {
   if (!win) return;
+  // Destroy previous agent cleanly
+  if (agent) { agent.destroy(); agent = null; }
   const config = await loadConfig();
   const agentConfig = {
     apiKey: config.apiKey,
@@ -178,11 +182,21 @@ async function initAgent() {
     cwd: currentWorkspacePath,
   };
 
-  console.log('[Agent] Initializing Vercel AI SDK kernel');
-  const va = new VercelAgent();
-  va.init(win, agentConfig);
-  va.setupDiffHandlers();
-  agent = va;
+  if (currentKernel === 'builtin') {
+    console.log('[Agent] Initializing Built-in kernel');
+    const ba = new BuiltinAgent();
+    ba.init(win, agentConfig);
+    ba.setupDiffHandlers();
+    agent = ba;
+  } else {
+    console.log('[Agent] Initializing Vercel AI SDK kernel');
+    const va = new VercelAgent();
+    va.init(win, agentConfig);
+    va.setupDiffHandlers();
+    agent = va;
+  }
+  // Notify renderer which kernel is active
+  win.webContents.send('kernel-changed', currentKernel);
 }
 
 function startPty() {
@@ -223,6 +237,15 @@ ipcMain.on('chat-message-images', async (_, msg, imageDataUrls) => {
 ipcMain.on('terminal-input', (_, data) => { if (ptyProcess) ptyProcess.stdin.write(data); });
 ipcMain.on('cancel-chat-request', () => agent?.abort());
 ipcMain.on('reset-conversation', () => agent?.resetConversation());
+ipcMain.on('switch-kernel', async (_, kernel: string) => {
+  const k = kernel === 'builtin' ? 'builtin' : 'vercel';
+  if (k === currentKernel) return;
+  console.log(`[Main] Switching kernel: ${currentKernel} → ${k}`);
+  currentKernel = k;
+  ipcMain.removeAllListeners('diff-accept');
+  ipcMain.removeAllListeners('diff-reject');
+  await initAgent();
+});
 
 // Reinitialize agent when config changes (no full app restart needed)
 ipcMain.on('relaunch-app', async () => {
