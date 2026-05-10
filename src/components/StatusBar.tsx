@@ -97,7 +97,7 @@ export const StatusBar: React.FC<Props> = ({ activePath, language, cursorPositio
             🧠 {ragFiles}
           </span>
         )}
-        <span className="status-item status-version">🐬 DSME v2.0</span>
+        <span className="status-item status-version">🐬 DSME v2.1</span>
       </div>
     </div>
   );

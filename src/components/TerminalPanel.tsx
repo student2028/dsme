@@ -77,9 +77,15 @@ export const TerminalPanel: React.FC = () => {
     term.writeln('\x1b[38;2;124;110;240m  DSME Terminal \x1b[38;2;139;143;167m— Ready\x1b[0m');
     term.writeln('');
 
+    // IPC: terminal output → xterm
+    // Note: preload's removeAllListeners pattern handles re-registration,
+    // but we still need to gate writes on component mount status
+    let mounted = true;
     if (window.electronAPI) {
       window.electronAPI.onTerminalOutput((data: string) => {
-        term.write(data);
+        if (mounted && termInstance.current) {
+          term.write(data);
+        }
       });
 
       term.onData((data) => {
@@ -103,6 +109,7 @@ export const TerminalPanel: React.FC = () => {
     window.addEventListener('resize', handleResize);
 
     return () => {
+      mounted = false; // Prevent stale IPC writes after unmount
       window.removeEventListener('resize', handleResize);
       observer.disconnect();
       term.dispose();

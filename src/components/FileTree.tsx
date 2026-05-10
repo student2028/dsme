@@ -38,7 +38,15 @@ export const FileTree: React.FC<Props> = ({ onFileSelect, activePath }) => {
 
   useEffect(() => {
     loadRootTree();
-    const interval = setInterval(loadRootTree, 8000);
+    // Fallback poll every 15s (reduced from 8s since we also react to file-changed events)
+    const interval = setInterval(loadRootTree, 15000);
+    // React to agent file changes immediately instead of waiting for poll
+    if (window.electronAPI) {
+      window.electronAPI.onFileChanged(() => {
+        // Debounce: wait 500ms for batch file changes to settle
+        setTimeout(loadRootTree, 500);
+      });
+    }
     return () => clearInterval(interval);
   }, [loadRootTree]);
 

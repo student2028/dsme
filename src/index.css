@@ -1320,7 +1320,17 @@ body {
   background: var(--red);
   animation: statusPulse 2s ease-in-out infinite;
 }
-.status-version { color: var(--text-muted); font-size: 10px; opacity: 0.7; }
+.status-version { 
+  color: var(--accent-color); 
+  font-size: 10px; 
+  opacity: 0.85;
+  letter-spacing: 0.3px;
+  animation: versionBreath 4s ease-in-out infinite;
+}
+@keyframes versionBreath {
+  0%, 100% { opacity: 0.85; }
+  50% { opacity: 0.5; }
+}
 .status-theme { opacity: 0.6; transition: opacity var(--transition); }
 .status-theme:hover { opacity: 1; }
 
