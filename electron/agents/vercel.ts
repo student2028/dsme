@@ -91,39 +91,49 @@ You work inside an Electron-based IDE with full system access. Always prioritize
 - Never expose API keys, tokens, or credentials.`;
 }
 
-// ── Web search via curl (robust, bypasses Electron network stack) ──
+// ── Web search via curl (multi-strategy, CAPTCHA-resilient) ──
 async function webSearch(query: string): Promise<string> {
   if (!query) return 'Error: query is required';
   const q = encodeURIComponent(query);
   const proxyArgs = process.env.https_proxy ? `--proxy ${process.env.https_proxy}` : '';
-  const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
+  const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
   try {
-    // Strategy 1: DuckDuckGo Lite (most stable HTML structure)
-    const cmd1 = `curl -sS --max-time 15 ${proxyArgs} -H "User-Agent: ${ua}" "https://lite.duckduckgo.com/lite/?q=${q}" 2>/dev/null | sed -n '/<a.*result-link/,/<\\/a>/p; /result-snippet/p' | sed 's/<[^>]*>//g; s/^[[:space:]]*//' | head -20`;
-    const { stdout: s1 } = await execAsync(cmd1, { timeout: 20000, maxBuffer: 1024 * 1024 });
-
-    if (s1.trim()) {
-      return `Web search results for "${query}":\n${s1.trim()}`;
+    // Strategy 1: DuckDuckGo Instant Answer JSON API (structured, no CAPTCHA)
+    const cmdDDGApi = `curl -sS --max-time 12 ${proxyArgs} "https://api.duckduckgo.com/?q=${q}&format=json&no_redirect=1&no_html=1&skip_disambig=1" 2>/dev/null`;
+    const { stdout: sDDG } = await execAsync(cmdDDGApi, { timeout: 15000, maxBuffer: 1024 * 512 });
+    if (sDDG.trim()) {
+      try {
+        const ddg = JSON.parse(sDDG);
+        const parts: string[] = [];
+        if (ddg.AbstractText) parts.push(`Summary: ${ddg.AbstractText}`);
+        if (ddg.Answer) parts.push(`Answer: ${ddg.Answer}`);
+        if (ddg.RelatedTopics?.length) {
+          parts.push('Related:');
+          for (const rt of ddg.RelatedTopics.slice(0, 5)) {
+            if (rt.Text) parts.push(`- ${rt.Text}`);
+            if (rt.Topics) for (const st of rt.Topics.slice(0, 2)) { if (st.Text) parts.push(`  - ${st.Text}`); }
+          }
+        }
+        if (parts.length > 0) return `Web search results for "${query}":\n${parts.join('\n')}`;
+      } catch { /* JSON parse fail, continue */ }
     }
 
-    // Strategy 2: DuckDuckGo HTML (classic)
-    const cmd2 = `curl -sS --max-time 15 ${proxyArgs} -H "User-Agent: ${ua}" "https://html.duckduckgo.com/html/?q=${q}" 2>/dev/null | grep -E 'result__a|result__snippet' | sed 's/<[^>]*>//g; s/^[[:space:]]*//' | head -16`;
+    // Strategy 2: DuckDuckGo Lite HTML (with CAPTCHA detection)
+    const cmd2 = `curl -sS --max-time 15 ${proxyArgs} -H "User-Agent: ${ua}" "https://lite.duckduckgo.com/lite/?q=${q}" 2>/dev/null | sed -n '/<a.*result-link/,/<\\/a>/p; /result-snippet/p' | sed 's/<[^>]*>//g; s/^[[:space:]]*//' | head -20`;
     const { stdout: s2 } = await execAsync(cmd2, { timeout: 20000, maxBuffer: 1024 * 1024 });
-
-    if (s2.trim()) {
+    if (s2.trim() && !s2.includes('bots use DuckDuckGo') && !s2.includes('challenge')) {
       return `Web search results for "${query}":\n${s2.trim()}`;
     }
 
-    // Strategy 3: Bing fallback
-    const cmd3 = `curl -sS --max-time 15 ${proxyArgs} -H "User-Agent: ${ua}" "https://cn.bing.com/search?q=${q}" 2>/dev/null | grep -Eo '<h2><a[^>]*>[^<]+</a></h2>|<p>[^<]{20,}</p>' | sed 's/<[^>]*>//g' | head -10`;
-    const { stdout: s3 } = await execAsync(cmd3, { timeout: 20000, maxBuffer: 1024 * 1024 });
-
-    if (s3.trim()) {
+    // Strategy 3: Bing (with CAPTCHA detection)
+    const cmd3 = `curl -sS --max-time 15 -L ${proxyArgs} -H "User-Agent: ${ua}" -H "Accept-Language: zh-CN,zh;q=0.9" "https://www.bing.com/search?q=${q}&setlang=zh" 2>/dev/null | grep -Eo '<h2><a[^>]*>[^<]+</a></h2>|<p>[^<]{20,}</p>' | sed 's/<[^>]*>//g' | head -10`;
+    const { stdout: s3 } = await execAsync(cmd3, { timeout: 20000, maxBuffer: 2 * 1024 * 1024 });
+    if (s3.trim() && !s3.includes('verify') && s3.length > 10) {
       return `Web search results for "${query}" (via Bing):\n${s3.trim()}`;
     }
 
-    return `No search results found for: "${query}". Try rephrasing the query.`;
+    return `No results found for "${query}". All search engines returned CAPTCHA or empty. Suggest using fetch_url to access specific URLs directly.`;
   } catch (e: any) {
     return `Search error: ${e.message}. Try a simpler query.`;
   }
