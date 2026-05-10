@@ -24588,42 +24588,86 @@ You work inside an Electron-based IDE with full system access. Always prioritize
 async function webSearch(query) {
 	if (!query) return "Error: query is required";
 	const q = encodeURIComponent(query);
-	const proxyArgs = process.env.https_proxy ? `--proxy ${process.env.https_proxy}` : "";
-	const ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-	try {
-		const { stdout: sDDG } = await execAsync$1(`curl -sS --max-time 12 ${proxyArgs} "https://api.duckduckgo.com/?q=${q}&format=json&no_redirect=1&no_html=1&skip_disambig=1" 2>/dev/null`, {
-			timeout: 15e3,
-			maxBuffer: 1024 * 512
-		});
-		if (sDDG.trim()) try {
-			const ddg = JSON.parse(sDDG);
-			const parts = [];
-			if (ddg.AbstractText) parts.push(`Summary: ${ddg.AbstractText}`);
-			if (ddg.Answer) parts.push(`Answer: ${ddg.Answer}`);
-			if (ddg.RelatedTopics?.length) {
-				parts.push("Related:");
-				for (const rt of ddg.RelatedTopics.slice(0, 5)) {
-					if (rt.Text) parts.push(`- ${rt.Text}`);
-					if (rt.Topics) {
-						for (const st of rt.Topics.slice(0, 2)) if (st.Text) parts.push(`  - ${st.Text}`);
-					}
+	const { BrowserWindow: BW } = require("electron");
+	async function searchViaWebview(url, extractScript, label) {
+		return new Promise((resolve) => {
+			const searchWin = new BW({
+				width: 1024,
+				height: 768,
+				show: false,
+				webPreferences: {
+					nodeIntegration: false,
+					contextIsolation: true
 				}
-			}
-			if (parts.length > 0) return `Web search results for "${query}":\n${parts.join("\n")}`;
-		} catch {}
-		const { stdout: s2 } = await execAsync$1(`curl -sS --max-time 15 ${proxyArgs} -H "User-Agent: ${ua}" "https://lite.duckduckgo.com/lite/?q=${q}" 2>/dev/null | sed -n '/<a.*result-link/,/<\\/a>/p; /result-snippet/p' | sed 's/<[^>]*>//g; s/^[[:space:]]*//' | head -20`, {
-			timeout: 2e4,
-			maxBuffer: 1024 * 1024
+			});
+			const timeout = setTimeout(() => {
+				searchWin.destroy();
+				resolve(null);
+			}, 15e3);
+			searchWin.webContents.on("did-finish-load", async () => {
+				try {
+					await new Promise((r) => setTimeout(r, 1500));
+					const result = await searchWin.webContents.executeJavaScript(extractScript);
+					clearTimeout(timeout);
+					searchWin.destroy();
+					if (result && result.trim().length > 20) resolve(`Web search results for "${query}" (${label}):\n${result.trim()}`);
+					else resolve(null);
+				} catch {
+					clearTimeout(timeout);
+					searchWin.destroy();
+					resolve(null);
+				}
+			});
+			searchWin.webContents.on("did-fail-load", () => {
+				clearTimeout(timeout);
+				searchWin.destroy();
+				resolve(null);
+			});
+			searchWin.loadURL(url).catch(() => {
+				clearTimeout(timeout);
+				searchWin.destroy();
+				resolve(null);
+			});
 		});
-		if (s2.trim() && !s2.includes("bots use DuckDuckGo") && !s2.includes("challenge")) return `Web search results for "${query}":\n${s2.trim()}`;
-		const { stdout: s3 } = await execAsync$1(`curl -sS --max-time 15 -L ${proxyArgs} -H "User-Agent: ${ua}" -H "Accept-Language: zh-CN,zh;q=0.9" "https://www.bing.com/search?q=${q}&setlang=zh" 2>/dev/null | grep -Eo '<h2><a[^>]*>[^<]+</a></h2>|<p>[^<]{20,}</p>' | sed 's/<[^>]*>//g' | head -10`, {
-			timeout: 2e4,
-			maxBuffer: 2 * 1024 * 1024
-		});
-		if (s3.trim() && !s3.includes("verify") && s3.length > 10) return `Web search results for "${query}" (via Bing):\n${s3.trim()}`;
-		return `No results found for "${query}". All search engines returned CAPTCHA or empty. Suggest using fetch_url to access specific URLs directly.`;
+	}
+	const googleExtract = `
+    (function() {
+      var results = [];
+      document.querySelectorAll('#search .g, #rso .g').forEach(function(g) {
+        var title = g.querySelector('h3');
+        var snippet = g.querySelector('.VwiC3b, .IsZvec, [data-sncf], .s3v9rd');
+        if (title) {
+          var text = title.innerText;
+          if (snippet) text += ' — ' + snippet.innerText;
+          if (text.length > 10) results.push(text);
+        }
+      });
+      return results.slice(0, 8).join('\\n');
+    })()
+  `;
+	const sogouExtract = `
+    (function() {
+      var results = [];
+      document.querySelectorAll('.vrwrap, .rb').forEach(function(item) {
+        var title = item.querySelector('h3, .vrTitle');
+        var snippet = item.querySelector('.space-txt, .str-text-info, .str_info, p');
+        if (title) {
+          var text = title.innerText;
+          if (snippet) text += ' — ' + snippet.innerText;
+          if (text.length > 10) results.push(text);
+        }
+      });
+      return results.slice(0, 8).join('\\n');
+    })()
+  `;
+	try {
+		const googleResult = await searchViaWebview(`https://www.google.com/search?q=${q}&hl=zh-CN`, googleExtract, "Google");
+		if (googleResult) return googleResult;
+		const sogouResult = await searchViaWebview(`https://www.sogou.com/web?query=${q}`, sogouExtract, "Sogou");
+		if (sogouResult) return sogouResult;
+		return `No results found for "${query}". Search engines did not return usable content.`;
 	} catch (e) {
-		return `Search error: ${e.message}. Try a simpler query.`;
+		return `Search error: ${e.message}`;
 	}
 }
 async function fetchUrl(url) {

@@ -91,51 +91,109 @@ You work inside an Electron-based IDE with full system access. Always prioritize
 - Never expose API keys, tokens, or credentials.`;
 }
 
-// ── Web search via curl (multi-strategy, CAPTCHA-resilient) ──
+// ── Web search via Electron BrowserWindow (real browser, no CAPTCHA) ──
 async function webSearch(query: string): Promise<string> {
   if (!query) return 'Error: query is required';
   const q = encodeURIComponent(query);
-  const proxyArgs = process.env.https_proxy ? `--proxy ${process.env.https_proxy}` : '';
-  const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+  // Use a hidden BrowserWindow to load search pages like a real browser
+  // This avoids CAPTCHA because it has full browser fingerprint (cookies, JS, etc.)
+  const { BrowserWindow: BW } = require('electron');
+
+  async function searchViaWebview(url: string, extractScript: string, label: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      const searchWin = new BW({
+        width: 1024, height: 768,
+        show: false,
+        webPreferences: { nodeIntegration: false, contextIsolation: true },
+      });
+
+      const timeout = setTimeout(() => {
+        searchWin.destroy();
+        resolve(null);
+      }, 15000);
+
+      searchWin.webContents.on('did-finish-load', async () => {
+        try {
+          // Wait a moment for dynamic content to render
+          await new Promise(r => setTimeout(r, 1500));
+          const result = await searchWin.webContents.executeJavaScript(extractScript);
+          clearTimeout(timeout);
+          searchWin.destroy();
+          if (result && result.trim().length > 20) {
+            resolve(`Web search results for "${query}" (${label}):\n${result.trim()}`);
+          } else {
+            resolve(null);
+          }
+        } catch {
+          clearTimeout(timeout);
+          searchWin.destroy();
+          resolve(null);
+        }
+      });
+
+      searchWin.webContents.on('did-fail-load', () => {
+        clearTimeout(timeout);
+        searchWin.destroy();
+        resolve(null);
+      });
+
+      searchWin.loadURL(url).catch(() => {
+        clearTimeout(timeout);
+        searchWin.destroy();
+        resolve(null);
+      });
+    });
+  }
+
+  // JS to extract search results from Google
+  const googleExtract = `
+    (function() {
+      var results = [];
+      document.querySelectorAll('#search .g, #rso .g').forEach(function(g) {
+        var title = g.querySelector('h3');
+        var snippet = g.querySelector('.VwiC3b, .IsZvec, [data-sncf], .s3v9rd');
+        if (title) {
+          var text = title.innerText;
+          if (snippet) text += ' — ' + snippet.innerText;
+          if (text.length > 10) results.push(text);
+        }
+      });
+      return results.slice(0, 8).join('\\n');
+    })()
+  `;
+
+  // JS to extract search results from Sogou
+  const sogouExtract = `
+    (function() {
+      var results = [];
+      document.querySelectorAll('.vrwrap, .rb').forEach(function(item) {
+        var title = item.querySelector('h3, .vrTitle');
+        var snippet = item.querySelector('.space-txt, .str-text-info, .str_info, p');
+        if (title) {
+          var text = title.innerText;
+          if (snippet) text += ' — ' + snippet.innerText;
+          if (text.length > 10) results.push(text);
+        }
+      });
+      return results.slice(0, 8).join('\\n');
+    })()
+  `;
 
   try {
-    // Strategy 1: DuckDuckGo Instant Answer JSON API (structured, no CAPTCHA)
-    const cmdDDGApi = `curl -sS --max-time 12 ${proxyArgs} "https://api.duckduckgo.com/?q=${q}&format=json&no_redirect=1&no_html=1&skip_disambig=1" 2>/dev/null`;
-    const { stdout: sDDG } = await execAsync(cmdDDGApi, { timeout: 15000, maxBuffer: 1024 * 512 });
-    if (sDDG.trim()) {
-      try {
-        const ddg = JSON.parse(sDDG);
-        const parts: string[] = [];
-        if (ddg.AbstractText) parts.push(`Summary: ${ddg.AbstractText}`);
-        if (ddg.Answer) parts.push(`Answer: ${ddg.Answer}`);
-        if (ddg.RelatedTopics?.length) {
-          parts.push('Related:');
-          for (const rt of ddg.RelatedTopics.slice(0, 5)) {
-            if (rt.Text) parts.push(`- ${rt.Text}`);
-            if (rt.Topics) for (const st of rt.Topics.slice(0, 2)) { if (st.Text) parts.push(`  - ${st.Text}`); }
-          }
-        }
-        if (parts.length > 0) return `Web search results for "${query}":\n${parts.join('\n')}`;
-      } catch { /* JSON parse fail, continue */ }
-    }
+    // Strategy 1: Google (via proxy)
+    const googleUrl = `https://www.google.com/search?q=${q}&hl=zh-CN`;
+    const googleResult = await searchViaWebview(googleUrl, googleExtract, 'Google');
+    if (googleResult) return googleResult;
 
-    // Strategy 2: DuckDuckGo Lite HTML (with CAPTCHA detection)
-    const cmd2 = `curl -sS --max-time 15 ${proxyArgs} -H "User-Agent: ${ua}" "https://lite.duckduckgo.com/lite/?q=${q}" 2>/dev/null | sed -n '/<a.*result-link/,/<\\/a>/p; /result-snippet/p' | sed 's/<[^>]*>//g; s/^[[:space:]]*//' | head -20`;
-    const { stdout: s2 } = await execAsync(cmd2, { timeout: 20000, maxBuffer: 1024 * 1024 });
-    if (s2.trim() && !s2.includes('bots use DuckDuckGo') && !s2.includes('challenge')) {
-      return `Web search results for "${query}":\n${s2.trim()}`;
-    }
+    // Strategy 2: Sogou (direct, no proxy needed in China)
+    const sogouUrl = `https://www.sogou.com/web?query=${q}`;
+    const sogouResult = await searchViaWebview(sogouUrl, sogouExtract, 'Sogou');
+    if (sogouResult) return sogouResult;
 
-    // Strategy 3: Bing (with CAPTCHA detection)
-    const cmd3 = `curl -sS --max-time 15 -L ${proxyArgs} -H "User-Agent: ${ua}" -H "Accept-Language: zh-CN,zh;q=0.9" "https://www.bing.com/search?q=${q}&setlang=zh" 2>/dev/null | grep -Eo '<h2><a[^>]*>[^<]+</a></h2>|<p>[^<]{20,}</p>' | sed 's/<[^>]*>//g' | head -10`;
-    const { stdout: s3 } = await execAsync(cmd3, { timeout: 20000, maxBuffer: 2 * 1024 * 1024 });
-    if (s3.trim() && !s3.includes('verify') && s3.length > 10) {
-      return `Web search results for "${query}" (via Bing):\n${s3.trim()}`;
-    }
-
-    return `No results found for "${query}". All search engines returned CAPTCHA or empty. Suggest using fetch_url to access specific URLs directly.`;
+    return `No results found for "${query}". Search engines did not return usable content.`;
   } catch (e: any) {
-    return `Search error: ${e.message}. Try a simpler query.`;
+    return `Search error: ${e.message}`;
   }
 }
 
