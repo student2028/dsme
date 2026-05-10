@@ -204,10 +204,10 @@ async function main() {
     return open;
   });
 
-  // T8: Engine badge
-  await t.test('Engine badge (VERCEL)', async () => {
+  // T8: Engine badge (pluggable — either VERCEL or BUILTIN)
+  await t.test('Engine badge', async () => {
     const badge = await t.eval('document.querySelector(".chat-kernel-toggle")?.innerText || ""');
-    return badge.includes('VERCEL');
+    return badge.includes('VERCEL') || badge.includes('BUILTIN');
   });
 
   // T9: Accessibility
