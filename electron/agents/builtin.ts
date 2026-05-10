@@ -11,7 +11,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import { BrowserWindow, ipcMain } from 'electron';
+import { BrowserWindow } from 'electron';
 import OpenAI from 'openai';
 import type { IAgent, AgentConfig } from './base';
 import { RAGEngine } from './rag';
@@ -151,7 +151,8 @@ export class BuiltinAgent implements IAgent {
     try {
       const fsSync = require('fs');
       this.fsWatcher = fsSync.watch(cwd, { recursive: true }, (_: string, filename: string | null) => {
-        if (!filename || filename.includes('node_modules') || filename.includes('.git')) return;
+        if (!filename || filename.includes('node_modules') || filename.includes('.git') ||
+            filename.includes('dist') || filename.includes('dist-electron')) return;
         if (this.reindexTimer) clearTimeout(this.reindexTimer);
         this.reindexTimer = setTimeout(() => {
           this.rag.index(this.cwd).then(c => this.send('rag-status', c)).catch(() => {});
@@ -200,8 +201,8 @@ export class BuiltinAgent implements IAgent {
     if (this.reindexTimer) { clearTimeout(this.reindexTimer); this.reindexTimer = null; }
   }
   setupDiffHandlers(): void {
-    ipcMain.on('diff-accept', (_e, id: string) => {});
-    ipcMain.on('diff-reject', (_e, id: string) => {});
+    // Diff handlers managed by VercelAgent; builtin uses the same IPC channels
+    // No-op here — main.ts cleans up listeners on kernel switch
   }
 
   // ── Agent loop: streaming + tool calls ──

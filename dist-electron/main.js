@@ -25355,7 +25355,7 @@ var BuiltinAgent = class {
 		try {
 			const fsSync = require("fs");
 			this.fsWatcher = fsSync.watch(cwd, { recursive: true }, (_, filename) => {
-				if (!filename || filename.includes("node_modules") || filename.includes(".git")) return;
+				if (!filename || filename.includes("node_modules") || filename.includes(".git") || filename.includes("dist") || filename.includes("dist-electron")) return;
 				if (this.reindexTimer) clearTimeout(this.reindexTimer);
 				this.reindexTimer = setTimeout(() => {
 					this.rag.index(this.cwd).then((c) => this.send("rag-status", c)).catch(() => {});
@@ -25434,10 +25434,7 @@ var BuiltinAgent = class {
 			this.reindexTimer = null;
 		}
 	}
-	setupDiffHandlers() {
-		electron.ipcMain.on("diff-accept", (_e, id) => {});
-		electron.ipcMain.on("diff-reject", (_e, id) => {});
-	}
+	setupDiffHandlers() {}
 	async runLoop() {
 		const MAX_ITERATIONS = 25;
 		this.abortController = new AbortController();
