@@ -16,47 +16,13 @@ import OpenAI from 'openai';
 import type { IAgent, AgentConfig } from './base';
 import { RAGEngine } from './rag';
 import { browsePage } from './browser';
+import { webSearch, fetchUrl, isCommandBlocked, buildSystemPromptBase } from './shared-tools';
 
 const execAsync = promisify(exec);
 
-// ── System prompt ───────────────────────────────────────────────────
+// System prompt: shared base + builtin-specific additions
 function getSystemPrompt(cwd: string): string {
-  const now = new Date();
-  const dateStr = now.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
-  const timeStr = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  const osInfo = process.platform === 'darwin' ? 'macOS' : process.platform;
-
-  return `You are DSME (DeepSeek Matrix Engine), an autonomous AI coding assistant.
-You work inside an Electron-based IDE with full system access.
-
-## Environment
-- OS: ${osInfo}
-- Shell: zsh
-- Current Time: ${dateStr} ${timeStr}
-- Workspace: ${cwd}
-
-## Tools
-Use tools liberally — action over description.
-- read_file / write_file / replace_in_file: File operations
-- list_directory / search_codebase: Navigation
-- run_command: Shell execution
-- web_search / fetch_url: Web access (static pages)
-- browse_page: Interactive browser with full JS rendering (for SPAs, dynamic tables, clicking/scrolling)
-
-## Rules
-- Be concise, direct, action-oriented.
-- Respond in the same language as the user.
-- Never fabricate tool results.
-- For web_search: auto-trigger for weather, news, real-time data.
-- NEVER say "I don't have access to real-time information" — use web_search.
-
-### browse_page Usage
-- Use browse_page when you need to interact with a page: click, scroll, extract data from JS-rendered content.
-- Step 1: Call with a simple script (\`return document.title + '\\n' + document.body.innerText.slice(0, 3000)\`) to scout the page.
-- Step 2: Write async JS that clicks/waits/extracts. The script MUST return a string.
-- Prefer browse_page over fetch_url for any dynamic/SPA page.
-
-- **CRITICAL**: Never create temporary, test, or isolated files directly in the workspace root. ALWAYS place unrelated scripts or generated standalone documents inside a \`scratch/\` folder (create it if missing).`;
+  return buildSystemPromptBase(cwd);
 }
 
 // ── Tool definitions (OpenAI function calling format) ──
@@ -72,72 +38,7 @@ const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   { type: 'function', function: { name: 'browse_page', description: 'Open a URL in a real browser with full JS rendering, then execute a custom script to interact with and extract data from the page. Use for SPAs, dynamic tables, clicking/scrolling. Script runs in page context, can use async/await, MUST return a string.', parameters: { type: 'object', properties: { url: { type: 'string', description: 'URL to open' }, script: { type: 'string', description: 'JavaScript to execute in page context. MUST return a string.' }, wait_before_script: { type: 'number', description: 'Ms to wait after page load. Default: 2000' }, timeout: { type: 'number', description: 'Total timeout ms. Default: 30000' } }, required: ['url', 'script'] } } },
 ];
 
-// ── Web search via BrowserWindow ──
-async function webSearch(query: string): Promise<string> {
-  if (!query) return 'Error: query is required';
-  const q = encodeURIComponent(query);
-  const { BrowserWindow: BW } = require('electron');
-
-  async function searchVia(url: string, extractJS: string, label: string): Promise<string | null> {
-    return new Promise((resolve) => {
-      const w = new BW({ width: 1024, height: 768, show: false, webPreferences: { nodeIntegration: false, contextIsolation: true } });
-      const t = setTimeout(() => { w.destroy(); resolve(null); }, 8000);
-      w.webContents.on('did-finish-load', async () => {
-        try {
-          await new Promise(r => setTimeout(r, 1500));
-          const r = await w.webContents.executeJavaScript(extractJS);
-          clearTimeout(t); w.destroy();
-          resolve(r && r.trim().length > 20 ? `Web search (${label}):\n${r.trim()}` : null);
-        } catch { clearTimeout(t); w.destroy(); resolve(null); }
-      });
-      w.webContents.on('did-fail-load', () => { clearTimeout(t); w.destroy(); resolve(null); });
-      w.loadURL(url).catch(() => { clearTimeout(t); w.destroy(); resolve(null); });
-    });
-  }
-
-  const googleJS = `(function(){var r=[];document.querySelectorAll('#search .g, #rso .g').forEach(function(g){var t=g.querySelector('h3');var s=g.querySelector('.VwiC3b, .IsZvec, [data-sncf]');if(t){var x=t.innerText;if(s)x+=' — '+s.innerText;if(x.length>10)r.push(x)}});return r.slice(0,8).join('\\n')})()`;
-  const sogouJS = `(function(){var r=[];document.querySelectorAll('.vrwrap, .rb').forEach(function(i){var t=i.querySelector('h3, .vrTitle');var s=i.querySelector('.space-txt, .str-text-info, p');if(t){var x=t.innerText;if(s)x+=' — '+s.innerText;if(x.length>10)r.push(x)}});return r.slice(0,8).join('\\n')})()`;
-  const bingJS = `(function(){var r=[];document.querySelectorAll('.b_algo').forEach(function(i){var t=i.querySelector('h2');var s=i.querySelector('.b_caption p, .b_algoSlug, .b_snippet');if(t){var x=t.innerText;if(s)x+=' — '+s.innerText;if(x.length>10)r.push(x)}});return r.slice(0,8).join('\\n')})()`;
-
-  try {
-    const promises = [
-      searchVia(`https://cn.bing.com/search?q=${q}`, bingJS, 'Bing'),
-      searchVia(`https://www.sogou.com/web?query=${q}`, sogouJS, 'Sogou'),
-      searchVia(`https://www.google.com/search?q=${q}&hl=zh-CN`, googleJS, 'Google')
-    ];
-
-    const firstSuccess = await new Promise<string | null>((resolve) => {
-      let count = promises.length;
-      for (const p of promises) {
-        p.then(res => {
-          if (res) resolve(res);
-          else if (--count === 0) resolve(null);
-        }).catch(() => {
-          if (--count === 0) resolve(null);
-        });
-      }
-    });
-
-    if (firstSuccess) return firstSuccess;
-    return `No results for "${query}".`;
-  } catch (e: any) { return `Search error: ${e.message}`; }
-}
-
-// ── Fetch URL ──
-async function fetchUrl(url: string): Promise<string> {
-  if (!url) return 'Error: url is required';
-  try { const u = new URL(url); if (!['http:', 'https:'].includes(u.protocol)) return 'Error: only http/https supported'; }
-  catch { return 'Error: invalid URL'; }
-  const safeUrl = url.replace(/[;&|`$(){}!#']/g, '');
-  const proxy = process.env.https_proxy ? `--proxy ${process.env.https_proxy}` : '';
-  try {
-    const { stdout } = await execAsync(`curl -sS --max-time 20 ${proxy} -L -H "User-Agent: Mozilla/5.0" "${safeUrl}"`, { timeout: 25000, maxBuffer: 2 * 1024 * 1024 });
-    const text = stdout.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, 15000);
-    return text ? `URL: ${url}\n\n${text}` : `No content from: ${url}`;
-  } catch (e: any) { return `Fetch error: ${e.message}`; }
-}
-
-// browsePage is imported from ./browser (shared implementation)
+// webSearch, fetchUrl, browsePage — all imported from shared modules
 
 // ── Agent implementation ────────────────────────────────────────────
 export class BuiltinAgent implements IAgent {
@@ -237,9 +138,15 @@ export class BuiltinAgent implements IAgent {
   // ── Agent loop: streaming + tool calls ──
   private async runLoop(): Promise<void> {
     const MAX_ITERATIONS = 25;
+    const LOOP_TIMEOUT_MS = 90_000; // 90s hard timeout per iteration
     this.abortController = new AbortController();
 
     for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+      // Hard timeout: auto-abort if LLM hangs
+      const timeoutId = setTimeout(() => {
+        console.warn('[BuiltinAgent] Loop timeout after 90s — aborting');
+        this.abortController?.abort();
+      }, LOOP_TIMEOUT_MS);
       try {
         // Build system prompt with RAG context
         const userQuery = this.messages.filter(m => m.role === 'user').pop();
@@ -308,6 +215,7 @@ export class BuiltinAgent implements IAgent {
         // No tool calls → done
         if (toolCalls.length === 0) {
           this.retryCount = 0;
+          clearTimeout(timeoutId);
           break;
         }
 
@@ -333,6 +241,7 @@ export class BuiltinAgent implements IAgent {
         // Continue loop for next iteration
 
       } catch (err: any) {
+        clearTimeout(timeoutId);
         if (err.name === 'AbortError') return;
         const msg = err?.message || String(err);
         console.error('[BuiltinAgent] ERROR:', msg);

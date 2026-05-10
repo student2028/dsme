@@ -19,253 +19,17 @@ import { z } from 'zod';
 import type { IAgent, AgentConfig } from './base';
 import { RAGEngine } from './rag';
 import { browsePage } from './browser';
+import { webSearch, fetchUrl, buildSystemPromptBase } from './shared-tools';
 
 const execAsync = promisify(exec);
 
-// ── System prompt ───────────────────────────────────────────────────
+// System prompt: shared base (from shared-tools.ts)
 function getSystemPrompt(cwd: string): string {
-  const now = new Date();
-  const dateStr = now.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
-  const timeStr = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  const osInfo = process.platform === 'darwin' ? 'macOS' : process.platform;
-
-  return `You are DSME (DeepSeek Matrix Engine), an autonomous AI coding assistant built for pair programming.
-You work inside an Electron-based IDE with full system access. Always prioritize the user's latest request.
-
-## Environment
-- OS: ${osInfo}
-- Shell: zsh
-- Current Time: ${dateStr} ${timeStr} (CRITICAL: Strictly use this time. NEVER fall back to your training cutoff date.)
-- Workspace: ${cwd}
-
-## Operating Principles
-- Be concise, direct, and action-oriented. Lead with the answer, not the reasoning.
-- Respond in the same language as the user.
-- Prefer action over description. If a task requires reading, running, or changing something, use tools.
-- Never fabricate tool execution or claim you ran something you did not.
-- If you can say it in one sentence, don't use three. Skip filler words and preamble.
-- For data extraction or list compilation, provide the exhaustive, complete set. Never truncate.
-
-## Tool Usage Rules
-- Tool calls are your primary way to interact with the world.
-- A text-only response is acceptable ONLY for simple conversation or when prior tool results already answer the question.
-- Always read a file before editing it. Prefer minimal, surgical edits.
-- If multiple independent tool calls are needed, batch them in parallel.
-- Prefer specialized tools over generic shell commands.
-
-### Web Search (CRITICAL — Most Important Tool)
-- **AUTO-TRIGGER**: You MUST call web_search automatically whenever:
-  - The user asks about current events, news, weather, prices, or any real-time information
-  - The query involves dates, times, or anything after your training cutoff
-  - You are uncertain about factual claims (people, companies, products, versions)
-  - The user asks "what is X" about something that may have changed recently
-- **NEVER** say "I don't have access to real-time information" — you DO, via web_search
-- **NEVER** say "my knowledge cutoff is..." as an excuse — use web_search instead
-- After searching, use fetch_url to read specific pages for detailed information
-- Synthesize results from multiple sources into a clear, authoritative answer
-
-### Browse Page (Interactive Browser)
-- Use browse_page when you need to interact with a page: click buttons, fill forms, navigate tabs, scroll, or extract data from JS-rendered SPAs.
-- **Step 1 — Reconnaissance**: First call browse_page with a simple script like \`document.title + '\\n' + document.body.innerText.slice(0, 3000)\` to understand the page structure.
-- **Step 2 — Action**: Write a self-contained async JS script that performs clicks, waits, and extracts data. Example:
-  \`\`\`javascript
-  document.querySelector('.filter-btn').click();
-  await new Promise(r => setTimeout(r, 1500));
-  document.querySelector('[data-value="target"]').click();
-  await new Promise(r => setTimeout(r, 2000));
-  return Array.from(document.querySelectorAll('table tr')).map(r => r.textContent.trim()).join('\\n');
-  \`\`\`
-- The script runs in page context with full DOM access. It MUST return a string.
-- Prefer browse_page over fetch_url for any page that uses client-side rendering (React, Vue, dynamic tables, etc.).
-
-### File and Command Discipline
-- Use absolute paths for file operations.
-- Prefer minimal, surgical edits that preserve existing style.
-- Avoid standalone cd; set working directory in the tool call.
-- **CRITICAL**: Never create temporary, test, or isolated files directly in the workspace root. ALWAYS place unrelated scripts or generated standalone documents inside a \`scratch/\` folder (create it if missing).
-
-## Output Quality
-- Treat tool calls as working process; treat the final response as the deliverable.
-- Synthesize findings into a clear answer instead of narrating your search trail.
-- Report outcomes faithfully. Never claim success unless you actually observed it.
-- Use Markdown for readability. Use code fences for code, commands, paths.
-- Match structure to the task: simple requests → short answers; complex research → organized sections.
-
-## Language
-- Default to 中文 (Chinese) for all responses unless the user writes in another language.
-- Match the user's language in conversation.
-
-### replace_in_file — Critical Usage Rules
-- ALWAYS read the file first to get exact current content.
-- The 'target' parameter must be an EXACT character-for-character match including whitespace, indentation, and newlines.
-- Copy-paste from the read_file output to ensure exact match. Never type from memory.
-- If a replacement fails with "Target not found", re-read the file and try again with the exact text.
-
-## Safety
-- Ask before destructive, irreversible, or externally visible actions.
-- Do not modify files outside the workspace unless explicitly asked.
-- Never expose API keys, tokens, or credentials.`;
+  return buildSystemPromptBase(cwd);
 }
 
-// ── Web search via Electron BrowserWindow (real browser, no CAPTCHA) ──
-async function webSearch(query: string): Promise<string> {
-  if (!query) return 'Error: query is required';
-  const q = encodeURIComponent(query);
-
-  // Use a hidden BrowserWindow to load search pages like a real browser
-  // This avoids CAPTCHA because it has full browser fingerprint (cookies, JS, etc.)
-  const { BrowserWindow: BW } = require('electron');
-
-  async function searchViaWebview(url: string, extractScript: string, label: string): Promise<string | null> {
-    return new Promise((resolve) => {
-      const searchWin = new BW({
-        width: 1024, height: 768,
-        show: false,
-        webPreferences: { nodeIntegration: false, contextIsolation: true },
-      });
-
-      const timeout = setTimeout(() => {
-        searchWin.destroy();
-        resolve(null);
-      }, 8000);
-
-      searchWin.webContents.on('did-finish-load', async () => {
-        try {
-          // Wait a moment for dynamic content to render
-          await new Promise(r => setTimeout(r, 1500));
-          const result = await searchWin.webContents.executeJavaScript(extractScript);
-          clearTimeout(timeout);
-          searchWin.destroy();
-          if (result && result.trim().length > 20) {
-            resolve(`Web search results for "${query}" (${label}):\n${result.trim()}`);
-          } else {
-            resolve(null);
-          }
-        } catch {
-          clearTimeout(timeout);
-          searchWin.destroy();
-          resolve(null);
-        }
-      });
-
-      searchWin.webContents.on('did-fail-load', () => {
-        clearTimeout(timeout);
-        searchWin.destroy();
-        resolve(null);
-      });
-
-      searchWin.loadURL(url).catch(() => {
-        clearTimeout(timeout);
-        searchWin.destroy();
-        resolve(null);
-      });
-    });
-  }
-
-  // JS to extract search results from Google
-  const googleExtract = `
-    (function() {
-      var results = [];
-      document.querySelectorAll('#search .g, #rso .g').forEach(function(g) {
-        var title = g.querySelector('h3');
-        var snippet = g.querySelector('.VwiC3b, .IsZvec, [data-sncf], .s3v9rd');
-        if (title) {
-          var text = title.innerText;
-          if (snippet) text += ' — ' + snippet.innerText;
-          if (text.length > 10) results.push(text);
-        }
-      });
-      return results.slice(0, 8).join('\\n');
-    })()
-  `;
-
-  // JS to extract search results from Sogou
-  const sogouExtract = `
-    (function() {
-      var results = [];
-      document.querySelectorAll('.vrwrap, .rb').forEach(function(item) {
-        var title = item.querySelector('h3, .vrTitle');
-        var snippet = item.querySelector('.space-txt, .str-text-info, .str_info, p');
-        if (title) {
-          var text = title.innerText;
-          if (snippet) text += ' — ' + snippet.innerText;
-          if (text.length > 10) results.push(text);
-        }
-      });
-      return results.slice(0, 8).join('\\n');
-    })()
-  `;
-
-  // JS to extract search results from Bing
-  const bingExtract = `
-    (function() {
-      var results = [];
-      document.querySelectorAll('.b_algo').forEach(function(item) {
-        var title = item.querySelector('h2');
-        var snippet = item.querySelector('.b_caption p, .b_algoSlug, .b_snippet');
-        if (title) {
-          var text = title.innerText;
-          if (snippet) text += ' — ' + snippet.innerText;
-          if (text.length > 10) results.push(text);
-        }
-      });
-      return results.slice(0, 8).join('\\n');
-    })()
-  `;
-
-  try {
-    const promises = [
-      searchViaWebview(`https://cn.bing.com/search?q=${q}`, bingExtract, 'Bing'),
-      searchViaWebview(`https://www.sogou.com/web?query=${q}`, sogouExtract, 'Sogou'),
-      searchViaWebview(`https://www.google.com/search?q=${q}&hl=zh-CN`, googleExtract, 'Google')
-    ];
-
-    const firstSuccess = await new Promise<string | null>((resolve) => {
-      let count = promises.length;
-      for (const p of promises) {
-        p.then(res => {
-          if (res) resolve(res);
-          else if (--count === 0) resolve(null);
-        }).catch(() => {
-          if (--count === 0) resolve(null);
-        });
-      }
-    });
-
-    if (firstSuccess) return firstSuccess;
-
-    return `No results found for "${query}". Search engines did not return usable content.`;
-  } catch (e: any) {
-    return `Search error: ${e.message}`;
-  }
-}
-
-async function fetchUrl(url: string): Promise<string> {
-  if (!url) return 'Error: url is required';
-  // Validate URL format to prevent shell injection
-  try { const u = new URL(url); if (!['http:', 'https:'].includes(u.protocol)) return 'Error: only http/https URLs supported'; }
-  catch { return 'Error: invalid URL'; }
-  // Sanitize: remove shell metacharacters
-  const safeUrl = url.replace(/[;&|`$(){}!#']/g, '');
-  const proxyArgs = process.env.https_proxy ? `--proxy ${process.env.https_proxy}` : '';
-  try {
-    const cmd = `curl -sS --max-time 20 ${proxyArgs} -L -H "User-Agent: Mozilla/5.0" "${safeUrl}"`;
-    const { stdout } = await execAsync(cmd, { timeout: 25000, maxBuffer: 2 * 1024 * 1024 });
-    // Strip HTML tags, extract text
-    const text = stdout
-      .replace(/<script[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s{2,}/g, ' ')
-      .trim()
-      .slice(0, 15000);
-    return text ? `URL: ${url}\n\n${text}` : `No content from: ${url}`;
-  } catch (e: any) {
-    return `Fetch error: ${e.message}`;
-  }
-}
-
-// browsePage is imported from ./browser (shared implementation)
+// webSearch, fetchUrl — imported from shared-tools.ts
+// browsePage — imported from ./browser
 
 // ── Format tool args for display ──
 function formatToolArgs(name: string, args: any): string {
@@ -620,9 +384,15 @@ export class VercelAgent implements IAgent {
 
   // ── Main stream using Vercel AI SDK streamText ──
   private async runStream(): Promise<void> {
+    const STREAM_TIMEOUT_MS = 90_000; // 90s hard timeout per attempt
     // True iterative retry loop (no recursion, no stack growth)
     while (true) {
     this.abortController = new AbortController();
+    // Hard timeout: auto-abort if LLM hangs
+    const timeoutId = setTimeout(() => {
+      console.warn('[VercelAgent] Stream timeout after 90s — aborting');
+      this.abortController?.abort();
+    }, STREAM_TIMEOUT_MS);
     try {
       const result = streamText({
         model: this.provider.chat(this.model),
@@ -687,8 +457,10 @@ export class VercelAgent implements IAgent {
       // Context window management: sliding window + content truncation
       this.pruneHistory();
       this.retryCount = 0; // Reset retry budget on success
+      clearTimeout(timeoutId);
 
     } catch (err: any) {
+      clearTimeout(timeoutId);
       if (err.name === 'AbortError') return;
       const msg = err?.message || String(err);
       console.error('[VercelAgent] ERROR:', msg);

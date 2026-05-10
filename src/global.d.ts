@@ -54,6 +54,7 @@ declare global {
       resetConversation: () => void;
       onRagStatus: (callback: (count: number) => void) => void;
       onKernelChanged: (callback: (kernel: string) => void) => void;
+      switchKernel: (kernel: string) => void;
     };
   }
 }

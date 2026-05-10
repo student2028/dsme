@@ -50,12 +50,14 @@ export async function browsePage(opts: BrowsePageOptions): Promise<string> {
       height: 900,
       show,
       title: `DSME Browser — ${url}`,
+      alwaysOnTop: show,
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
         javascript: true,
       },
     });
+    if (show) win.focus();
 
     win.webContents.setUserAgent(DEFAULT_USER_AGENT);
 

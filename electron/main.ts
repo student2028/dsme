@@ -330,10 +330,15 @@ ipcMain.handle('get-git-status', async () => {
 ipcMain.handle('git-commit', async (_, msg: string) => {
   try {
     await execAsync('git add -A', { cwd: currentWorkspacePath });
-    // Sanitize commit message to prevent shell injection
-    const safeMsg = msg.replace(/[`$\\!]/g, '').replace(/"/g, '\\"');
-    const { stdout } = await execAsync(`git commit -m "${safeMsg}"`, { cwd: currentWorkspacePath });
-    return stdout;
+    // Use spawn with array args to prevent shell injection entirely
+    return await new Promise<string>((resolve, reject) => {
+      const proc = cp.spawn('git', ['commit', '-m', msg], { cwd: currentWorkspacePath });
+      let stdout = '', stderr = '';
+      proc.stdout.on('data', d => stdout += d);
+      proc.stderr.on('data', d => stderr += d);
+      proc.on('close', code => code === 0 ? resolve(stdout || stderr) : reject(new Error(stderr || `exit ${code}`)));
+      proc.on('error', reject);
+    });
   } catch (e) {
     return `Error: ${e instanceof Error ? e.message : 'commit failed'}`;
   }
