@@ -19,7 +19,7 @@ export default defineConfig({
         vite: {
           build: {
             rollupOptions: {
-              external: ['electron'],
+              external: ['electron', 'openai'],
               output: { format: 'cjs' },
             },
           },
