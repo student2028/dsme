@@ -15,6 +15,7 @@ import { BrowserWindow } from 'electron';
 import OpenAI from 'openai';
 import type { IAgent, AgentConfig } from './base';
 import { RAGEngine } from './rag';
+import { browsePage } from './browser';
 
 const execAsync = promisify(exec);
 
@@ -136,76 +137,7 @@ async function fetchUrl(url: string): Promise<string> {
   } catch (e: any) { return `Fetch error: ${e.message}`; }
 }
 
-// ── Browse page via Electron BrowserWindow (full JS rendering + interaction) ──
-async function browsePage(url: string, script: string, waitMs: number = 2000, timeoutMs: number = 30000): Promise<string> {
-  if (!url) return 'Error: url is required';
-  if (!script) return 'Error: script is required';
-  try { const u = new URL(url); if (!['http:', 'https:'].includes(u.protocol)) return 'Error: only http/https URLs supported'; }
-  catch { return 'Error: invalid URL'; }
-
-  const { BrowserWindow: BW } = require('electron');
-
-  return new Promise((resolve) => {
-    const win = new BW({
-      width: 1280, height: 900,
-      show: true,  // Visible so user can observe the browsing process
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-        javascript: true,
-      },
-    });
-
-    win.webContents.setUserAgent(
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-    );
-
-    const hardTimeout = setTimeout(() => {
-      try { win.destroy(); } catch {}
-      resolve(`Error: browse_page timed out after ${timeoutMs}ms.`);
-    }, timeoutMs);
-
-    win.webContents.on('did-finish-load', async () => {
-      try {
-        await new Promise(r => setTimeout(r, waitMs));
-        const wrappedScript = `
-          (async () => {
-            try {
-              ${script}
-            } catch (e) {
-              return 'Script error: ' + (e.message || String(e));
-            }
-          })()
-        `;
-        const result = await win.webContents.executeJavaScript(wrappedScript);
-        clearTimeout(hardTimeout);
-        win.destroy();
-        if (result === null || result === undefined) {
-          resolve('browse_page: script returned null/undefined. Make sure your script ends with a return statement.');
-        } else {
-          const text = String(result);
-          resolve(text.length > 20000 ? text.slice(0, 20000) + '\n...(truncated)' : text);
-        }
-      } catch (e: any) {
-        clearTimeout(hardTimeout);
-        win.destroy();
-        resolve(`Script execution error: ${e.message}`);
-      }
-    });
-
-    win.webContents.on('did-fail-load', (_: any, code: number, desc: string) => {
-      clearTimeout(hardTimeout);
-      win.destroy();
-      resolve(`Page load failed: ${desc} (code ${code})`);
-    });
-
-    win.loadURL(url).catch((e: any) => {
-      clearTimeout(hardTimeout);
-      win.destroy();
-      resolve(`Failed to open URL: ${e.message}`);
-    });
-  });
-}
+// browsePage is imported from ./browser (shared implementation)
 
 // ── Agent implementation ────────────────────────────────────────────
 export class BuiltinAgent implements IAgent {
@@ -476,7 +408,7 @@ export class BuiltinAgent implements IAgent {
         }
         case 'web_search': return await webSearch(args.query);
         case 'fetch_url': return await fetchUrl(args.url);
-        case 'browse_page': return await browsePage(args.url, args.script, args.wait_before_script ?? 2000, args.timeout ?? 30000);
+        case 'browse_page': return await browsePage({ url: args.url, script: args.script, waitMs: args.wait_before_script ?? 2000, timeoutMs: args.timeout ?? 30000 });
         default: return `Unknown tool: ${name}`;
       }
     } catch (e: any) {
