@@ -15,6 +15,7 @@ interface IndexedFile {
   content: string;     // raw file content
   tokens: string[];    // tokenized words
   tfidf: Map<string, number>; // TF-IDF weights
+  mtime: number;       // last modified timestamp (ms)
 }
 
 interface SearchResult {
@@ -64,6 +65,7 @@ export class RAGEngine {
       for (const filePath of allFiles.slice(0, MAX_FILES)) {
         try {
           const content = await readFile(filePath, 'utf-8');
+          const s = await stat(filePath);
           const relPath = relative(cwd, filePath);
           const tokens = this.tokenize(content + ' ' + relPath);
           const tf = this.computeTF(tokens);
@@ -74,7 +76,7 @@ export class RAGEngine {
             docFreq.set(token, (docFreq.get(token) || 0) + 1);
           }
 
-          this.files.push({ path: relPath, content, tokens, tfidf: tf });
+          this.files.push({ path: relPath, content, tokens, tfidf: tf, mtime: s.mtimeMs });
         } catch {
           // Skip unreadable files
         }
@@ -99,6 +101,87 @@ export class RAGEngine {
 
     } finally {
       this.indexing = false;
+    }
+  }
+
+  /**
+   * Incremental update — only re-index files that changed since last index.
+   * Much faster than full re-index for typical edit-compile-test cycles.
+   */
+  async update(): Promise<{ added: number; updated: number; removed: number }> {
+    if (!this.indexed || this.indexing || !this.cwd) return { added: 0, updated: 0, removed: 0 };
+    this.indexing = true;
+    let added = 0, updated = 0, removed = 0;
+
+    try {
+      const currentFiles = await this.walkDir(this.cwd);
+      const currentSet = new Set(currentFiles.map(f => relative(this.cwd, f)));
+      const existingMap = new Map(this.files.map(f => [f.path, f]));
+
+      // Remove deleted files
+      const beforeCount = this.files.length;
+      this.files = this.files.filter(f => currentSet.has(f.path));
+      removed = beforeCount - this.files.length;
+
+      // Check for new/modified files
+      for (const filePath of currentFiles.slice(0, MAX_FILES)) {
+        const relPath = relative(this.cwd, filePath);
+        try {
+          const s = await stat(filePath);
+          const existing = existingMap.get(relPath);
+
+          if (existing && s.mtimeMs <= existing.mtime) continue; // Unchanged
+
+          const content = await readFile(filePath, 'utf-8');
+          const tokens = this.tokenize(content + ' ' + relPath);
+          const tf = this.computeTF(tokens);
+
+          if (existing) {
+            // Update in place
+            existing.content = content;
+            existing.tokens = tokens;
+            existing.tfidf = tf;
+            existing.mtime = s.mtimeMs;
+            updated++;
+          } else {
+            // New file
+            this.files.push({ path: relPath, content, tokens, tfidf: tf, mtime: s.mtimeMs });
+            added++;
+          }
+        } catch {}
+      }
+
+      // Recompute IDF if files changed
+      if (added > 0 || removed > 0 || updated > 0) {
+        this.recomputeIDF();
+        console.log(`[RAG] Incremental update: +${added} ~${updated} -${removed} (total: ${this.files.length})`);
+      }
+
+      return { added, updated, removed };
+    } finally {
+      this.indexing = false;
+    }
+  }
+
+  /** Recompute IDF and TF-IDF weights for all files */
+  private recomputeIDF() {
+    const docFreq = new Map<string, number>();
+    for (const file of this.files) {
+      const uniqueTokens = new Set(file.tokens);
+      for (const token of uniqueTokens) {
+        docFreq.set(token, (docFreq.get(token) || 0) + 1);
+      }
+    }
+    this.idf.clear();
+    const N = this.files.length;
+    for (const [term, df] of docFreq) {
+      this.idf.set(term, Math.log((N + 1) / (df + 1)) + 1);
+    }
+    for (const file of this.files) {
+      const tf = this.computeTF(file.tokens);
+      for (const [term, v] of tf) {
+        file.tfidf.set(term, v * (this.idf.get(term) || 1));
+      }
     }
   }
 

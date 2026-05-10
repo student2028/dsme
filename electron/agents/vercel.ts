@@ -118,9 +118,12 @@ export class VercelAgent implements IAgent {
   getRagFileCount(): number { return this.rag.fileCount; }
 
   async reindex(): Promise<number> {
-    const count = await this.rag.index(this.cwd);
-    this.send('rag-status', count);
-    return count;
+    // Use incremental update (mtime-based) instead of full rebuild
+    const { added, updated, removed } = await this.rag.update();
+    if (added > 0 || updated > 0 || removed > 0) {
+      this.send('rag-status', this.rag.fileCount);
+    }
+    return this.rag.fileCount;
   }
 
   private send(channel: string, ...args: any[]) {

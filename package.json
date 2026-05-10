@@ -9,7 +9,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "build:pkg": "npm run build && electron-builder",
-    "test": "node tests/smoke.mjs",
+    "test": "node --experimental-strip-types tests/unit.mjs && node tests/smoke.mjs",
+    "test:unit": "node --experimental-strip-types tests/unit.mjs",
+    "test:smoke": "node tests/smoke.mjs",
     "typecheck": "tsc --noEmit --skipLibCheck",
     "lint": "eslint .",
     "preview": "vite preview"

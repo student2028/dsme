@@ -85,7 +85,11 @@ export class BuiltinAgent implements IAgent {
             filename.includes('dist') || filename.includes('dist-electron')) return;
         if (this.reindexTimer) clearTimeout(this.reindexTimer);
         this.reindexTimer = setTimeout(() => {
-          this.rag.index(this.cwd).then(c => this.send('rag-status', c)).catch(() => {});
+          this.rag.update().then(({ added, updated, removed }) => {
+            if (added > 0 || updated > 0 || removed > 0) {
+              this.send('rag-status', this.rag.fileCount);
+            }
+          }).catch(() => {});
         }, 5000);
       });
     } catch {}

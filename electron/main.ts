@@ -17,6 +17,14 @@ const execAsync = promisify(cp.exec);
 process.stdout.on('error', (e: any) => { if (e.code !== 'EPIPE') throw e; });
 process.stderr.on('error', (e: any) => { if (e.code !== 'EPIPE') throw e; });
 
+// Global safety net — log and survive unexpected errors instead of silent crash
+process.on('uncaughtException', (err) => {
+  console.error('[DSME] Uncaught exception:', err.message, err.stack);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[DSME] Unhandled rejection:', reason);
+});
+
 // Ensure consistent userData path regardless of launch method (npx electron vs packaged)
 app.name = 'dsme';
 
@@ -329,8 +337,13 @@ ipcMain.handle('get-git-status', async () => {
 
 ipcMain.handle('git-commit', async (_, msg: string) => {
   try {
-    await execAsync('git add -A', { cwd: currentWorkspacePath });
-    // Use spawn with array args to prevent shell injection entirely
+    // Stage all changes — use spawn for injection-proof execution
+    await new Promise<void>((resolve, reject) => {
+      const add = cp.spawn('git', ['add', '-A'], { cwd: currentWorkspacePath });
+      add.on('close', code => code === 0 ? resolve() : reject(new Error(`git add failed (exit ${code})`)));
+      add.on('error', reject);
+    });
+    // Commit — spawn with array args prevents shell injection
     return await new Promise<string>((resolve, reject) => {
       const proc = cp.spawn('git', ['commit', '-m', msg], { cwd: currentWorkspacePath });
       let stdout = '', stderr = '';
@@ -403,11 +416,21 @@ ipcMain.handle('load-conversations', async () => {
 });
 
 ipcMain.handle('search-codebase', async (_, query: string) => {
-  try {
-    // Sanitize query to prevent shell injection
-    const safeQuery = query.replace(/[;&|`$(){}!#"'\\]/g, '\\$&');
-    const cmd = `grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist --exclude-dir=dist-electron "${safeQuery}" .`;
-    const { stdout } = await execAsync(cmd, { cwd: currentWorkspacePath, maxBuffer: 2 * 1024 * 1024 });
-    return stdout || '';
-  } catch (e) { return (e instanceof Error && 'stdout' in e) ? (e as { stdout: string }).stdout : ''; }
+  // Use spawn with array args — injection-proof, no shell escaping needed
+  return new Promise<string>((resolve) => {
+    const proc = cp.spawn('grep', [
+      '-rn',
+      '--exclude-dir=node_modules', '--exclude-dir=.git',
+      '--exclude-dir=dist', '--exclude-dir=dist-electron',
+      '--', query, '.'
+    ], { cwd: currentWorkspacePath });
+    let stdout = '';
+    proc.stdout.on('data', d => {
+      stdout += d;
+      if (stdout.length > 2 * 1024 * 1024) proc.kill(); // Prevent memory bomb
+    });
+    proc.stderr.on('data', () => {}); // Ignore stderr
+    proc.on('close', () => resolve(stdout));
+    proc.on('error', () => resolve(''));
+  });
 });

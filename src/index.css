@@ -364,6 +364,8 @@ body {
   flex-direction: column;
   border-left: 1px solid var(--border-color);
   position: relative;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .chat-panel.drag-over::after {
@@ -587,11 +589,13 @@ body {
   font-size: 13px;
   line-height: 1.75;
   word-break: break-word;
+  overflow-wrap: break-word;
   padding: 14px 18px;
   border-radius: 18px;
   animation: msgSlideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1);
   position: relative;
   max-width: 92%;
+  min-width: 0;
   transition: transform 0.2s, box-shadow 0.2s;
 }
 .chat-message:hover { transform: translateY(-2px); }
@@ -701,7 +705,8 @@ body {
   border-radius: 4px 18px 18px 18px;
   align-self: flex-start;
   max-width: 100%;
-  overflow: hidden;
+  min-width: 0;
+  overflow-wrap: break-word;
   box-shadow: var(--chat-ai-shadow), var(--chat-ai-inset);
 }
 .chat-message.assistant:hover {
@@ -836,7 +841,12 @@ body {
 }
 
 /* ── Markdown content (base) — full styles in MARKDOWN RENDERING section below ── */
-.md-content { white-space: normal; }
+.md-content {
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  min-width: 0;
+}
 
 /* Streaming cursor */
 .md-content.streaming::after {
@@ -2036,8 +2046,16 @@ body {
   margin-top: 6px;
 }
 
+.error-boundary-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
 .error-boundary-btn {
-  padding: 8px 24px;
+  padding: 8px 20px;
   background: var(--accent-subtle);
   border: 1px solid var(--border-focus);
   color: var(--accent-color);
@@ -2047,12 +2065,23 @@ body {
   cursor: pointer;
   border-radius: var(--radius-sm);
   transition: all var(--transition);
-  margin-top: 4px;
 }
 
 .error-boundary-btn:hover {
   background: var(--accent-color);
   color: #fff;
+}
+
+.error-boundary-btn.secondary {
+  background: transparent;
+  border-color: var(--border-color);
+  color: var(--fg-secondary);
+  font-weight: 500;
+}
+
+.error-boundary-btn.secondary:hover {
+  background: var(--bg-hover);
+  color: var(--fg-primary);
 }
 
 /* ===== ACTIVITY BAR ===== */
