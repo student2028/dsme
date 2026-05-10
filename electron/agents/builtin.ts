@@ -16,7 +16,7 @@ import OpenAI from 'openai';
 import type { IAgent, AgentConfig } from './base';
 import { RAGEngine } from './rag';
 import { browsePage } from './browser';
-import { webSearch, fetchUrl, isCommandBlocked, buildSystemPromptBase } from './shared-tools';
+import { webSearch, fetchUrl, searchCodebase, isCommandBlocked, buildSystemPromptBase } from './shared-tools';
 
 const execAsync = promisify(exec);
 
@@ -306,13 +306,7 @@ export class BuiltinAgent implements IAgent {
             .map(e => `${e.isDirectory() ? '[DIR]' : '[FILE]'} ${e.name}`).join('\n');
         }
         case 'search_codebase': {
-          const flag = args.is_regex ? '-rnE' : '-rn';
-          const safeQ = (args.query as string).replace(/'/g, "'\\''");
-          const cmd = `grep ${flag} --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist -- '${safeQ}' .`;
-          try {
-            const { stdout } = await execAsync(cmd, { cwd: this.cwd, maxBuffer: 1024 * 1024 });
-            return (stdout || 'No matches.').slice(0, 8000);
-          } catch (e: any) { return e.stdout || 'No matches.'; }
+          return await searchCodebase(args.query, this.cwd, args.is_regex);
         }
         case 'run_command': {
           // Safety: block catastrophically destructive commands

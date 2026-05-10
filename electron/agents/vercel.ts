@@ -19,7 +19,7 @@ import { z } from 'zod';
 import type { IAgent, AgentConfig } from './base';
 import { RAGEngine } from './rag';
 import { browsePage } from './browser';
-import { webSearch, fetchUrl, buildSystemPromptBase } from './shared-tools';
+import { webSearch, fetchUrl, searchCodebase, buildSystemPromptBase } from './shared-tools';
 
 const execAsync = promisify(exec);
 
@@ -313,15 +313,7 @@ export class VercelAgent implements IAgent {
         description: 'Grep search across workspace.',
         parameters: z.object({ query: z.string(), is_regex: z.boolean().optional() }),
         execute: async ({ query, is_regex }) => {
-          const flag = is_regex ? '-rnE' : '-rn';
-          // Escape query for shell safety (use -- to prevent flag injection)
-          const safeQuery = query.replace(/'/g, "'\\''");
-          const cmd = `grep ${flag} --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist -- '${safeQuery}' .`;
-          try {
-            const result = (await execAsync(cmd, { cwd, maxBuffer: 1024 * 1024 })).stdout || 'No matches.';
-            return result.length > 8000 ? result.slice(0, 8000) + `\n...(truncated)` : result;
-          }
-          catch (e: any) { return e.stdout || 'No matches.'; }
+          return await searchCodebase(query, cwd, is_regex);
         },
       }),
 

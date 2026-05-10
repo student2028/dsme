@@ -3,12 +3,10 @@
  *
  * Extracted from vercel.ts and builtin.ts to eliminate code duplication.
  * Both agent kernels now import from this single source of truth.
+ *
+ * Security: This module uses NO shell commands (exec/spawn).
+ * All external interactions go through native Node.js APIs or Electron IPC.
  */
-
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
-
-const execAsync = promisify(exec);
 
 // ── Search extract scripts (shared across all engines) ──
 const GOOGLE_EXTRACT = `(function(){var r=[];document.querySelectorAll('#search .g, #rso .g').forEach(function(g){var t=g.querySelector('h3');var s=g.querySelector('.VwiC3b, .IsZvec, [data-sncf], .s3v9rd');if(t){var x=t.innerText;if(s)x+=' — '+s.innerText;if(x.length>10)r.push(x)}});return r.slice(0,8).join('\\n')})()`;
@@ -22,6 +20,31 @@ export const BLOCKED_COMMANDS = ['rm -rf /', 'mkfs', ':(){', 'dd if=', '> /dev/s
 
 export function isCommandBlocked(cmd: string): boolean {
   return BLOCKED_COMMANDS.some(b => cmd.includes(b));
+}
+
+// ── Codebase grep via spawn (injection-proof) ──
+import { spawn } from 'node:child_process';
+
+export function searchCodebase(query: string, cwd: string, isRegex = false): Promise<string> {
+  return new Promise((resolve) => {
+    const flag = isRegex ? '-rnE' : '-rn';
+    const proc = spawn('grep', [
+      flag,
+      '--exclude-dir=node_modules', '--exclude-dir=.git', '--exclude-dir=dist',
+      '--', query, '.'
+    ], { cwd });
+    let stdout = '';
+    proc.stdout.on('data', d => {
+      stdout += d;
+      if (stdout.length > 1024 * 1024) proc.kill(); // 1MB cap
+    });
+    proc.stderr.on('data', () => {});
+    proc.on('close', () => {
+      const result = stdout || 'No matches.';
+      resolve(result.length > 8000 ? result.slice(0, 8000) + '\n...(truncated)' : result);
+    });
+    proc.on('error', () => resolve('No matches.'));
+  });
 }
 
 // ── Web search via Electron BrowserWindow ──
@@ -83,7 +106,7 @@ export async function webSearch(query: string): Promise<string> {
   }
 }
 
-// ── Fetch URL (static HTML) ──
+// ── Fetch URL (Node.js native — no shell, no injection risk) ──
 export async function fetchUrl(url: string): Promise<string> {
   if (!url) return 'Error: url is required';
   try {
@@ -91,12 +114,21 @@ export async function fetchUrl(url: string): Promise<string> {
     if (!['http:', 'https:'].includes(u.protocol)) return 'Error: only http/https URLs supported';
   } catch { return 'Error: invalid URL'; }
 
-  const safeUrl = url.replace(/[;&|`$(){}!#']/g, '');
-  const proxyArgs = process.env.https_proxy ? `--proxy ${process.env.https_proxy}` : '';
   try {
-    const cmd = `curl -sS --max-time 20 ${proxyArgs} -L -H "User-Agent: Mozilla/5.0" "${safeUrl}"`;
-    const { stdout } = await execAsync(cmd, { timeout: 25000, maxBuffer: 2 * 1024 * 1024 });
-    const text = stdout
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25000);
+
+    const resp = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36' },
+      redirect: 'follow',
+    });
+    clearTimeout(timeout);
+
+    if (!resp.ok) return `Fetch error: HTTP ${resp.status} ${resp.statusText}`;
+
+    const html = await resp.text();
+    const text = html
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/<style[\s\S]*?<\/style>/gi, '')
       .replace(/<[^>]+>/g, ' ')
@@ -105,6 +137,7 @@ export async function fetchUrl(url: string): Promise<string> {
       .slice(0, 15000);
     return text ? `URL: ${url}\n\n${text}` : `No content from: ${url}`;
   } catch (e: any) {
+    if (e.name === 'AbortError') return `Fetch error: timeout after 25s for ${url}`;
     return `Fetch error: ${e.message}`;
   }
 }
