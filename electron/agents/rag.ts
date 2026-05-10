@@ -226,20 +226,29 @@ export class RAGEngine {
     const lines = content.split('\n');
     if (lines.length <= SNIPPET_LINES) return content;
 
-    // Score each line window by query token density
+    // Pre-tokenize every line once to avoid O(N*W*T) re-tokenization
     const querySet = new Set(queryTokens);
-    let bestStart = 0, bestScore = -1;
-
-    for (let i = 0; i <= lines.length - SNIPPET_LINES; i++) {
-      let score = 0;
-      for (let j = i; j < i + SNIPPET_LINES; j++) {
-        const lineTokens = this.tokenize(lines[j]);
-        for (const t of lineTokens) {
-          if (querySet.has(t)) score++;
-        }
+    const lineScores = lines.map(line => {
+      let s = 0;
+      for (const t of this.tokenize(line)) {
+        if (querySet.has(t)) s++;
       }
-      if (score > bestScore) {
-        bestScore = score;
+      return s;
+    });
+
+    // Sliding window over pre-computed line scores
+    let bestStart = 0, bestScore = -1;
+    let windowScore = 0;
+    for (let i = 0; i < SNIPPET_LINES && i < lines.length; i++) {
+      windowScore += lineScores[i];
+    }
+    if (windowScore > bestScore) { bestScore = windowScore; bestStart = 0; }
+
+    for (let i = 1; i <= lines.length - SNIPPET_LINES; i++) {
+      windowScore -= lineScores[i - 1];
+      windowScore += lineScores[i + SNIPPET_LINES - 1];
+      if (windowScore > bestScore) {
+        bestScore = windowScore;
         bestStart = i;
       }
     }

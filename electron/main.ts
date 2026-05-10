@@ -17,7 +17,7 @@ app.commandLine.appendSwitch('remote-debugging-port', '19223');
 
 // CDP proxy — temp ports until zombie cleared
 const CDP_INTERNAL = 19223;
-const CDP_EXTERNAL = 9419;
+const CDP_EXTERNAL = 9418;
 const cdpProxy = net.createServer((src) => {
   const dst = net.createConnection(CDP_INTERNAL, '127.0.0.1');
   src.pipe(dst); dst.pipe(src);

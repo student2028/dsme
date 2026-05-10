@@ -87,7 +87,7 @@ export const GitPanel: React.FC = () => {
           files.map((f, i) => {
             const { icon, color } = getStatusIcon(f.status);
             return (
-              <div key={i} className="git-file-item">
+              <div key={f.path} className="git-file-item">
                 <span className="git-file-status" style={{ color }}>{icon}</span>
                 <span className="git-file-name">{f.path}</span>
               </div>

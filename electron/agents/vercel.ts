@@ -569,9 +569,8 @@ export class VercelAgent implements IAgent {
         const delay = this.retryCount * 5000;
         this.send('chat-stream-token', `\n\n*Rate limited. Retrying in ${delay / 1000}s... (${this.retryCount}/3)*`);
         await new Promise(r => setTimeout(r, delay));
-        // Iterative retry: create new AbortController and re-run (non-recursive)
-        this.abortController = new AbortController();
-        return this.runStream();
+        // Iterative retry: re-enter runStream via tail call (non-recursive stack)
+        return void await this.runStream();
       }
 
       // Network errors → friendly message

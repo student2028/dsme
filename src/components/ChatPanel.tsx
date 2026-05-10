@@ -198,12 +198,28 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   }, [activeConvId]);
 
   // Streaming IPC — register ONCE
+  // PERF: Buffer tokens in a ref and flush to state on a timer to avoid
+  // creating a new conversations array clone for every single token.
+  const tokenBufferRef = useRef('');
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushTokenBuffer = useCallback(() => {
+    const buffered = tokenBufferRef.current;
+    if (!buffered) return;
+    tokenBufferRef.current = '';
+    setConversations(prev => prev.map(conv => {
+      if (conv.id !== activeConvIdRef.current) return conv;
+      return { ...conv, messages: conv.messages.map(m => m.id === streamingMsgId.current ? { ...m, content: m.content + buffered } : m) };
+    }));
+  }, []);
+
   useEffect(() => {
     if (!window.electronAPI) return;
     window.electronAPI.onChatStreamStart(() => {
       const mid = newId();
       streamingMsgId.current = mid;
       streamStartTime.current = Date.now();
+      tokenBufferRef.current = '';
       setConversations(prev => prev.map(conv => {
         if (conv.id !== activeConvIdRef.current) return conv;
         return { ...conv, messages: [...conv.messages, { id: mid, role: 'assistant' as const, content: '', timestamp: Date.now() }] };
@@ -211,13 +227,19 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
     });
     window.electronAPI.onChatStreamToken((token: string) => {
       if (streamingMsgId.current) {
-        setConversations(prev => prev.map(conv => {
-          if (conv.id !== activeConvIdRef.current) return conv;
-          return { ...conv, messages: conv.messages.map(m => m.id === streamingMsgId.current ? { ...m, content: m.content + token } : m) };
-        }));
+        tokenBufferRef.current += token;
+        if (!flushTimerRef.current) {
+          flushTimerRef.current = setTimeout(() => {
+            flushTimerRef.current = null;
+            flushTokenBuffer();
+          }, 80);
+        }
       }
     });
     window.electronAPI.onChatStreamEnd(() => {
+      // Flush any remaining buffered tokens
+      if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
+      flushTokenBuffer();
       const duration = streamStartTime.current ? ((Date.now() - streamStartTime.current) / 1000).toFixed(1) : null;
       const finishedMsgId = streamingMsgId.current;
       streamingMsgId.current = null;
@@ -234,7 +256,8 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
       }
     });
     window.electronAPI.onChatStatus((status: string) => setAgentStatus(status));
-  }, []);
+  }, [flushTokenBuffer]);
+
 
   // Menu shortcut listeners (⌘F, ⌘N) — ref set after handleNewConversation defined below
   const newConvRef = useRef<() => void>(() => {});

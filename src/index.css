@@ -92,7 +92,7 @@ body {
 /* ===== LAYOUT ===== */
 .app-container {
   display: flex;
-  height: calc(100vh - 24px);
+  height: calc(100vh - 26px);
   width: 100vw;
   background: var(--bg-primary);
   position: relative;
@@ -258,6 +258,8 @@ body {
   right: 0;
   height: 2px;
   background: var(--accent-color);
+  box-shadow: 0 0 10px var(--accent-color), 0 0 20px var(--accent-subtle);
+  border-radius: 0 0 2px 2px;
 }
 
 .tab-close {
@@ -1268,17 +1270,26 @@ body {
   bottom: 0;
   left: 0;
   right: 0;
-  height: 24px;
-  background: var(--bg-tertiary);
+  height: 26px;
+  background: rgba(30, 32, 48, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   color: var(--text-muted);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 12px;
+  padding: 0 16px;
   font-size: 11px;
-  font-weight: 400;
+  font-weight: 500;
   z-index: 1000;
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="light"] .status-bar {
+  background: rgba(236, 237, 240, 0.75);
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.05);
 }
 
 .status-bar-left, .status-bar-right {
