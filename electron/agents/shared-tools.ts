@@ -9,11 +9,11 @@
  */
 
 // ── Search extract scripts (shared across all engines) ──
-const GOOGLE_EXTRACT = `(function(){var r=[];document.querySelectorAll('#search .g, #rso .g').forEach(function(g){var t=g.querySelector('h3');var s=g.querySelector('.VwiC3b, .IsZvec, [data-sncf], .s3v9rd');if(t){var x=t.innerText;if(s)x+=' — '+s.innerText;if(x.length>10)r.push(x)}});return r.slice(0,8).join('\\n')})()`;
+const GOOGLE_EXTRACT = `(function(){var r=[];document.querySelectorAll('#search .g, #rso .g').forEach(function(g){var t=g.querySelector('h3');var s=g.querySelector('.VwiC3b, .IsZvec, [data-sncf], .s3v9rd');if(t){var x=t.innerText;if(s)x+=' — '+s.innerText;if(x.length>10)r.push(x)}});return r.slice(0,8).join('\\\\n')})()`;
 
-const SOGOU_EXTRACT = `(function(){var r=[];document.querySelectorAll('.vrwrap, .rb').forEach(function(i){var t=i.querySelector('h3, .vrTitle');var s=i.querySelector('.space-txt, .str-text-info, .str_info, p');if(t){var x=t.innerText;if(s)x+=' — '+s.innerText;if(x.length>10)r.push(x)}});return r.slice(0,8).join('\\n')})()`;
+const SOGOU_EXTRACT = `(function(){var r=[];document.querySelectorAll('.vrwrap, .rb').forEach(function(i){var t=i.querySelector('h3, .vrTitle');var s=i.querySelector('.space-txt, .str-text-info, .str_info, p');if(t){var x=t.innerText;if(s)x+=' — '+s.innerText;if(x.length>10)r.push(x)}});return r.slice(0,8).join('\\\\n')})()`;
 
-const BING_EXTRACT = `(function(){var r=[];document.querySelectorAll('.b_algo').forEach(function(i){var t=i.querySelector('h2');var s=i.querySelector('.b_caption p, .b_algoSlug, .b_snippet');if(t){var x=t.innerText;if(s)x+=' — '+s.innerText;if(x.length>10)r.push(x)}});return r.slice(0,8).join('\\n')})()`;
+const BING_EXTRACT = `(function(){var r=[];document.querySelectorAll('.b_algo').forEach(function(i){var t=i.querySelector('h2');var s=i.querySelector('.b_caption p, .b_algoSlug, .b_snippet');if(t){var x=t.innerText;if(s)x+=' — '+s.innerText;if(x.length>10)r.push(x)}});return r.slice(0,8).join('\\\\n')})()`;
 
 // ── Command safety blacklist ──
 export const BLOCKED_COMMANDS = ['rm -rf /', 'mkfs', ':(){', 'dd if=', '> /dev/sd'];
@@ -47,63 +47,39 @@ export function searchCodebase(query: string, cwd: string, isRegex = false): Pro
   });
 }
 
-// ── Web search via Electron BrowserWindow ──
+// ── Web search — delegates to renderer's <webview> for CDP visibility ──
+// Electron IS Chrome. Instead of hidden windows + screenshot streaming,
+// we send the query to the renderer which creates native <webview> elements.
+// These are directly visible through CDP remote debugging — no hacks needed.
 export async function webSearch(query: string): Promise<string> {
   if (!query) return 'Error: query is required';
   const q = encodeURIComponent(query);
-  const { BrowserWindow: BW } = require('electron');
+  const { BrowserWindow: BW, ipcMain } = require('electron');
 
-  function searchVia(url: string, extractJS: string, label: string): Promise<string | null> {
-    return new Promise((resolve) => {
-      const w = new BW({
-        width: 1024, height: 768, show: true,
-        title: `DSME Search — ${label}`,
-        alwaysOnTop: true,
-        webPreferences: { nodeIntegration: false, contextIsolation: true },
-      });
-      w.focus();
+  const allWindows = BW.getAllWindows();
+  const mainWindow = allWindows.find((w: any) => w.getTitle()?.includes('DSME')) || allWindows[0];
+  if (!mainWindow) return 'Error: no main window found';
 
-      const t = setTimeout(() => { w.destroy(); resolve(null); }, 8000);
+  return new Promise<string>((resolve) => {
+    const timeoutId = setTimeout(() => {
+      ipcMain.removeAllListeners('web-search-results');
+      resolve(`Search timeout for "${query}".`);
+    }, 25000);
 
-      w.webContents.on('did-finish-load', async () => {
-        try {
-          await new Promise(r => setTimeout(r, 1500));
-          const result = await w.webContents.executeJavaScript(extractJS);
-          clearTimeout(t); w.destroy();
-          resolve(result && result.trim().length > 20
-            ? `Web search results for "${query}" (${label}):\n${result.trim()}`
-            : null);
-        } catch { clearTimeout(t); w.destroy(); resolve(null); }
-      });
-
-      w.webContents.on('did-fail-load', () => { clearTimeout(t); w.destroy(); resolve(null); });
-      w.loadURL(url).catch(() => { clearTimeout(t); w.destroy(); resolve(null); });
-    });
-  }
-
-  try {
-    const promises = [
-      searchVia(`https://cn.bing.com/search?q=${q}`, BING_EXTRACT, 'Bing'),
-      searchVia(`https://www.sogou.com/web?query=${q}`, SOGOU_EXTRACT, 'Sogou'),
-      searchVia(`https://www.google.com/search?q=${q}&hl=zh-CN`, GOOGLE_EXTRACT, 'Google'),
-    ];
-
-    const firstSuccess = await new Promise<string | null>((resolve) => {
-      let count = promises.length;
-      for (const p of promises) {
-        p.then(res => {
-          if (res) resolve(res);
-          else if (--count === 0) resolve(null);
-        }).catch(() => {
-          if (--count === 0) resolve(null);
-        });
-      }
+    ipcMain.once('web-search-results', (_: any, results: string) => {
+      clearTimeout(timeoutId);
+      resolve(results);
     });
 
-    return firstSuccess || `No results found for "${query}". Search engines did not return usable content.`;
-  } catch (e: any) {
-    return `Search error: ${e.message}`;
-  }
+    // Send search request to renderer — it creates webviews and extracts results
+    mainWindow.webContents.send('web-search-execute', {
+      query,
+      engines: [
+        { label: 'Google', url: `https://www.google.com/search?q=${q}&hl=zh-CN`, extractJS: GOOGLE_EXTRACT },
+        { label: 'Sogou', url: `https://www.sogou.com/web?query=${q}`, extractJS: SOGOU_EXTRACT },
+      ],
+    });
+  });
 }
 
 // ── Fetch URL (Node.js native — no shell, no injection risk) ──
@@ -186,10 +162,21 @@ You work inside an Electron-based IDE with full system access. Always prioritize
 
 ### Browse Page (Interactive Browser)
 - Use browse_page when you need to interact with a page: click buttons, fill forms, navigate tabs, scroll, or extract data from JS-rendered SPAs.
-- **Step 1 — Reconnaissance**: First call browse_page with a simple script like \`document.title + '\\n' + document.body.innerText.slice(0, 3000)\` to understand the page structure.
+- **Step 1 — Reconnaissance**: First call browse_page with a simple script like \`document.title + '\\\\n' + document.body.innerText.slice(0, 3000)\` to understand the page structure.
 - **Step 2 — Action**: Write a self-contained async JS script that performs clicks, waits, and extracts data.
 - The script runs in page context with full DOM access. It MUST return a string.
 - Prefer browse_page over fetch_url for any page that uses client-side rendering.
+
+### Browser-Use (Long-running Browser Agent)
+Use browser_* tools for complex, multi-step browser tasks on a persistent visible webview.
+**Pattern: navigate -> snapshot -> act -> snapshot -> repeat**
+1. browser_navigate(url) to open a page
+2. browser_snapshot() to see elements with refs [e1], [e2]...
+3. browser_click(ref) / browser_type(ref, text) / browser_scroll(direction) to interact
+4. browser_snapshot() again to see results, then continue
+- ALWAYS snapshot before clicking — refs change after page updates
+- The webview is persistent — login state carries across calls
+- Prefer browser_* over browse_page for 2+ step tasks
 
 ### File Editing (replace_in_file)
 - The 'target' parameter must be an EXACT character-for-character match including whitespace, indentation, and newlines.

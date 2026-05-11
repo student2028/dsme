@@ -20,6 +20,7 @@ import type { IAgent, AgentConfig } from './base';
 import { RAGEngine } from './rag';
 import { browsePage } from './browser';
 import { webSearch, fetchUrl, searchCodebase, buildSystemPromptBase } from './shared-tools';
+import { browserNavigate, browserSnapshot, browserClick, browserType, browserScroll, browserBack, browserEval } from './browser-use';
 
 const execAsync = promisify(exec);
 
@@ -44,6 +45,13 @@ function formatToolArgs(name: string, args: any): string {
       case 'list_directory': return args.dirpath ? ` \`${args.dirpath}\`` : '';
       case 'search_codebase': return args.query ? ` \`${args.query.slice(0, 40)}${args.query.length > 40 ? '...' : ''}\`` : '';
       case 'browse_page': return args.url ? ` \`${args.url.slice(0, 60)}${args.url.length > 60 ? '...' : ''}\`` : '';
+      case 'browser_navigate': return args.url ? ` → \`${args.url.slice(0, 60)}\`` : '';
+      case 'browser_snapshot': return ' 📸';
+      case 'browser_click': return args.ref ? ` [${args.ref}]` : '';
+      case 'browser_type': return args.ref ? ` [${args.ref}] "${(args.text || '').slice(0, 20)}"` : '';
+      case 'browser_scroll': return args.direction ? ` ${args.direction}` : '';
+      case 'browser_back': return ' ←';
+      case 'browser_eval': return args.script ? ` \`${args.script.slice(0, 40)}...\`` : '';
       default: return '';
     }
   } catch { return ''; }
@@ -374,18 +382,64 @@ export class VercelAgent implements IAgent {
           return await browsePage({ url, script, waitMs: wait_before_script ?? 2000, timeoutMs: timeout ?? 30000 });
         },
       }),
+
+      // ── Browser-Use: Long-running browser agent tools ──
+      browser_navigate: tool({
+        description: 'Navigate the built-in browser to a URL. The browser tab opens automatically. Use this as the first step in any browser task.',
+        parameters: z.object({ url: z.string().describe('URL to navigate to') }),
+        execute: async ({ url }) => browserNavigate(url),
+      }),
+
+      browser_snapshot: tool({
+        description: 'Get a text snapshot of the current page with interactive element references [e1], [e2], etc. Use this to see what is on the page and find elements to interact with. Always call this BEFORE clicking or typing.',
+        parameters: z.object({}),
+        execute: async () => browserSnapshot(),
+      }),
+
+      browser_click: tool({
+        description: 'Click an element by its reference ID from browser_snapshot. Example: ref="e3" clicks the third interactive element.',
+        parameters: z.object({ ref: z.string().describe('Element reference from snapshot, e.g. "e3"') }),
+        execute: async ({ ref }) => browserClick(ref),
+      }),
+
+      browser_type: tool({
+        description: 'Type text into an input/textarea element by its reference ID. Clears existing content first.',
+        parameters: z.object({
+          ref: z.string().describe('Element reference from snapshot'),
+          text: z.string().describe('Text to type'),
+        }),
+        execute: async ({ ref, text }) => browserType(ref, text),
+      }),
+
+      browser_scroll: tool({
+        description: 'Scroll the page up or down to see more content.',
+        parameters: z.object({ direction: z.enum(['up', 'down']).describe('Scroll direction') }),
+        execute: async ({ direction }) => browserScroll(direction),
+      }),
+
+      browser_back: tool({
+        description: 'Go back to the previous page in browser history.',
+        parameters: z.object({}),
+        execute: async () => browserBack(),
+      }),
+
+      browser_eval: tool({
+        description: 'Execute arbitrary JavaScript in the current page context. Use for complex interactions not covered by other browser tools. Script MUST return a string.',
+        parameters: z.object({ script: z.string().describe('JavaScript to execute in page context') }),
+        execute: async ({ script }) => browserEval(script),
+      }),
     };
   }
 
   // ── Main stream using Vercel AI SDK streamText ──
   private async runStream(): Promise<void> {
-    const STREAM_TIMEOUT_MS = 90_000; // 90s hard timeout per attempt
+    const STREAM_TIMEOUT_MS = 300_000; // 5 min hard timeout per attempt
     // True iterative retry loop (no recursion, no stack growth)
     while (true) {
     this.abortController = new AbortController();
     // Hard timeout: auto-abort if LLM hangs
     const timeoutId = setTimeout(() => {
-      console.warn('[VercelAgent] Stream timeout after 90s — aborting');
+      console.warn('[VercelAgent] Stream timeout after 300s — aborting');
       this.abortController?.abort();
     }, STREAM_TIMEOUT_MS);
     try {

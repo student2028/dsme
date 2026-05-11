@@ -87,4 +87,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('kernel-changed');
     ipcRenderer.on('kernel-changed', (_e, kernel) => callback(kernel));
   },
+
+  // Web search — webview delegation
+  onWebSearchExecute: (callback: (data: { query: string; engines: { label: string; url: string; extractJS: string }[] }) => void) => {
+    ipcRenderer.removeAllListeners('web-search-execute');
+    ipcRenderer.on('web-search-execute', (_e, data) => callback(data));
+  },
+  sendWebSearchResults: (results: string) => {
+    ipcRenderer.send('web-search-results', results);
+  },
+
+  // Browser-use — command execution on webview
+  onBrowserCommand: (callback: (cmd: { id: string; command: string; [key: string]: any }) => void) => {
+    ipcRenderer.removeAllListeners('browser-command');
+    ipcRenderer.on('browser-command', (_e, cmd) => callback(cmd));
+  },
+  sendBrowserResult: (id: string, result: string) => {
+    ipcRenderer.send(`browser-result-${id}`, result);
+  },
 });
+

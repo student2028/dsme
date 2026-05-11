@@ -55,6 +55,12 @@ declare global {
       onRagStatus: (callback: (count: number) => void) => void;
       onKernelChanged: (callback: (kernel: string) => void) => void;
       switchKernel: (kernel: string) => void;
+      // Web search — webview delegation
+      onWebSearchExecute?: (callback: (data: { query: string; engines: { label: string; url: string; extractJS: string }[] }) => void) => void;
+      sendWebSearchResults?: (results: string) => void;
+      // Browser-use — command execution
+      onBrowserCommand?: (callback: (cmd: { id: string; command: string; [key: string]: any }) => void) => void;
+      sendBrowserResult?: (id: string, result: string) => void;
     };
   }
 }

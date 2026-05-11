@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Menu, session } from 'electron'
+import { syncChromeCookies } from './agents/chrome-cookies'
 import { join } from 'node:path'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
@@ -28,12 +29,13 @@ process.on('unhandledRejection', (reason) => {
 // Ensure consistent userData path regardless of launch method (npx electron vs packaged)
 app.name = 'dsme';
 
-// Electron CDP — using temp ports until zombie 19222 is cleared by reboot
-app.commandLine.appendSwitch('remote-debugging-port', '19223');
+// Electron CDP — using temp ports until zombie cleared
+const CDP_INTERNAL = 19224;
+const CDP_EXTERNAL = 9419;
+
+app.commandLine.appendSwitch('remote-debugging-port', `${CDP_INTERNAL}`);
 
 // CDP proxy — temp ports until zombie cleared
-const CDP_INTERNAL = 19223;
-const CDP_EXTERNAL = 9418;
 const cdpProxy = net.createServer((src) => {
   const dst = net.createConnection(CDP_INTERNAL, '127.0.0.1');
   src.pipe(dst); dst.pipe(src);
@@ -159,6 +161,7 @@ async function createWindow() {
     webPreferences: {
       preload: join(__dirname, '../dist-electron/preload.js'),
       nodeIntegration: true, contextIsolation: true,
+      webviewTag: true,
     },
   });
 
@@ -236,13 +239,28 @@ app.on('before-quit', () => {
   if (agent) { agent.destroy(); agent = null; }
   cdpProxy.close();
 });
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Set macOS dock icon
   if (process.platform === 'darwin' && app.dock) {
     const { nativeImage } = require('electron');
     const iconPath = join(__dirname, '../assets/icon.png');
     try { app.dock.setIcon(nativeImage.createFromPath(iconPath)); } catch {}
   }
+
+  // Sync Chrome cookies — only if not done recently (>24h)
+  const syncFlag = join(app.getPath('userData'), 'cookie-sync-ts');
+  const needsSync = (() => {
+    try {
+      const last = parseInt(require('fs').readFileSync(syncFlag, 'utf8'), 10);
+      return Date.now() - last > 24 * 3600 * 1000;
+    } catch { return true; } // First run
+  })();
+  if (needsSync) {
+    syncChromeCookies(session.defaultSession)
+      .then(() => require('fs').writeFileSync(syncFlag, String(Date.now())))
+      .catch(() => {});
+  }
+
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });

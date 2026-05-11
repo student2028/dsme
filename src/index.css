@@ -111,6 +111,7 @@ body {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  position: relative;
 }
 
 /* ===== FILE TREE ===== */
@@ -2905,3 +2906,102 @@ textarea:focus-visible {
   opacity: 1 !important;
 }
 .chat-msg-copy.copied svg { stroke: var(--green); }
+/* ===== BROWSER PANEL — Persistent Tab with Two Webview Slots ===== */
+.browser-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-primary);
+}
+
+.browser-slot {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.browser-slot-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.browser-slot-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+
+.browser-slot-url {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.browser-slot-badge {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.browser-slot-badge.loading {
+  color: var(--cyan);
+  background: rgba(86, 212, 230, 0.12);
+  animation: browserPulse 1.5s ease-in-out infinite;
+}
+
+.browser-slot-badge.extracting {
+  color: var(--orange);
+  background: rgba(240, 160, 80, 0.12);
+  animation: browserPulse 1.5s ease-in-out infinite;
+}
+
+.browser-slot-badge.done {
+  color: var(--green);
+  background: rgba(74, 222, 128, 0.12);
+}
+
+.browser-slot-badge.error {
+  color: var(--red);
+  background: rgba(240, 96, 96, 0.12);
+}
+
+@keyframes browserPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.browser-slot-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: #fff;
+}
+
+.browser-webview {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.browser-divider {
+  height: 3px;
+  background: var(--border-color);
+  flex-shrink: 0;
+  cursor: row-resize;
+}

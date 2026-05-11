@@ -13,6 +13,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { ActivityBar } from './components/ActivityBar';
 import { GitPanel } from './components/GitPanel';
 import { DiffPreview } from './components/DiffPreview';
+import { BrowserPanel } from './components/BrowserPanel';
 import type { DiffChange } from './components/DiffPreview';
 import { ToastContainer, showToast } from './components/Toast';
 import { useTheme } from './ThemeContext';
@@ -228,7 +229,7 @@ function App() {
               onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); handleCloseTab(e as any, tab.path); } }}
               onContextMenu={(e) => { e.preventDefault(); setTabMenu({x: e.clientX, y: e.clientY, path: tab.path}); }}
               className={`tab-item ${activePath === tab.path ? 'active' : ''}`}>
-              <span className="tab-name">{tab.name}</span>
+              <span className="tab-name">{tab.path === 'browser://panel' ? '🌐 Browser' : tab.name}</span>
               {tab.isDirty && <span className="tab-dirty">●</span>}
               <span className="tab-close" onClick={(e) => handleCloseTab(e, tab.path)}>×</span>
             </div>
@@ -245,13 +246,26 @@ function App() {
           </div>
         )}
 
-        <ErrorBoundary fallbackMessage="Editor crashed">
-          {activeTab ? (
-            <EditorPanel content={activeTab.content} onChange={handleEditorChange} filename={activeTab.name} onCursorChange={(l, c) => setCursorPos({ line: l, column: c })} />
-          ) : (
-            <WelcomeScreen />
-          )}
-        </ErrorBoundary>
+        {/* Persistent browser tab — webviews stay alive across tab switches */}
+        <BrowserPanel
+          visible={activePath === 'browser://panel'}
+          onTabOpen={() => {
+            if (!tabs.find(t => t.path === 'browser://panel')) {
+              setTabs(prev => [...prev, { path: 'browser://panel', name: '🌐 Browser', content: '', isDirty: false }]);
+            }
+            setActivePath('browser://panel');
+          }}
+        />
+
+        {activePath !== 'browser://panel' && (
+          <ErrorBoundary fallbackMessage="Editor crashed">
+            {activeTab ? (
+              <EditorPanel content={activeTab.content} onChange={handleEditorChange} filename={activeTab.name} onCursorChange={(l, c) => setCursorPos({ line: l, column: c })} />
+            ) : (
+              <WelcomeScreen />
+            )}
+          </ErrorBoundary>
+        )}
 
         <div className="resize-handle-h" onMouseDown={handleTerminalDrag} />
         <div style={{ height: `${terminalHeight}px`, flexShrink: 0 }}>
@@ -315,6 +329,7 @@ function App() {
           </div>
         </div>
       )}
+
 
       <ToastContainer />
     </div>
