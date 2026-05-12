@@ -6,6 +6,7 @@
   "author": "student2028",
   "main": "dist-electron/main.js",
   "scripts": {
+    "predev": "node scripts/brand-electron-mac.cjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "build:pkg": "npm run build && electron-builder",
@@ -18,7 +19,7 @@
   },
   "build": {
     "appId": "com.dsme.ide",
-    "productName": "DSME",
+    "productName": "dsme",
     "directories": {
       "output": "release"
     },
@@ -28,7 +29,11 @@
     ],
     "mac": {
       "target": "dmg",
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "extendInfo": {
+        "CFBundleDisplayName": "dsme",
+        "CFBundleName": "dsme"
+      }
     }
   },
   "dependencies": {

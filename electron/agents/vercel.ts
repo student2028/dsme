@@ -71,6 +71,7 @@ export class VercelAgent implements IAgent {
   private pendingChanges = new Map<string, { filepath: string; newContent: string; resolve: (v: string) => void }>();
   private changeIdCounter = 0;
   private retryCount = 0;
+  private truncationCount = 0;
   private busy = false;
   private rag = new RAGEngine();
 
@@ -81,10 +82,61 @@ export class VercelAgent implements IAgent {
     this.apiKey = config.apiKey || '';
 
     // Create OpenAI-compatible provider via Vercel AI SDK
+    // Custom fetch middleware: fixes Google API's tool_calls[].index type
+    // (Google returns string, Vercel SDK expects number → ZodError)
+    const patchSSELine = (line: string): string => {
+      if (!line.startsWith('data: ') || line === 'data: [DONE]') return line;
+      try {
+        const data = JSON.parse(line.slice(6));
+        const tc = data?.choices?.[0]?.delta?.tool_calls;
+        if (Array.isArray(tc)) {
+          let patched = false;
+          for (const call of tc) {
+            if (call.index !== undefined && typeof call.index !== 'number') {
+              call.index = Number(call.index);
+              patched = true;
+            }
+          }
+          if (patched) {
+            console.log('[VercelAgent] Patched tool_calls index type in SSE chunk');
+            return 'data: ' + JSON.stringify(data);
+          }
+        }
+      } catch {}
+      return line;
+    };
+
     this.provider = createOpenAI({
       baseURL: config.baseUrl,
       apiKey: config.apiKey || 'sk-placeholder',
-      compatibility: 'compatible', // For non-OpenAI providers like DeepSeek/SiliconFlow
+      compatibility: 'compatible',
+      fetch: async (url, init) => {
+        const response = await globalThis.fetch(url, init);
+        if (!response.body) return response;
+        const originalBody = response.body;
+        const transform = new TransformStream({
+          _buffer: '',
+          transform(chunk, controller) {
+            const text = new TextDecoder().decode(chunk);
+            (this as any)._buffer += text;
+            const lines = (this as any)._buffer.split('\n');
+            (this as any)._buffer = lines.pop()!;
+            for (const line of lines) {
+              controller.enqueue(new TextEncoder().encode(patchSSELine(line) + '\n'));
+            }
+          },
+          flush(controller) {
+            if ((this as any)._buffer?.trim()) {
+              controller.enqueue(new TextEncoder().encode(patchSSELine((this as any)._buffer) + '\n'));
+            }
+          },
+        });
+        return new Response(originalBody.pipeThrough(transform), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
+      },
     });
 
     console.log(`[VercelAgent] Initialized with Vercel AI SDK, model=${this.model}, baseUrl=${config.baseUrl}`);
@@ -477,22 +529,138 @@ export class VercelAgent implements IAgent {
       });
 
       // Consume the full stream (text + tool events)
+      // Wrap <think>...</think> blocks in collapsible <details> for display
       let fullText = '';
+      let insideThink = false;
+      let thinkBuffer = '';
+
       for await (const part of result.fullStream) {
         switch (part.type) {
-          case 'text-delta':
-            fullText += (part as any).text ?? '';
-            this.send('chat-stream-token', (part as any).text ?? '');
+          case 'text-delta': {
+            let delta = (part as any).text ?? '';
+            if (insideThink) {
+              thinkBuffer += delta;
+              const endIdx = thinkBuffer.indexOf('</think>');
+              if (endIdx !== -1) {
+                // Think block ended — emit buffered content as collapsible, then text after
+                insideThink = false;
+                const thinkContent = thinkBuffer.slice(0, endIdx);
+                const afterThink = thinkBuffer.slice(endIdx + 8);
+                thinkBuffer = '';
+                // Emit as collapsible details block
+                const collapsed = `\n<details>\n<summary>💭 思考过程</summary>\n\n${thinkContent.trim()}\n\n</details>\n`;
+                fullText += collapsed;
+                this.send('chat-stream-token', collapsed);
+                if (afterThink) {
+                  fullText += afterThink;
+                  this.send('chat-stream-token', afterThink);
+                }
+              }
+            } else {
+              const thinkIdx = delta.indexOf('<think>');
+              if (thinkIdx !== -1) {
+                const beforeThink = delta.slice(0, thinkIdx);
+                if (beforeThink) {
+                  fullText += beforeThink;
+                  this.send('chat-stream-token', beforeThink);
+                }
+                insideThink = true;
+                thinkBuffer = delta.slice(thinkIdx + 7);
+                // Check if </think> also in this chunk
+                const endIdx = thinkBuffer.indexOf('</think>');
+                if (endIdx !== -1) {
+                  insideThink = false;
+                  const thinkContent = thinkBuffer.slice(0, endIdx);
+                  const afterThink = thinkBuffer.slice(endIdx + 8);
+                  thinkBuffer = '';
+                  const collapsed = `\n<details>\n<summary>💭 思考过程</summary>\n\n${thinkContent.trim()}\n\n</details>\n`;
+                  fullText += collapsed;
+                  this.send('chat-stream-token', collapsed);
+                  if (afterThink) {
+                    fullText += afterThink;
+                    this.send('chat-stream-token', afterThink);
+                  }
+                }
+              } else {
+                fullText += delta;
+                this.send('chat-stream-token', delta);
+              }
+            }
             break;
-          case 'error':
-            console.error('[VercelAgent] Stream error:', (part as any).error);
+          }
+          case 'error': {
+            const e = (part as any).error;
+            const msg = typeof e?.message === 'string' ? e.message : String(e ?? 'stream error');
+            console.error('[VercelAgent] Stream error:', e);
+            this.send('chat-stream-token', `\n\n⚠️ **流式错误** — ${msg.slice(0, 800)}\n`);
             break;
+          }
+          case 'tool-error': {
+            const e = (part as any).error ?? part;
+            const msg = typeof e === 'string' ? e : e?.message ?? JSON.stringify(e);
+            console.error('[VercelAgent] Tool stream error:', e);
+            this.send('chat-stream-token', `\n\n⚠️ **工具错误** — ${String(msg).slice(0, 800)}\n`);
+            break;
+          }
         }
       }
 
       // Get final response messages for conversation history
       const response = await result.response;
-      console.log(`[VercelAgent] Stream complete: text=${fullText.length}ch`);
+      const finishReason = await result.finishReason;
+      const hadToolCalls = response.messages?.some((m: any) =>
+        m.role === 'assistant' && m.tool_calls?.length > 0
+      );
+      console.log(`[VercelAgent] Stream complete: text=${fullText.length}ch, hadTools=${hadToolCalls}, finishReason=${finishReason}`);
+
+      // ── Handle output truncation (finish_reason='length') ──
+      // If the model was cut off mid-generation, save partial text to history
+      // and CONTINUE the loop so it can resume generating.
+      // (Modeled after cortex engine's continuation logic)
+      if (finishReason === 'length' && !hadToolCalls) {
+        this.truncationCount = (this.truncationCount || 0) + 1;
+        if (this.truncationCount >= 5) {
+          console.error('[VercelAgent] Max consecutive truncations (5) reached. Stopping.');
+          this.send('chat-stream-token', '\n\n⚠️ 模型输出被截断多次，已停止重试。');
+          this.truncationCount = 0;
+        } else {
+          console.warn(`[VercelAgent] Output truncated (finish_reason=length), continuing loop (${this.truncationCount}/5)`);
+          // Save partial text to history so model can see what it already wrote
+          if (fullText.trim()) {
+            this.messages.push({ role: 'assistant', content: fullText.trim() });
+          }
+          clearTimeout(timeoutId);
+          continue; // ← Key: continue the while(true) loop, NOT break
+        }
+      } else {
+        this.truncationCount = 0;
+      }
+
+      // ── Text-based Tool Call Fallback ──
+      // If model output text but made no native tool calls, try parsing tools from text
+      if (!hadToolCalls && fullText.length > 0) {
+        await this.autoExecuteCodeBlocks(fullText);
+      }
+
+      // If nothing reached the UI via text-delta (common after tool rounds on some providers),
+      // surface tool payloads or a finishReason hint instead of a blank bubble.
+      if (!fullText.trim()) {
+        const toolTexts =
+          (response.messages as any[])
+            ?.filter((m) => m.role === 'tool')
+            .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
+            .join('\n\n---\n') ?? '';
+        if (toolTexts.trim()) {
+          const cap = 14000;
+          const display = toolTexts.length > cap ? `${toolTexts.slice(0, cap)}\n\n...(truncated)` : toolTexts;
+          this.send('chat-stream-token', `\n\n### 工具输出\n\n${display}\n`);
+        } else {
+          this.send(
+            'chat-stream-token',
+            `\n\n⚠️ **本轮没有模型正文输出**（finish: **${String(finishReason ?? 'unknown')}**）。若依赖搜索/天气等实时数据，请重试或更换模型。\n`
+          );
+        }
+      }
 
       // Add response messages to history (handles tool calls + assistant replies properly)
       if (response.messages?.length) {
@@ -510,7 +678,10 @@ export class VercelAgent implements IAgent {
 
     } catch (err: any) {
       clearTimeout(timeoutId);
-      if (err.name === 'AbortError') return;
+      if (err.name === 'AbortError') {
+        this.send('chat-stream-token', '\n\n*— 请求已取消或超时。*');
+        return;
+      }
       const msg = err?.message || String(err);
       console.error('[VercelAgent] ERROR:', msg);
 
@@ -558,5 +729,136 @@ export class VercelAgent implements IAgent {
         .join(' ');
     }
     return '';
+  }
+
+  /**
+   * Text-based Tool Call Fallback Parser
+   *
+   * When a model doesn't use native function calling, it may embed tool calls
+   * in text using various formats. This implements 4 fallback strategies
+   * (modeled after cortex engine):
+   *
+   * 1. Hermes format:  [TOOL_CALLS][{"name": "...", "arguments": {...}}]
+   * 2. XML format:     <function=tool_name>{"arg": "val"}</function>
+   * 3. JSON code block: ```json {"name": "run_command", "parameters": {...}} ```
+   * 4. Bare JSON:      {"name": "run_command", "parameters": {...}}
+   *
+   * If any are found, they are executed through the normal tool infrastructure.
+   */
+  private async autoExecuteCodeBlocks(text: string): Promise<void> {
+    const toolDefs = this.getTools();
+    const availableTools = Object.keys(toolDefs);
+    const parsed = this.parseTextToolCalls(text, availableTools);
+    if (parsed.length === 0) return;
+
+    console.log(`[VercelAgent] Fallback: parsed ${parsed.length} tool call(s) from text`);
+
+    for (const tc of parsed) {
+      const toolFn = toolDefs[tc.name as keyof typeof toolDefs];
+      if (!toolFn) {
+        console.warn(`[VercelAgent] Fallback: unknown tool "${tc.name}"`);
+        continue;
+      }
+
+      this.send('chat-status', `tool:${tc.name}`);
+      const argSummary = formatToolArgs(tc.name, tc.args);
+      this.send('chat-stream-token', `\n\n> **${tc.name}**${argSummary}\n`);
+      console.log(`[VercelAgent] Fallback exec: ${tc.name}`, JSON.stringify(tc.args).slice(0, 200));
+
+      try {
+        const result = await (toolFn as any).execute(tc.args, { toolCallId: `fallback-${Date.now()}` });
+        const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
+        const display = resultStr.length > 2000 ? resultStr.slice(0, 2000) + '\n...(truncated)' : resultStr;
+        this.send('chat-stream-token', `\n\`\`\`\n${display}\n\`\`\`\n`);
+      } catch (e: any) {
+        this.send('chat-stream-token', `\n⚠️ Tool error: ${e.message?.slice(0, 500)}\n`);
+      }
+    }
+  }
+
+  /** Parse tool calls from text using multiple fallback formats. */
+  private parseTextToolCalls(text: string, availableTools: string[]): { name: string; args: any }[] {
+    // Strategy 1: Hermes — [TOOL_CALLS][{"name": "...", "arguments": {...}}]
+    const hermesMatch = text.match(/\[TOOL_CALLS\]\s*(\[[\s\S]*?\])/);
+    if (hermesMatch) {
+      try {
+        const calls = JSON.parse(hermesMatch[1]);
+        if (Array.isArray(calls)) {
+          return calls
+            .filter((c: any) => c.name && availableTools.includes(c.name))
+            .map((c: any) => ({ name: c.name, args: c.arguments || c.parameters || {} }));
+        }
+      } catch {}
+    }
+
+    // Strategy 2: XML — <function=tool_name>{"arg": "val"}</function>
+    const xmlRegex = /<function=([^>]+)>([\s\S]*?)<\/function>/g;
+    const xmlCalls: { name: string; args: any }[] = [];
+    let xmlMatch;
+    while ((xmlMatch = xmlRegex.exec(text)) !== null) {
+      const name = xmlMatch[1].trim();
+      if (!availableTools.includes(name)) continue;
+      try { xmlCalls.push({ name, args: JSON.parse(xmlMatch[2].trim()) }); }
+      catch { xmlCalls.push({ name, args: {} }); }
+    }
+    if (xmlCalls.length > 0) return xmlCalls;
+
+    // Strategy 3: JSON code blocks — ```json\n{"name": "tool", "parameters": {...}}\n```
+    const jsonBlockRegex = /```(?:json)?\s*\n?\s*(\{[\s\S]*?\})\s*\n?```/g;
+    const jsonCalls: { name: string; args: any }[] = [];
+    let jsonMatch;
+    while ((jsonMatch = jsonBlockRegex.exec(text)) !== null) {
+      try {
+        const data = JSON.parse(jsonMatch[1]);
+        if (data.name && availableTools.includes(data.name)) {
+          jsonCalls.push({ name: data.name, args: data.parameters || data.arguments || {} });
+        }
+      } catch {}
+    }
+    if (jsonCalls.length > 0) return jsonCalls;
+
+    // Strategy 4: Bare JSON — {"name": "tool", "parameters": {...}}
+    const bareRegex = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"(?:parameters|arguments)"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
+    const bareCalls: { name: string; args: any }[] = [];
+    let bareMatch;
+    while ((bareMatch = bareRegex.exec(text)) !== null) {
+      const name = bareMatch[1];
+      if (!availableTools.includes(name)) continue;
+      try { bareCalls.push({ name, args: JSON.parse(bareMatch[2]) }); }
+      catch {}
+    }
+    if (bareCalls.length > 0) return bareCalls;
+
+    // Strategy 5: Raw code blocks — ```python\ncode\n``` or ```bash\ncode\n```
+    // Last resort: if model just outputs raw code blocks, extract and wrap as
+    // write_file + run_command tool calls
+    const codeBlockRegex = /```(\w+)\n([\s\S]*?)```/g;
+    const codeCalls: { name: string; args: any }[] = [];
+    let codeMatch;
+    const RUNNABLE: Record<string, string> = {
+      python: 'python3', py: 'python3',
+      javascript: 'node', js: 'node',
+      typescript: 'npx tsx', ts: 'npx tsx',
+      bash: 'bash', sh: 'bash', zsh: 'zsh',
+    };
+    while ((codeMatch = codeBlockRegex.exec(text)) !== null) {
+      const lang = codeMatch[1].toLowerCase();
+      const code = codeMatch[2].trim();
+      const runner = RUNNABLE[lang];
+      if (!runner || code.length < 10) continue;
+      // Synthesize write_file + run_command
+      const ext = lang === 'python' || lang === 'py' ? '.py' :
+                  lang === 'javascript' || lang === 'js' ? '.js' :
+                  lang === 'typescript' || lang === 'ts' ? '.ts' : '.sh';
+      const filename = `scratch/auto_${Date.now()}${ext}`;
+      codeCalls.push({ name: 'write_file', args: { filepath: filename, content: code } });
+      codeCalls.push({ name: 'run_command', args: { command: `${runner} ${filename}` } });
+    }
+    if (codeCalls.length > 0) {
+      console.log(`[VercelAgent] Strategy 5: Synthesized ${codeCalls.length} tool calls from raw code blocks`);
+      return codeCalls;
+    }
+
+    return [];
   }
 }

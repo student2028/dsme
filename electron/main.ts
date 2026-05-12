@@ -31,7 +31,7 @@ app.name = 'dsme';
 
 // Electron CDP — using temp ports until zombie cleared
 const CDP_INTERNAL = 19224;
-const CDP_EXTERNAL = 9419;
+const CDP_EXTERNAL = 9418;
 
 app.commandLine.appendSwitch('remote-debugging-port', `${CDP_INTERNAL}`);
 
@@ -55,27 +55,94 @@ let currentWorkspacePath = path.resolve(__dirname, '..')
 // Config
 const CONFIG_PATH = join(app.getPath('userData'), 'dsme-config.json');
 
-interface AppConfig { apiKey: string; model: string; baseUrl: string; }
+interface ProviderConfig {
+  name: string;
+  apiKey: string;
+  baseUrl: string;
+  models: string[];
+}
 
-const DEFAULT_CONFIG: AppConfig = {
-  apiKey: process.env.DSME_API_KEY || '',
-  model: 'deepseek-ai/DeepSeek-V4-Flash',
-  baseUrl: 'https://api.siliconflow.cn/v1',
-};
+interface AppConfig {
+  apiKey: string;       // Backward compat — resolved from active provider
+  model: string;        // Active model
+  baseUrl: string;      // Resolved from active provider
+  providers: ProviderConfig[];
+  activeProvider: string;
+}
+
+const DEFAULT_PROVIDERS: ProviderConfig[] = [
+  {
+    name: 'SiliconFlow',
+    apiKey: process.env.DSME_API_KEY || '',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    models: [
+      'deepseek-ai/DeepSeek-V4-Flash',
+      'deepseek-ai/DeepSeek-V3.2',
+      'Pro/zai-org/GLM-5',
+      'Pro/MiniMaxAI/MiniMax-M2.5',
+      'Pro/moonshotai/Kimi-K2.5',
+      'Qwen/Qwen3-8B',
+    ],
+  },
+  {
+    name: 'Google',
+    apiKey: process.env.GOOGLE_API_KEY || '',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+    models: [
+      'gemma-4-31b-it',
+      'gemma-4-26b-a4b-it',
+      'gemini-2.5-flash',
+    ],
+  },
+];
+
+function resolveActiveConfig(full: AppConfig): AppConfig {
+  const provider = full.providers.find(p => p.name === full.activeProvider) || full.providers[0];
+  return {
+    ...full,
+    apiKey: provider.apiKey,
+    baseUrl: provider.baseUrl,
+    model: full.model || provider.models[0],
+  };
+}
 
 async function loadConfig(): Promise<AppConfig> {
   try {
     const parsed = JSON.parse(await fs.readFile(CONFIG_PATH, 'utf8'));
-    return { ...DEFAULT_CONFIG, ...parsed };
+    // Migration: old config without providers array
+    if (!parsed.providers) {
+      const migrated: AppConfig = {
+        apiKey: parsed.apiKey || '',
+        model: parsed.model || 'deepseek-ai/DeepSeek-V4-Flash',
+        baseUrl: parsed.baseUrl || 'https://api.siliconflow.cn/v1',
+        providers: DEFAULT_PROVIDERS.map(p =>
+          p.name === 'SiliconFlow' ? { ...p, apiKey: parsed.apiKey || p.apiKey } : p
+        ),
+        activeProvider: 'SiliconFlow',
+      };
+      await fs.writeFile(CONFIG_PATH, JSON.stringify(migrated, null, 2), 'utf8');
+      return resolveActiveConfig(migrated);
+    }
+    return resolveActiveConfig(parsed);
   } catch {
-    return { ...DEFAULT_CONFIG };
+    const defaultConfig: AppConfig = {
+      apiKey: '',
+      model: DEFAULT_PROVIDERS[0].models[0],
+      baseUrl: DEFAULT_PROVIDERS[0].baseUrl,
+      providers: DEFAULT_PROVIDERS,
+      activeProvider: 'SiliconFlow',
+    };
+    return resolveActiveConfig(defaultConfig);
   }
 }
 
 async function saveConfig(config: Partial<AppConfig>) {
-  const merged = { ...(await loadConfig()), ...config };
-  await fs.writeFile(CONFIG_PATH, JSON.stringify(merged, null, 2), 'utf8');
-  return merged;
+  const current = await loadConfig();
+  const merged = { ...current, ...config };
+  // Re-resolve after merge
+  const resolved = resolveActiveConfig(merged);
+  await fs.writeFile(CONFIG_PATH, JSON.stringify(resolved, null, 2), 'utf8');
+  return resolved;
 }
 
 // Native macOS Menu

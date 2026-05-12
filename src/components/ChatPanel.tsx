@@ -174,7 +174,18 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
           if (conv.id !== activeConvIdRef.current) return conv;
           const msg = conv.messages.find(m => m.id === finishedMsgId);
           if (msg && !msg.content.trim()) {
-            return { ...conv, messages: conv.messages.filter(m => m.id !== finishedMsgId) };
+            return {
+              ...conv,
+              messages: conv.messages.map(m =>
+                m.id === finishedMsgId
+                  ? {
+                      ...m,
+                      content:
+                        '*（本轮未收到任何可见回复：可能已中断、流式出错，或模型在工具调用后未生成正文。请查看运行 DSME 的终端日志或重试。）*',
+                    }
+                  : m
+              ),
+            };
           }
           if (duration) {
             return { ...conv, messages: conv.messages.map(m =>

@@ -1558,6 +1558,82 @@ body {
   border-color: var(--text-muted);
 }
 
+/* Provider Tabs */
+.provider-tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.provider-tab {
+  flex: 1;
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+  text-align: center;
+}
+
+.provider-tab:hover {
+  background: var(--bg-elevated);
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
+
+.provider-tab.active {
+  background: var(--accent-subtle);
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+  font-weight: 600;
+  box-shadow: 0 0 12px rgba(124, 110, 240, 0.15);
+}
+
+/* Model Chips Grid */
+.model-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.model-chip {
+  padding: 6px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 20px;
+  color: var(--text-secondary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.model-chip:hover {
+  background: var(--bg-elevated);
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
+
+.model-chip.active {
+  background: var(--accent-subtle);
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+  font-weight: 600;
+}
+
+.model-chip-check {
+  font-size: 10px;
+  color: var(--green);
+}
+
 /* ===== WELCOME SCREEN ===== */
 .welcome-screen {
   flex: 1;
@@ -2096,6 +2172,31 @@ body {
   padding: 8px 0;
   flex-shrink: 0;
   gap: 4px;
+}
+
+/*
+ * macOS frameless inset title bar: traffic lights sit in the top-left of the client area.
+ * Activity bar is narrower than the lights’ footprint, so we pad top + nudge panel headers right.
+ */
+html.platform-darwin .activity-bar {
+  padding-top: calc(8px + var(--traffic-light-top-offset, 26px));
+}
+
+html.platform-darwin .side-panel .filetree-header {
+  padding-left: calc(14px + var(--traffic-light-side-offset, 20px));
+}
+
+html.platform-darwin .side-panel .git-panel-header {
+  padding-left: calc(16px + var(--traffic-light-side-offset, 20px));
+}
+
+html.platform-darwin .side-panel .search-panel .search-input-row {
+  padding-left: calc(12px + var(--traffic-light-side-offset, 20px));
+}
+
+/* Side strip hidden: editor tabs begin right after the 52px activity bar — still under the lights (~78px). */
+html.platform-darwin .app-container:not(:has(.side-panel)) .main-content > .tab-bar {
+  padding-left: calc(10px + var(--traffic-light-side-offset, 20px));
 }
 
 .activity-bar-icon {
@@ -2672,9 +2773,18 @@ textarea:focus-visible {
 }
 
 [data-theme="light"] .chat-message.user {
-  background: rgba(108, 92, 231, 0.06);
-  border-color: rgba(108, 92, 231, 0.1);
+  /* Keep the gradient style in light mode — just ensure enough contrast */
+  background: linear-gradient(135deg, #7c6bf0 0%, #9b7ef7 50%, #b088f9 100%);
+  color: #ffffff !important;
+  border: none;
+  box-shadow: 0 4px 16px rgba(108, 92, 231, 0.25), 0 1px 3px rgba(0,0,0,0.1);
 }
+
+[data-theme="light"] .chat-message.user .chat-msg-role { color: rgba(255,255,255,0.9); }
+[data-theme="light"] .chat-message.user .chat-msg-time { color: rgba(255,255,255,0.6); }
+[data-theme="light"] .chat-message.user .chat-msg-copy,
+[data-theme="light"] .chat-message.user .chat-msg-delete { color: rgba(255,255,255,0.6); }
+[data-theme="light"] .chat-message.user code { background: rgba(255,255,255,0.2); color: #ffffff; }
 
 [data-theme="light"] .chat-message.assistant {
   background: var(--bg-secondary);

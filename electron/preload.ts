@@ -1,5 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+/** macOS `titleBarStyle: hiddenInset` draws traffic lights inside the web view — CSS uses this to pad the UI. */
+try {
+  if (typeof document !== 'undefined' && process.platform === 'darwin') {
+    document.documentElement.classList.add('platform-darwin');
+  }
+} catch {
+  /* ignore */
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
   // Chat
   sendChatMessage: (message: string) => ipcRenderer.send('chat-message', message),
