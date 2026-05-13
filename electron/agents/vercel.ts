@@ -19,10 +19,38 @@ import { z } from 'zod';
 import type { IAgent, AgentConfig } from './base';
 import { RAGEngine } from './rag';
 import { browsePage } from './browser';
-import { webSearch, fetchUrl, searchCodebase, buildSystemPromptBase } from './shared-tools';
-import { browserNavigate, browserSnapshot, browserClick, browserType, browserScroll, browserBack, browserEval } from './browser-use';
+import {
+  deriveHistoryBudgetTokens,
+  deriveNonUserContentCapChars,
+  deriveToolResultCapChars,
+  estimateMessagesTokens,
+} from './token-config';
+import {
+  formatWebSearchResult,
+  hasUsableSearchResults,
+  webSearch,
+  fetchUrl,
+  searchCodebase,
+  buildSystemPromptBase,
+} from './shared-tools';
+import { shouldWatchdogVisibleTool, stringifyStreamValue, visibleTextFromStreamPart } from './stream-output';
+import {
+  browserNavigate,
+  browserSnapshot,
+  browserClick,
+  browserType,
+  browserScroll,
+  browserBack,
+  browserEval,
+  browserTaskStart,
+  browserTaskFinish,
+} from './browser-use';
 
 const execAsync = promisify(exec);
+
+/** Model-specific fenced blocks — slice offsets MUST match full delimiter length (historically caused leaked tags / stray text). */
+const REDACTED_THINK_OPEN = '<think>';
+const REDACTED_THINK_CLOSE = '</think>';
 
 // System prompt: shared base (from shared-tools.ts)
 function getSystemPrompt(cwd: string): string {
@@ -52,6 +80,11 @@ function formatToolArgs(name: string, args: any): string {
       case 'browser_scroll': return args.direction ? ` ${args.direction}` : '';
       case 'browser_back': return ' ←';
       case 'browser_eval': return args.script ? ` \`${args.script.slice(0, 40)}...\`` : '';
+      case 'browser_task_start': return args.goal ? ` — ${args.goal.slice(0, 80)}${args.goal.length > 80 ? '…' : ''}` : '';
+      case 'browser_task_finish':
+        return args.summary
+          ? ` — ${args.summary.slice(0, 240)}${args.summary.length > 240 ? '…' : ''}`
+          : '';
       default: return '';
     }
   } catch { return ''; }
@@ -64,6 +97,8 @@ export class VercelAgent implements IAgent {
   private window!: BrowserWindow;
   private cwd!: string;
   private model!: string;
+  private maxOutputTokens!: number;
+  private maxContextTokens!: number;
   private apiKey = '';
   private provider!: ReturnType<typeof createOpenAI>;
   private messages: Array<{ role: string; content: string }> = [];
@@ -74,11 +109,14 @@ export class VercelAgent implements IAgent {
   private truncationCount = 0;
   private busy = false;
   private rag = new RAGEngine();
+  private currentTurnSearchResult: { query: string; result: string } | null = null;
 
   init(window: BrowserWindow, config: AgentConfig): void {
     this.window = window;
     this.cwd = config.cwd;
     this.model = config.model;
+    this.maxOutputTokens = config.maxOutputTokens;
+    this.maxContextTokens = config.maxContextTokens;
     this.apiKey = config.apiKey || '';
 
     // Create OpenAI-compatible provider via Vercel AI SDK
@@ -139,7 +177,7 @@ export class VercelAgent implements IAgent {
       },
     });
 
-    console.log(`[VercelAgent] Initialized with Vercel AI SDK, model=${this.model}, baseUrl=${config.baseUrl}`);
+    console.log(`[VercelAgent] Initialized with Vercel AI SDK, model=${this.model}, baseUrl=${config.baseUrl}, maxOutputTokens=${this.maxOutputTokens}, maxContextTokens=${this.maxContextTokens}`);
 
     // Index project files for RAG (non-blocking)
     this.rag.index(config.cwd).then(count => {
@@ -198,7 +236,7 @@ export class VercelAgent implements IAgent {
     // Guard: API key must be configured
     if (!this.apiKey) {
       this.send('chat-stream-start', '');
-      this.send('chat-stream-token', '⚠️ **API Key 未配置**\n\n请在 Settings (⌘,) 中配置你的 API Key，然后重试。\n\n支持的服务商：SiliconFlow、OpenAI、DeepSeek 等 OpenAI-compatible 接口。');
+      this.send('chat-stream-token', '⚠️ **API Key 未配置**\n\n请在 Settings (⌘,) 中配置你的 API Key，然后重试。\n\n支持的服务商：Volcengine Ark、SiliconFlow、OpenAI、DeepSeek 等 OpenAI-compatible 接口。');
       this.send('chat-stream-end', '');
       this.send('chat-status', 'idle');
       return;
@@ -269,7 +307,8 @@ export class VercelAgent implements IAgent {
   /** Keep message history within context window limits */
   private pruneHistory(): void {
     const MAX_MESSAGES = 50;
-    const MAX_CONTENT_LEN = 3000; // per-message content cap
+    const maxContentLen = deriveNonUserContentCapChars(this.maxContextTokens);
+    const maxHistoryTokens = deriveHistoryBudgetTokens(this.maxContextTokens);
     // Sliding window: drop oldest messages (keep system-relevant context)
     if (this.messages.length > MAX_MESSAGES) {
       // Keep first 2 (initial context) + most recent messages
@@ -281,10 +320,18 @@ export class VercelAgent implements IAgent {
     }
     // Truncate oversized tool results to prevent context bloat
     for (const msg of this.messages) {
-      if (typeof msg.content === 'string' && msg.content.length > MAX_CONTENT_LEN && msg.role !== 'user') {
-        msg.content = msg.content.slice(0, MAX_CONTENT_LEN) + '\n...(truncated for context)';
+      if (typeof msg.content === 'string' && msg.content.length > maxContentLen && msg.role !== 'user') {
+        msg.content = msg.content.slice(0, maxContentLen) + '\n...(truncated for context)';
       }
     }
+
+    while (this.messages.length > 12 && estimateMessagesTokens(this.messages) > maxHistoryTokens) {
+      this.messages.shift();
+    }
+  }
+
+  private getToolResultCapChars(): number {
+    return deriveToolResultCapChars(this.maxContextTokens);
   }
 
   setupDiffHandlers(): void {
@@ -307,7 +354,7 @@ export class VercelAgent implements IAgent {
     return {
       read_file: tool({
         description: 'Read a file.',
-        parameters: z.object({ filepath: z.string() }),
+        inputSchema: z.object({ filepath: z.string() }),
         execute: async ({ filepath }) => {
           try {
             const content = await fs.readFile(resolve(filepath), 'utf-8');
@@ -323,7 +370,7 @@ export class VercelAgent implements IAgent {
 
       write_file: tool({
         description: 'Create/overwrite a file.',
-        parameters: z.object({ filepath: z.string(), content: z.string() }),
+        inputSchema: z.object({ filepath: z.string(), content: z.string() }),
         execute: async ({ filepath, content }) => {
           try {
             const fp = resolve(filepath);
@@ -339,7 +386,7 @@ export class VercelAgent implements IAgent {
 
       replace_in_file: tool({
         description: 'Replace exact substring in a file. Replaces the first occurrence.',
-        parameters: z.object({ filepath: z.string(), target: z.string(), replacement: z.string() }),
+        inputSchema: z.object({ filepath: z.string(), target: z.string(), replacement: z.string() }),
         execute: async ({ filepath, target, replacement }) => {
           try {
             const fp = resolve(filepath);
@@ -357,7 +404,7 @@ export class VercelAgent implements IAgent {
 
       list_directory: tool({
         description: 'List files in a directory.',
-        parameters: z.object({ dirpath: z.string() }),
+        inputSchema: z.object({ dirpath: z.string() }),
         execute: async ({ dirpath }) => {
           try {
             const entries = await fs.readdir(resolve(dirpath), { withFileTypes: true });
@@ -371,7 +418,7 @@ export class VercelAgent implements IAgent {
 
       search_codebase: tool({
         description: 'Grep search across workspace.',
-        parameters: z.object({ query: z.string(), is_regex: z.boolean().optional() }),
+        inputSchema: z.object({ query: z.string(), is_regex: z.boolean().optional() }),
         execute: async ({ query, is_regex }) => {
           return await searchCodebase(query, cwd, is_regex);
         },
@@ -379,7 +426,7 @@ export class VercelAgent implements IAgent {
 
       run_command: tool({
         description: 'Run shell command.',
-        parameters: z.object({ command: z.string() }),
+        inputSchema: z.object({ command: z.string() }),
         execute: async ({ command }) => {
           // Safety: block catastrophically destructive commands
           const lower = command.toLowerCase().replace(/\s+/g, ' ');
@@ -408,15 +455,41 @@ export class VercelAgent implements IAgent {
 
       web_search: tool({
         description: 'Search the web for real-time information. Use this when you need current data, news, or anything beyond your training cutoff.',
-        parameters: z.object({ query: z.string().describe('Search query') }),
+        inputSchema: z.object({ query: z.string().describe('Search query') }),
         execute: async ({ query }) => {
-          return await webSearch(query);
+          if (this.currentTurnSearchResult && hasUsableSearchResults(this.currentTurnSearchResult.result)) {
+            const reused = [
+              `Skipped duplicate web_search for "${query}".`,
+              `A usable search result already exists in this turn from query "${this.currentTurnSearchResult.query}".`,
+              'Use the previous snippets to answer now.',
+              '',
+              this.currentTurnSearchResult.result,
+            ].join('\n');
+            send('chat-stream-token', `\n已拦截重复浏览器搜索：${query}\n`);
+            return formatWebSearchResult(query, reused);
+          }
+          send('chat-stream-token', `\n正在用浏览器搜索：${query}\n`);
+          const started = Date.now();
+          const rawResult = await webSearch(query);
+          const result = formatWebSearchResult(query, rawResult);
+          if (hasUsableSearchResults(rawResult)) {
+            this.currentTurnSearchResult = { query, result: rawResult };
+          }
+          const seconds = ((Date.now() - started) / 1000).toFixed(1);
+          const preview = rawResult
+            .split('\n')
+            .map(line => line.trim())
+            .filter(Boolean)
+            .slice(0, 5)
+            .join('\n');
+          send('chat-stream-token', preview ? `\n搜索解析完成（${seconds}s），已提取到：\n\`\`\`\n${preview}\n\`\`\`\n` : `\n搜索完成（${seconds}s），但没有提取到可用摘要。\n`);
+          return result;
         },
       }),
 
       fetch_url: tool({
         description: 'Fetch and read content from a URL. Returns text extracted from the page. Does NOT execute JavaScript — for JS-rendered pages, use browse_page instead.',
-        parameters: z.object({ url: z.string().describe('URL to fetch') }),
+        inputSchema: z.object({ url: z.string().describe('URL to fetch') }),
         execute: async ({ url }) => {
           return await fetchUrl(url);
         },
@@ -424,39 +497,63 @@ export class VercelAgent implements IAgent {
 
       browse_page: tool({
         description: 'Open a URL in a real browser with full JavaScript rendering, then execute a custom script to interact with and extract data from the page. Use this for: (1) JS-rendered SPAs (React/Vue/dynamic tables), (2) pages requiring clicks/scrolls/form fills, (3) data extraction from complex layouts. The script runs in page context with full DOM access and can use async/await. It MUST return a string.',
-        parameters: z.object({
+        inputSchema: z.object({
           url: z.string().describe('URL to open'),
           script: z.string().describe('JavaScript to execute in page context. Can use async/await for multi-step interactions (click → wait → extract). MUST return a string.'),
           wait_before_script: z.number().optional().describe('Milliseconds to wait after page loads before running script. Default: 2000. Increase for slow-loading pages.'),
           timeout: z.number().optional().describe('Total timeout in milliseconds. Default: 30000.'),
         }),
         execute: async ({ url, script, wait_before_script, timeout }) => {
-          return await browsePage({ url, script, waitMs: wait_before_script ?? 2000, timeoutMs: timeout ?? 30000 });
+          send('chat-stream-token', `\n正在打开浏览器页面：${url}\n`);
+          const started = Date.now();
+          const result = await browsePage({ url, script, waitMs: wait_before_script ?? 2000, timeoutMs: timeout ?? 30000 });
+          const seconds = ((Date.now() - started) / 1000).toFixed(1);
+          send('chat-stream-token', `\n页面解析完成（${seconds}s）：${result.slice(0, 500)}${result.length > 500 ? '\n...(truncated)' : ''}\n`);
+          return result;
         },
       }),
 
       // ── Browser-Use: Long-running browser agent tools ──
+      browser_task_start: tool({
+        description:
+          'Begin a named multi-step browser session. Call once when starting a long interactive browser workflow so all browser_* steps appear under one timeline heading in the UI. Always pass a short goal string the user can read.',
+        inputSchema: z.object({
+          goal: z.string().describe('Short goal shown in the browser panel timeline, e.g. "Find invoice PDF on billing portal".'),
+        }),
+        execute: async ({ goal }) => browserTaskStart(goal),
+      }),
+
+      browser_task_finish: tool({
+        description:
+          'End the current browser session started with browser_task_start. Optionally summarize what was accomplished for the user-visible banner.',
+        inputSchema: z.object({
+          summary: z.string().optional().describe('One or two lines describing outcome (shown in the browser panel).'),
+        }),
+        execute: async ({ summary }) => browserTaskFinish(summary),
+      }),
+
       browser_navigate: tool({
-        description: 'Navigate the built-in browser to a URL. The browser tab opens automatically. Use this as the first step in any browser task.',
-        parameters: z.object({ url: z.string().describe('URL to navigate to') }),
+        description:
+          'Navigate the built-in browser to a URL. The browser tab opens automatically. For multi-step flows, call browser_task_start(goal) first so steps stay grouped.',
+        inputSchema: z.object({ url: z.string().describe('URL to navigate to') }),
         execute: async ({ url }) => browserNavigate(url),
       }),
 
       browser_snapshot: tool({
         description: 'Get a text snapshot of the current page with interactive element references [e1], [e2], etc. Use this to see what is on the page and find elements to interact with. Always call this BEFORE clicking or typing.',
-        parameters: z.object({}),
+        inputSchema: z.object({}),
         execute: async () => browserSnapshot(),
       }),
 
       browser_click: tool({
         description: 'Click an element by its reference ID from browser_snapshot. Example: ref="e3" clicks the third interactive element.',
-        parameters: z.object({ ref: z.string().describe('Element reference from snapshot, e.g. "e3"') }),
+        inputSchema: z.object({ ref: z.string().describe('Element reference from snapshot, e.g. "e3"') }),
         execute: async ({ ref }) => browserClick(ref),
       }),
 
       browser_type: tool({
         description: 'Type text into an input/textarea element by its reference ID. Clears existing content first.',
-        parameters: z.object({
+        inputSchema: z.object({
           ref: z.string().describe('Element reference from snapshot'),
           text: z.string().describe('Text to type'),
         }),
@@ -465,19 +562,19 @@ export class VercelAgent implements IAgent {
 
       browser_scroll: tool({
         description: 'Scroll the page up or down to see more content.',
-        parameters: z.object({ direction: z.enum(['up', 'down']).describe('Scroll direction') }),
+        inputSchema: z.object({ direction: z.enum(['up', 'down']).describe('Scroll direction') }),
         execute: async ({ direction }) => browserScroll(direction),
       }),
 
       browser_back: tool({
         description: 'Go back to the previous page in browser history.',
-        parameters: z.object({}),
+        inputSchema: z.object({}),
         execute: async () => browserBack(),
       }),
 
       browser_eval: tool({
         description: 'Execute arbitrary JavaScript in the current page context. Use for complex interactions not covered by other browser tools. Script MUST return a string.',
-        parameters: z.object({ script: z.string().describe('JavaScript to execute in page context') }),
+        inputSchema: z.object({ script: z.string().describe('JavaScript to execute in page context') }),
         execute: async ({ script }) => browserEval(script),
       }),
     };
@@ -486,9 +583,39 @@ export class VercelAgent implements IAgent {
   // ── Main stream using Vercel AI SDK streamText ──
   private async runStream(): Promise<void> {
     const STREAM_TIMEOUT_MS = 300_000; // 5 min hard timeout per attempt
+    const POST_TOOL_TEXT_TIMEOUT_MS = 120_000;
+    this.currentTurnSearchResult = null;
     // True iterative retry loop (no recursion, no stack growth)
     while (true) {
+    this.pruneHistory();
     this.abortController = new AbortController();
+    const streamStartedAt = Date.now();
+    let fullText = '';
+    let modelTextChars = 0;          // ← Pure model text-delta bytes this run (excludes tool output / watchdog notes)
+    let sawToolCallPart = false;     // ← Last step emitted a tool-call part (truncation would be on args, not final text)
+    let lastEventWasText = false;    // ← Most recent stream event was text-delta (vs tool-call)
+    let postToolWatchdogTimedOut = false;
+    let visibleToolOutputAt = 0;
+    let postToolWatchdog: ReturnType<typeof setTimeout> | null = null;
+    const clearPostToolWatchdog = () => {
+      if (postToolWatchdog) {
+        clearTimeout(postToolWatchdog);
+        postToolWatchdog = null;
+      }
+    };
+    const armPostToolWatchdog = (toolName: string | undefined) => {
+      if (!shouldWatchdogVisibleTool(toolName)) return;
+      clearPostToolWatchdog();
+      postToolWatchdog = setTimeout(() => {
+        postToolWatchdogTimedOut = true;
+        console.warn(`[VercelAgent] ${toolName} returned visible output, but model produced no final text within ${POST_TOOL_TEXT_TIMEOUT_MS}ms. Aborting wait.`);
+        this.send(
+          'chat-stream-token',
+          `\n\n⚠️ 已获得 **${toolName}** 的可见结果，但模型 ${POST_TOOL_TEXT_TIMEOUT_MS / 1000}s 内没有生成最终回复，已停止等待。上方工具输出可直接参考。\n`,
+        );
+        this.abortController?.abort();
+      }, POST_TOOL_TEXT_TIMEOUT_MS);
+    };
     // Hard timeout: auto-abort if LLM hangs
     const timeoutId = setTimeout(() => {
       console.warn('[VercelAgent] Stream timeout after 300s — aborting');
@@ -503,6 +630,7 @@ export class VercelAgent implements IAgent {
         ),
         messages: this.messages as any,
         tools: this.getTools(),
+        maxOutputTokens: this.maxOutputTokens,
         stopWhen: stepCountIs(25),
         abortSignal: this.abortController.signal,
 
@@ -511,14 +639,19 @@ export class VercelAgent implements IAgent {
           console.log(`[VercelAgent] Step ${stepNumber} finished: text=${text?.length || 0}ch, tools=${toolCalls?.length || 0}`);
         },
 
-        experimental_onToolCallStart: ({ toolName, input }) => {
-          console.log(`[VercelAgent] Tool start: ${toolName}`, JSON.stringify(input).slice(0, 200));
+        experimental_onToolCallStart: ({ toolCall }) => {
+          const toolName = toolCall.toolName;
+          const input = 'input' in toolCall ? toolCall.input : {};
+          console.log(`[VercelAgent] Tool start: ${toolName}`, JSON.stringify(input ?? {}).slice(0, 200));
           this.send('chat-status', `tool:${toolName}`);
-          const argSummary = formatToolArgs(toolName, input);
+          const argSummary = formatToolArgs(toolName, input ?? {});
           this.send('chat-stream-token', `\n\n> **${toolName}**${argSummary}\n`);
         },
 
-        experimental_onToolCallFinish: ({ toolName, durationMs, error }) => {
+        experimental_onToolCallFinish: (evt) => {
+          const toolName = evt.toolCall.toolName;
+          const durationMs = evt.durationMs;
+          const error = evt.success ? undefined : evt.error;
           if (error) {
             console.error(`[VercelAgent] Tool ${toolName} failed after ${durationMs}ms:`, error);
           } else {
@@ -529,23 +662,35 @@ export class VercelAgent implements IAgent {
       });
 
       // Consume the full stream (text + tool events)
-      // Wrap <think>...</think> blocks in collapsible <details> for display
-      let fullText = '';
+      // Collapse model fenced “think” blocks into <details> for display (see REDACTED_THINK_* delimiters)
       let insideThink = false;
       let thinkBuffer = '';
+      const toolCallNames = new Map<string, string>();
 
       for await (const part of result.fullStream) {
         switch (part.type) {
           case 'text-delta': {
-            let delta = (part as any).text ?? '';
+            const rawDelta = (part as any).text ?? (part as any).textDelta;
+            let delta = rawDelta == null ? '' : typeof rawDelta === 'string' ? rawDelta : String(rawDelta);
+            if (delta.length) {
+              modelTextChars += delta.length;
+              lastEventWasText = true;
+            }
+            if (delta.trim()) {
+              if (visibleToolOutputAt) {
+                console.log(`[VercelAgent] Model text resumed ${(Date.now() - visibleToolOutputAt) / 1000}s after visible tool output`);
+                visibleToolOutputAt = 0;
+              }
+              clearPostToolWatchdog();
+            }
             if (insideThink) {
               thinkBuffer += delta;
-              const endIdx = thinkBuffer.indexOf('</think>');
+              const endIdx = thinkBuffer.indexOf(REDACTED_THINK_CLOSE);
               if (endIdx !== -1) {
                 // Think block ended — emit buffered content as collapsible, then text after
                 insideThink = false;
                 const thinkContent = thinkBuffer.slice(0, endIdx);
-                const afterThink = thinkBuffer.slice(endIdx + 8);
+                const afterThink = thinkBuffer.slice(endIdx + REDACTED_THINK_CLOSE.length);
                 thinkBuffer = '';
                 // Emit as collapsible details block
                 const collapsed = `\n<details>\n<summary>💭 思考过程</summary>\n\n${thinkContent.trim()}\n\n</details>\n`;
@@ -557,7 +702,7 @@ export class VercelAgent implements IAgent {
                 }
               }
             } else {
-              const thinkIdx = delta.indexOf('<think>');
+              const thinkIdx = delta.indexOf(REDACTED_THINK_OPEN);
               if (thinkIdx !== -1) {
                 const beforeThink = delta.slice(0, thinkIdx);
                 if (beforeThink) {
@@ -565,13 +710,13 @@ export class VercelAgent implements IAgent {
                   this.send('chat-stream-token', beforeThink);
                 }
                 insideThink = true;
-                thinkBuffer = delta.slice(thinkIdx + 7);
-                // Check if </think> also in this chunk
-                const endIdx = thinkBuffer.indexOf('</think>');
+                thinkBuffer = delta.slice(thinkIdx + REDACTED_THINK_OPEN.length);
+                // Check if closing marker also in this chunk
+                const endIdx = thinkBuffer.indexOf(REDACTED_THINK_CLOSE);
                 if (endIdx !== -1) {
                   insideThink = false;
                   const thinkContent = thinkBuffer.slice(0, endIdx);
-                  const afterThink = thinkBuffer.slice(endIdx + 8);
+                  const afterThink = thinkBuffer.slice(endIdx + REDACTED_THINK_CLOSE.length);
                   thinkBuffer = '';
                   const collapsed = `\n<details>\n<summary>💭 思考过程</summary>\n\n${thinkContent.trim()}\n\n</details>\n`;
                   fullText += collapsed;
@@ -588,6 +733,14 @@ export class VercelAgent implements IAgent {
             }
             break;
           }
+          case 'tool-call': {
+            const toolCallId = (part as any).toolCallId ?? (part as any).id;
+            const toolName = (part as any).toolName;
+            if (toolCallId && toolName) toolCallNames.set(toolCallId, toolName);
+            sawToolCallPart = true;
+            lastEventWasText = false;
+            break;
+          }
           case 'error': {
             const e = (part as any).error;
             const msg = typeof e?.message === 'string' ? e.message : String(e ?? 'stream error');
@@ -602,32 +755,106 @@ export class VercelAgent implements IAgent {
             this.send('chat-stream-token', `\n\n⚠️ **工具错误** — ${String(msg).slice(0, 800)}\n`);
             break;
           }
+          case 'tool-result':
+          case 'tool-output-available':
+          case 'tool-output-error':
+          case 'tool-output-denied': {
+            const toolCallId = (part as any).toolCallId ?? (part as any).id;
+            const toolName = (part as any).toolName ?? (toolCallId ? toolCallNames.get(toolCallId) : undefined);
+            const visible = visibleTextFromStreamPart({ ...(part as any), toolName }, this.getToolResultCapChars());
+            if (visible) {
+              fullText += visible;
+              this.send('chat-stream-token', visible);
+              visibleToolOutputAt = Date.now();
+              console.log(`[VercelAgent] Visible tool output from ${toolName ?? 'unknown'} at +${((visibleToolOutputAt - streamStartedAt) / 1000).toFixed(1)}s (${visible.length}ch)`);
+              armPostToolWatchdog(toolName);
+            }
+            break;
+          }
         }
       }
 
       // Get final response messages for conversation history
       const response = await result.response;
       const finishReason = await result.finishReason;
-      const hadToolCalls = response.messages?.some((m: any) =>
-        m.role === 'assistant' && m.tool_calls?.length > 0
-      );
-      console.log(`[VercelAgent] Stream complete: text=${fullText.length}ch, hadTools=${hadToolCalls}, finishReason=${finishReason}`);
+      // In ai SDK v6 assistant messages use `content: AssistantContent` (string | (TextPart|ToolCallPart|…)[]).
+      // There is NO legacy `tool_calls` field — inspect `content` parts directly.
+      const hadToolCalls = (response.messages ?? []).some((m: any) => {
+        if (m.role !== 'assistant') return false;
+        const c = m.content;
+        if (Array.isArray(c)) return c.some((p: any) => p?.type === 'tool-call');
+        return false;
+      });
+      // Robust signal: did the stream end while the model was emitting final text
+      // (rather than tool-call args)? Combine message-shape check with live event tracking.
+      const lastAssistantMsg = [...(response.messages ?? [])].reverse().find((m: any) => m.role === 'assistant');
+      const lastMsgHasToolCall = Array.isArray(lastAssistantMsg?.content) &&
+        (lastAssistantMsg!.content as any[]).some((p: any) => p?.type === 'tool-call');
+      const lastStepWasText = (lastEventWasText && modelTextChars > 0) || (!!lastAssistantMsg && !lastMsgHasToolCall);
+      console.log(`[VercelAgent] Stream complete: text=${fullText.length}ch, modelTextChars=${modelTextChars}, hadTools=${hadToolCalls}, sawToolCallPart=${sawToolCallPart}, lastEventWasText=${lastEventWasText}, lastStepText=${lastStepWasText}, finishReason=${finishReason}`);
 
-      // ── Handle output truncation (finish_reason='length') ──
-      // If the model was cut off mid-generation, save partial text to history
-      // and CONTINUE the loop so it can resume generating.
-      // (Modeled after cortex engine's continuation logic)
-      if (finishReason === 'length' && !hadToolCalls) {
+      // ── Handle output truncation ──
+      // Two cases trigger automatic continuation (capped at 5 iterations):
+      //   A. finish_reason='length' — hard token-cap cutoff.
+      //   B. finish_reason='stop' but the visible text ends mid-sentence — some providers
+      //      (Volcengine Doubao, etc.) sporadically self-terminate after tool rounds while
+      //      still inside a Chinese clause. We detect this by tail punctuation.
+      // We only continue when the last stream step was model TEXT (not tool-call args).
+      const tail = fullText.replace(/\s+$/, '').slice(-4);
+      const endsWithTerminator = /[。！？.!?](["'’」』）)]*|```\s*)$/.test(tail) || tail.endsWith('```');
+      const looksMidSentence = lastStepWasText && modelTextChars > 20 && !endsWithTerminator;
+      const isLengthTrunc = finishReason === 'length' && lastStepWasText;
+      const isSoftTrunc = finishReason === 'stop' && looksMidSentence;
+      // Some providers report 'unknown'/'other'/'error' when SSE is cut mid-stream.
+      const fr = String(finishReason ?? '');
+      const isAmbiguousTrunc =
+        (fr === 'unknown' || fr === 'other' || fr === 'error') &&
+        lastStepWasText && modelTextChars > 0;
+      // ── Empty-response case ──
+      // Model produced ZERO visible text this run. Common Doubao/GLM failure mode:
+      // after a tool round (or even immediately) the model self-terminates with
+      // finish_reason='stop' / 'tool-calls' but no answer text. Retry with a nudge.
+      const isEmptyResponse =
+        modelTextChars === 0 &&
+        (fr === 'stop' || fr === 'tool-calls' || fr === '' || fr === 'unknown' || fr === 'other');
+
+      if (isLengthTrunc || isSoftTrunc || isAmbiguousTrunc || isEmptyResponse) {
         this.truncationCount = (this.truncationCount || 0) + 1;
         if (this.truncationCount >= 5) {
           console.error('[VercelAgent] Max consecutive truncations (5) reached. Stopping.');
           this.send('chat-stream-token', '\n\n⚠️ 模型输出被截断多次，已停止重试。');
           this.truncationCount = 0;
         } else {
-          console.warn(`[VercelAgent] Output truncated (finish_reason=length), continuing loop (${this.truncationCount}/5)`);
-          // Save partial text to history so model can see what it already wrote
-          if (fullText.trim()) {
+          const reason = isLengthTrunc
+            ? 'length'
+            : isSoftTrunc
+              ? 'soft-stop(mid-sentence)'
+              : isEmptyResponse
+                ? `empty(${fr || 'no-fr'})`
+                : `ambiguous(${fr})`;
+          console.warn(`[VercelAgent] Output truncated (${reason}), continuing loop (${this.truncationCount}/5), tail=${JSON.stringify(tail)}, modelTextChars=${modelTextChars}`);
+          // Preserve full conversation context for next iteration:
+          // push all messages produced in this run (assistant text, tool-calls, tool-results)
+          // so the model sees its prior tool I/O on retry. Fall back to plain-text persistence
+          // if for some reason response.messages is empty but fullText is not.
+          if (response.messages?.length) {
+            for (const msg of response.messages) this.messages.push(msg as any);
+          } else if (fullText.trim()) {
             this.messages.push({ role: 'assistant', content: fullText.trim() });
+          }
+          // Nudge model based on failure mode
+          if (isEmptyResponse) {
+            this.messages.push({
+              role: 'user',
+              content:
+                '上一轮没有输出任何正文。请基于已有的工具结果（如果有）直接给出最终中文回答，' +
+                '不要再调用工具，不要任何客套或元说明。',
+            });
+          } else if (isSoftTrunc || isAmbiguousTrunc) {
+            this.messages.push({
+              role: 'user',
+              content: '继续，从上次中断处无缝接着写，不要重复已经说过的内容，不要任何客套或元说明。',
+            });
           }
           clearTimeout(timeoutId);
           continue; // ← Key: continue the while(true) loop, NOT break
@@ -648,10 +875,10 @@ export class VercelAgent implements IAgent {
         const toolTexts =
           (response.messages as any[])
             ?.filter((m) => m.role === 'tool')
-            .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
+            .map((m) => stringifyStreamValue(m.content))
             .join('\n\n---\n') ?? '';
         if (toolTexts.trim()) {
-          const cap = 14000;
+          const cap = this.getToolResultCapChars();
           const display = toolTexts.length > cap ? `${toolTexts.slice(0, cap)}\n\n...(truncated)` : toolTexts;
           this.send('chat-stream-token', `\n\n### 工具输出\n\n${display}\n`);
         } else {
@@ -675,10 +902,19 @@ export class VercelAgent implements IAgent {
       this.pruneHistory();
       this.retryCount = 0; // Reset retry budget on success
       clearTimeout(timeoutId);
+      clearPostToolWatchdog();
 
     } catch (err: any) {
       clearTimeout(timeoutId);
+      clearPostToolWatchdog();
       if (err.name === 'AbortError') {
+        if (postToolWatchdogTimedOut) {
+          if (fullText.trim()) {
+            this.messages.push({ role: 'assistant', content: fullText.trim() });
+            this.pruneHistory();
+          }
+          return;
+        }
         this.send('chat-stream-token', '\n\n*— 请求已取消或超时。*');
         return;
       }
@@ -768,7 +1004,8 @@ export class VercelAgent implements IAgent {
       try {
         const result = await (toolFn as any).execute(tc.args, { toolCallId: `fallback-${Date.now()}` });
         const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
-        const display = resultStr.length > 2000 ? resultStr.slice(0, 2000) + '\n...(truncated)' : resultStr;
+        const cap = this.getToolResultCapChars();
+        const display = resultStr.length > cap ? resultStr.slice(0, cap) + '\n...(truncated)' : resultStr;
         this.send('chat-stream-token', `\n\`\`\`\n${display}\n\`\`\`\n`);
       } catch (e: any) {
         this.send('chat-stream-token', `\n⚠️ Tool error: ${e.message?.slice(0, 500)}\n`);

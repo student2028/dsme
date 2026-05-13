@@ -1,33 +1,60 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useTheme } from '../ThemeContext';
 
-export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ isOpen, onClose }) => {
-  const [apiKey, setApiKey] = useState('');
-  const [showKey, setShowKey] = useState(false);
-  const [model, setModel] = useState('deepseek-ai/DeepSeek-V4-Flash');
-  const [baseUrl, setBaseUrl] = useState('https://api.siliconflow.cn/v1');
+interface ProviderConfig {
+  name: string;
+  apiKey: string;
+  baseUrl: string;
+  models: string[];
+}
 
+export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ isOpen, onClose }) => {
+  const [providers, setProviders] = useState<ProviderConfig[]>([]);
+  const [activeProvider, setActiveProvider] = useState('Volcengine');
+  const [model, setModel] = useState('');
+  const [maxOutputTokens, setMaxOutputTokens] = useState(16384);
+  const [maxContextTokens, setMaxContextTokens] = useState(128000);
   const [saved, setSaved] = useState(false);
+  const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
   const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
     if (isOpen && window.electronAPI) {
-      window.electronAPI.getConfig().then(config => {
-        setApiKey(config.apiKey || '');
-        setModel(config.model || 'deepseek-chat');
-        setBaseUrl(config.baseUrl || 'https://api.siliconflow.cn/v1');
+      window.electronAPI.getConfig().then((config) => {
+        setProviders(config.providers || []);
+        setActiveProvider(config.activeProvider || 'Volcengine');
+        setModel(config.model || '');
+        setMaxOutputTokens(config.maxOutputTokens || 16384);
+        setMaxContextTokens(config.maxContextTokens || 128000);
+        setShowKeys({});
       }).catch(() => {});
-      setShowKey(false);
     }
   }, [isOpen]);
 
+  const currentProvider = providers.find(p => p.name === activeProvider) || providers[0];
+  const currentModels = currentProvider?.models || [];
+
+  const handleProviderSwitch = (name: string) => {
+    setActiveProvider(name);
+    const p = providers.find(pp => pp.name === name);
+    if (p && p.models.length > 0) {
+      setModel(p.models[0]);
+    }
+  };
+
+  const handleProviderKeyChange = (providerName: string, newKey: string) => {
+    setProviders(prev => prev.map(p =>
+      p.name === providerName ? { ...p, apiKey: newKey } : p
+    ));
+  };
+
   const handleSave = useCallback(async () => {
     if (window.electronAPI) {
-      await window.electronAPI.saveConfig({ apiKey, model, baseUrl });
+      await window.electronAPI.saveConfig({ providers, activeProvider, model, maxOutputTokens, maxContextTokens });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     }
-  }, [apiKey, model, baseUrl]);
+  }, [providers, activeProvider, model, maxOutputTokens, maxContextTokens]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -75,57 +102,99 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
           </div>
         </div>
 
+        {/* Provider Selector */}
+        <div className="settings-section-label">API Provider</div>
+        <div className="settings-group">
+          <div className="provider-tabs">
+            {providers.map(p => (
+              <button
+                key={p.name}
+                className={`provider-tab ${activeProvider === p.name ? 'active' : ''}`}
+                onClick={() => handleProviderSwitch(p.name)}
+              >
+                {p.name === 'SiliconFlow' && '🚀'}
+                {p.name === 'Google' && '🔮'}
+                {p.name === 'Volcengine' && '🌋'}
+                {!['SiliconFlow', 'Google', 'Volcengine'].includes(p.name) && '⚡'}
+                {' '}{p.name}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* API Key for active provider */}
+        {currentProvider && (
+          <>
+            <div className="settings-group">
+              <label className="settings-label">{currentProvider.name} API Key</label>
+              <div style={{ position: 'relative' }}>
+                <input className="settings-input" type={showKeys[currentProvider.name] ? 'text' : 'password'}
+                  value={currentProvider.apiKey} onChange={e => handleProviderKeyChange(currentProvider.name, e.target.value)}
+                  placeholder="sk-..." spellCheck="false" style={{ paddingRight: '40px' }} />
+                <button onClick={() => setShowKeys(prev => ({ ...prev, [currentProvider.name]: !prev[currentProvider.name] }))}
+                  style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)',
+                    background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)',
+                    padding: '4px', borderRadius: '4px', fontSize: '11px' }}
+                  title={showKeys[currentProvider.name] ? 'Hide' : 'Show'}>
+                  {showKeys[currentProvider.name] ? '🙈' : '👁️'}
+                </button>
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <label className="settings-label">Base URL</label>
+              <input className="settings-input" value={currentProvider.baseUrl} readOnly
+                style={{ opacity: 0.7, cursor: 'default' }} />
+            </div>
+          </>
+        )}
+
+        {/* Model Selector */}
+        <div className="settings-section-label">Model</div>
+        <div className="settings-group">
+          <div className="model-grid">
+            {currentModels.map(m => (
+              <button
+                key={m}
+                className={`model-chip ${model === m ? 'active' : ''}`}
+                onClick={() => setModel(m)}
+              >
+                {model === m && <span className="model-chip-check">✓</span>}
+                {m.split('/').pop()}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="settings-section-label">Token Limits</div>
+        <div className="settings-group">
+          <label className="settings-label">Max Output Tokens</label>
+          <input
+            className="settings-input"
+            type="number"
+            min="1"
+            step="1"
+            value={maxOutputTokens}
+            onChange={e => setMaxOutputTokens(Math.max(1, Number(e.target.value) || 1))}
+          />
+        </div>
+        <div className="settings-group">
+          <label className="settings-label">Max Context Tokens</label>
+          <input
+            className="settings-input"
+            type="number"
+            min="1"
+            step="1"
+            value={maxContextTokens}
+            onChange={e => setMaxContextTokens(Math.max(1, Number(e.target.value) || 1))}
+          />
+        </div>
+
         {/* Engine Info */}
         <div className="settings-section-label">Engine</div>
         <div className="settings-group">
           <div style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
             ⚡ Vercel AI SDK — streamText + Zod tool schemas
-          </div>
-        </div>
-
-        {/* API Section */}
-        <div className="settings-section-label">API Configuration</div>
-        <div className="settings-group">
-          <label className="settings-label">API Key</label>
-          <div style={{ position: 'relative' }}>
-            <input className="settings-input" type={showKey ? 'text' : 'password'}
-              value={apiKey} onChange={e => setApiKey(e.target.value)}
-              placeholder="sk-..." spellCheck="false" style={{ paddingRight: '40px' }} />
-            <button onClick={() => setShowKey(!showKey)}
-              style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)',
-                background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)',
-                padding: '4px', borderRadius: '4px', fontSize: '11px' }}
-              title={showKey ? 'Hide' : 'Show'}>
-              {showKey ? '🙈' : '👁️'}
-            </button>
-          </div>
-        </div>
-
-        <div className="settings-group">
-          <label className="settings-label">Model</label>
-          <select className="settings-input" value={model} onChange={e => setModel(e.target.value)}>
-            <optgroup label="DeepSeek">
-              <option value="deepseek-ai/DeepSeek-V4-Flash">DeepSeek-V4-Flash (Default)</option>
-              <option value="deepseek-ai/DeepSeek-V3.2">DeepSeek-V3.2</option>
-              <option value="deepseek-ai/DeepSeek-OCR">DeepSeek-OCR</option>
-            </optgroup>
-            <optgroup label="Other Models">
-              <option value="Pro/zai-org/GLM-5">GLM-5</option>
-              <option value="Pro/MiniMaxAI/MiniMax-M2.5">MiniMax-M2.5</option>
-              <option value="Pro/moonshotai/Kimi-K2.5">Kimi-K2.5</option>
-              <option value="Qwen/Qwen3.5-4B">Qwen3.5-4B</option>
-              <option value="Qwen/Qwen3-8B">Qwen3-8B</option>
-              <option value="PaddlePaddle/PaddleOCR-VL-1.5">PaddleOCR-VL-1.5</option>
-            </optgroup>
-          </select>
-        </div>
-
-        <div className="settings-group">
-          <label className="settings-label">Base URL</label>
-          <input className="settings-input" value={baseUrl} onChange={e => setBaseUrl(e.target.value)}
-            placeholder="https://api.deepseek.com/v1" spellCheck="false" />
-          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
-            Compatible with any OpenAI-format API endpoint
           </div>
         </div>
 

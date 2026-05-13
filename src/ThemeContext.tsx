@@ -17,7 +17,10 @@ export const useTheme = () => useContext(ThemeContext);
 export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [theme, setTheme] = useState<Theme>(() => {
     const saved = localStorage.getItem('dsme-theme');
-    return (saved === 'light' || saved === 'dark') ? saved : 'dark';
+    const t: Theme = (saved === 'light' || saved === 'dark') ? saved : 'dark';
+    // Set before first paint so CSS variables / smoke tests see a stable attribute immediately.
+    document.documentElement.setAttribute('data-theme', t);
+    return t;
   });
 
   useEffect(() => {

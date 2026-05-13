@@ -4,6 +4,11 @@ import './index.css'
 import App from './App.tsx'
 import { ThemeProvider } from './ThemeContext.tsx'
 
+const platform = `${navigator.platform} ${navigator.userAgent}`.toLowerCase()
+if (platform.includes('mac')) {
+  document.documentElement.classList.add('platform-darwin')
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ThemeProvider>

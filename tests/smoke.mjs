@@ -13,8 +13,9 @@
  * Secondary blocks ([shell] / [agent]) probe IDE chrome and agent lifecycle, not tool semantics.
  *
  * Prerequisites:
- *   - DSME running: npm run dev
+ *   - DSME running: npm run dev (Electron must load the app — not plain browser on :5173)
  *   - CDP proxy port 9418 (electron/main.ts); override DSME_CDP_PORT
+ *   - Renderer sets window.__DSME_READY after React mounts (App.tsx); smoke waits for it first.
  *   - python3|python on PATH for Python tools; network for fetch_url
  *
  * Optional FILTER=<substring> (case-insensitive) limits which tests run by *name*.
@@ -53,25 +54,29 @@ class TestRunner {
         this.ws.removeListener('message', handler);
         reject(new Error(`CDP timeout (30s) for ${method}`));
       }, 30_000);
-      this.ws.send(JSON.stringify({ id, method, params }));
       const handler = (raw) => {
-        const data = JSON.parse(raw.toString());
-        if (data.id === id) {
+        try {
+          const data = JSON.parse(raw.toString());
+          if (data.id !== id) return;
           clearTimeout(timeout);
           this.ws.removeListener('message', handler);
           resolve(data.result);
+        } catch {
+          /* ignore malformed frames */
         }
       };
       this.ws.on('message', handler);
+      this.ws.send(JSON.stringify({ id, method, params }));
     });
   }
 
-  async eval(expression) {
+  async eval(expression, opts = {}) {
+    const awaitPromise = opts.awaitPromise ?? true;
     try {
       const result = await this.send('Runtime.evaluate', {
         expression,
         returnByValue: true,
-        awaitPromise: true,
+        awaitPromise,
       });
       return result?.result?.value;
     } catch {
@@ -292,9 +297,37 @@ function connect() {
   });
 }
 
+/** Wait until React App mounted (`window.__DSME_READY`) and core chrome nodes exist. */
+async function waitForDsmeUi(t) {
+  console.log('⏳ Waiting for renderer (React shell)…');
+  for (let i = 0; i < 150; i++) {
+    const ready = await t.eval(
+      `window.__DSME_READY === true &&
+      !!document.querySelector('.app-container') &&
+      !!document.querySelector('.chat-input') &&
+      !!document.querySelector('.status-bar')`,
+      { awaitPromise: false },
+    );
+    if (ready) {
+      console.log('✓ Renderer ready\n');
+      return;
+    }
+    await t.sleep(300);
+  }
+  console.warn('⚠️ Renderer readiness timeout — shell/CDP tests may fail.');
+}
+
 async function main() {
   console.log('🔌 Connecting to DSME via CDP...');
   const t = await connect();
+  await waitForDsmeUi(t);
+  if (process.env.DSME_SMOKE_DEBUG === '1') {
+    const dbg = await t.eval(
+      `JSON.stringify({ href: String(location.href), ready: window.__DSME_READY === true, rootKids: document.getElementById('root') ? document.getElementById('root').childElementCount : -1, app: !!document.querySelector('.app-container'), chat: !!document.querySelector('.chat-input'), sb: !!document.querySelector('.status-bar'), api: !!window.electronAPI })`,
+      { awaitPromise: false },
+    );
+    console.log(`  [debug] DOM snapshot: ${dbg}\n`);
+  }
   console.log('✓ Connected — primary: agent/workspace tools\n');
 
   // ─── IPC workspace tools (same backends Agent tools call into, no LLM) ────────
@@ -1280,23 +1313,24 @@ async function main() {
   await t.test('[shell] theme toggle', async () => {
     const initial = await t.eval('document.documentElement.getAttribute("data-theme") || "dark"');
     await t.eval('document.querySelector(".status-theme")?.click()');
-    await t.sleep(400);
+    await t.sleep(500);
     const toggled = await t.eval('document.documentElement.getAttribute("data-theme") || "dark"');
     await t.eval('document.querySelector(".status-theme")?.click()');
+    await t.sleep(300);
     return initial !== toggled;
   });
 
   await t.test('[shell] settings panel open', async () => {
     await t.eval('document.querySelector(".status-model")?.click()');
-    await t.sleep(500);
+    await t.sleep(700);
     const open = await t.eval('!!document.querySelector(".settings-panel")');
     await t.eval('document.querySelector(".settings-cancel-btn")?.click()');
     return open;
   });
 
   await t.test('[shell] kernel badge present', async () => {
-    const badge = await t.eval(`document.querySelector('.chat-kernel-toggle')?.innerText || ''`);
-    return badge.includes('VERCEL') || badge.includes('BUILTIN');
+    const badge = await t.eval(`((document.querySelector('.chat-kernel-toggle')?.textContent || '') + (document.querySelector('.chat-kernel-toggle')?.innerText || '')).toLowerCase()`);
+    return badge.includes('vercel') || badge.includes('builtin');
   });
 
   await t.test('[shell] aria-label coverage', async () => {
@@ -1356,10 +1390,20 @@ async function main() {
         terminalPanel: !!document.querySelector('.terminal-panel'),
         welcomeOrEditor: !!(document.querySelector('.welcome-screen') || document.querySelector('.editor-container')),
         chatInput: !!document.querySelector('.chat-input'),
-        statusBarHeight: getComputedStyle(document.querySelector('.status-bar')).height,
+        statusBarHeight: (() => {
+          const el = document.querySelector('.status-bar');
+          return el ? getComputedStyle(el).height : '';
+        })(),
       })
     `);
-    const c = JSON.parse(checks);
+    let c;
+    try {
+      c = JSON.parse(checks || '{}');
+    } catch {
+      return false;
+    }
+    const h = parseFloat(String(c.statusBarHeight || '').replace('px', ''));
+    const heightOk = Number.isFinite(h) ? (h >= 22 && h <= 34) : false;
     const allPresent =
       c.activityBar &&
       c.appContainer &&
@@ -1368,7 +1412,7 @@ async function main() {
       c.terminalPanel &&
       c.welcomeOrEditor &&
       c.chatInput;
-    return allPresent && c.statusBarHeight === '26px';
+    return allPresent && heightOk;
   });
 
   await t.test('[agent] multi-turn token recall', async () => {

@@ -13,14 +13,27 @@ interface DiffChange {
   newContent: string;
 }
 
+interface ProviderConfig {
+  name: string;
+  apiKey: string;
+  baseUrl: string;
+  models: string[];
+}
+
 interface AppConfig {
   apiKey: string;
   model: string;
   baseUrl: string;
+  maxOutputTokens: number;
+  maxContextTokens: number;
+  providers: ProviderConfig[];
+  activeProvider: string;
 }
 
 declare global {
   interface Window {
+    /** Set when `<App />` has mounted — CDP smoke uses this before probing DOM. */
+    __DSME_READY?: boolean;
     electronAPI: {
       sendChatMessage: (message: string) => void;
       onChatStreamStart: (callback: () => void) => void;
@@ -56,10 +69,19 @@ declare global {
       onKernelChanged: (callback: (kernel: string) => void) => void;
       switchKernel: (kernel: string) => void;
       // Web search — webview delegation
-      onWebSearchExecute?: (callback: (data: { query: string; engines: { label: string; url: string; extractJS: string }[] }) => void) => void;
+      onWebSearchExecute?: (callback: (data: {
+        query: string;
+        stopOnFirstResult?: boolean;
+        engines: { label: string; url: string; extractJS: string }[];
+      }) => void) => void;
       sendWebSearchResults?: (results: string) => void;
       // Browser-use — command execution
-      onBrowserCommand?: (callback: (cmd: { id: string; command: string; [key: string]: any }) => void) => void;
+      onBrowserCommand?: (callback: (cmd: {
+        id: string;
+        command: string;
+        sessionTitle?: string;
+        [key: string]: unknown;
+      }) => void) => void;
       sendBrowserResult?: (id: string, result: string) => void;
     };
   }

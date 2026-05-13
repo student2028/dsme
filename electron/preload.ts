@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onChatStreamToken: (callback: (token: string) => void) => {
     ipcRenderer.removeAllListeners('chat-stream-token');
-    ipcRenderer.on('chat-stream-token', (_e, v) => callback(v));
+    ipcRenderer.on('chat-stream-token', (_e, v) => callback(v == null ? '' : String(v)));
   },
   onChatStreamEnd: (callback: () => void) => {
     ipcRenderer.removeAllListeners('chat-stream-end');

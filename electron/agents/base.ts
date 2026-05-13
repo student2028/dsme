@@ -15,6 +15,8 @@ export interface AgentConfig {
   model: string;
   baseUrl: string;
   cwd: string;
+  maxOutputTokens: number;
+  maxContextTokens: number;
 }
 
 // ── Callback contract (IDE ← Agent) ─────────────────────────────────
@@ -70,6 +72,6 @@ export type ToolExecutor = (args: Record<string, unknown>, cwd: string, callback
 export interface ToolDefinition {
   name: string;
   description: string;
-  parameters: Record<string, any>;
+  parameters: Record<string, unknown>;
   execute: ToolExecutor;
 }

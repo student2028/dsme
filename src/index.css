@@ -122,6 +122,7 @@ body {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  min-height: 0;
 }
 
 .filetree-header {
@@ -161,6 +162,7 @@ body {
 
 .filetree-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 4px 6px;
 }
@@ -1281,6 +1283,22 @@ body {
 .status-branch { font-weight: 500; color: var(--text-secondary); }
 .status-lang { color: var(--text-secondary); font-weight: 500; }
 .status-encoding { color: var(--text-muted); }
+.status-bar-right button.status-item {
+  font: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+.status-bar-right button.status-model {
+  cursor: pointer;
+}
+
 .status-model { color: var(--text-muted); cursor: default; display: flex; align-items: center; gap: 0; }
 .status-model:hover { color: var(--accent-color); }
 .status-dot {
@@ -2304,12 +2322,17 @@ html.platform-darwin .app-container:not(:has(.side-panel)) .main-content > .tab-
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  align-self: stretch;
+  min-height: 0;
   overflow: hidden;
 }
 
 .side-panel .filetree-panel {
   width: 100%;
   border-right: none;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .side-panel .search-panel {
@@ -3089,6 +3112,262 @@ textarea:focus-visible {
 .browser-slot-badge.error {
   color: var(--red);
   background: rgba(240, 96, 96, 0.12);
+}
+
+.browser-slot-user-btn {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.browser-slot-user-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--cyan);
+}
+
+.browser-search-summary {
+  display: grid;
+  gap: 4px;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.browser-search-summary.info {
+  border-left: 3px solid var(--cyan);
+}
+
+.browser-search-summary.success {
+  border-left: 3px solid var(--green);
+}
+
+.browser-search-summary.error {
+  border-left: 3px solid var(--orange);
+}
+
+.browser-search-summary-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.browser-search-summary-lines {
+  display: grid;
+  gap: 2px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.browser-search-summary-lines div {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.browser-task-timeline {
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  padding: 8px 12px 10px;
+  flex-shrink: 0;
+}
+
+.browser-task-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.browser-task-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 560px;
+}
+
+.browser-task-subtitle {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.browser-task-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.browser-task-tool-btn {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--accent-subtle);
+  color: var(--accent-color);
+  cursor: pointer;
+}
+
+.browser-task-tool-btn:hover {
+  filter: brightness(1.06);
+}
+
+.browser-task-tool-btn.muted {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.browser-task-tool-btn.muted:hover {
+  color: var(--text-primary);
+  border-color: var(--cyan);
+}
+
+.browser-task-elapsed {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent-color);
+  background: var(--accent-subtle);
+  padding: 2px 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.browser-task-steps {
+  display: grid;
+  gap: 5px;
+  max-height: min(42vh, 320px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.browser-task-step {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.browser-task-step-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-top: 6px;
+  background: var(--text-muted);
+}
+
+.browser-task-step.running .browser-task-step-dot {
+  background: var(--cyan);
+  animation: browserPulse 1.2s ease-in-out infinite;
+}
+
+.browser-task-step.done .browser-task-step-dot {
+  background: var(--green);
+}
+
+.browser-task-step.error .browser-task-step-dot {
+  background: var(--red);
+}
+
+.browser-task-step-body {
+  min-width: 0;
+}
+
+.browser-task-step-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.browser-task-step-kind {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  padding: 1px 5px;
+  border-radius: 5px;
+  flex-shrink: 0;
+}
+
+.browser-task-step-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.browser-task-step-status,
+.browser-task-step-duration {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.browser-task-step-input,
+.browser-task-step-output {
+  margin-top: 2px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.browser-task-step-output {
+  color: var(--text-secondary);
+}
+
+.browser-task-expand-btn {
+  margin-left: auto;
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--cyan);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.browser-task-expand-btn:hover {
+  background: rgba(86, 212, 230, 0.1);
+}
+
+.browser-task-step-detail {
+  margin-top: 6px;
+  padding: 6px 8px;
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 @keyframes browserPulse {

@@ -64,15 +64,33 @@ export const ActivityBar: React.FC<Props> = ({ activePanel, onPanelChange }) => 
           className={`activity-bar-icon ${activePanel === p.id ? 'active' : ''}`}
           onClick={() => onPanelChange(activePanel === p.id ? '' : p.id)}
           title={p.label}
+          role="button"
+          tabIndex={0}
+          aria-label={p.label}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onPanelChange(activePanel === p.id ? '' : p.id);
+            }
+          }}
         >
           <p.Icon />
         </div>
       ))}
       <div className="activity-bar-spacer" />
       <div
-        className="activity-bar-icon bottom"
+        className="activity-bar-icon bottom activity-bar-theme-btn"
         onClick={toggleTheme}
         title={theme === 'dark' ? 'Switch to Light Theme' : 'Switch to Dark Theme'}
+        role="button"
+        tabIndex={0}
+        aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            toggleTheme();
+          }
+        }}
       >
         {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
       </div>
@@ -80,6 +98,15 @@ export const ActivityBar: React.FC<Props> = ({ activePanel, onPanelChange }) => 
         className={`activity-bar-icon bottom ${activePanel === 'settings' ? 'active' : ''}`}
         onClick={() => onPanelChange(activePanel === 'settings' ? '' : 'settings')}
         title="Settings"
+        role="button"
+        tabIndex={0}
+        aria-label="Settings"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onPanelChange(activePanel === 'settings' ? '' : 'settings');
+          }
+        }}
       >
         <SettingsIcon />
       </div>

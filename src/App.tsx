@@ -43,6 +43,13 @@ function App() {
   const activeTab = tabs.find(t => t.path === activePath);
 
   useEffect(() => {
+    window.__DSME_READY = true;
+    return () => {
+      window.__DSME_READY = false;
+    };
+  }, []);
+
+  useEffect(() => {
     const f = () => { if (window.electronAPI) window.electronAPI.getGitBranch().then(setGitBranch).catch(() => {}); };
     f(); const i = setInterval(f, 10000); return () => clearInterval(i);
   }, []);

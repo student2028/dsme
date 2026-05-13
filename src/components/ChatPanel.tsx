@@ -109,9 +109,27 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   }, [conversations, activeConvId]);
 
   // ── Auto-scroll ──
+  // We "pin to bottom" by default; user scrolling up unpins. When pinned, every
+  // streaming token update scrolls to the latest content. Threshold is generous
+  // (60px) because rendered markdown can grow in jumps and we don't want a
+  // single big chunk to permanently unpin the user.
+  const pinnedToBottomRef = useRef(true);
   useEffect(() => {
     const c = scrollRef.current;
-    if (c) { const shouldScroll = c.scrollHeight - c.scrollTop - c.clientHeight < 200; if (shouldScroll) endRef.current?.scrollIntoView({ behavior: 'smooth' }); }
+    if (!c) return;
+    const onScroll = () => {
+      const distFromBottom = c.scrollHeight - c.scrollTop - c.clientHeight;
+      pinnedToBottomRef.current = distFromBottom < 60;
+    };
+    c.addEventListener('scroll', onScroll, { passive: true });
+    return () => c.removeEventListener('scroll', onScroll);
+  }, []);
+  useEffect(() => {
+    if (!pinnedToBottomRef.current) return;
+    // Use 'auto' (instant) during active streaming so each token tick keeps up;
+    // smooth animation can fall behind when tokens arrive faster than the animation.
+    const behavior: ScrollBehavior = streamingMsgId.current ? 'auto' : 'smooth';
+    endRef.current?.scrollIntoView({ behavior, block: 'end' });
   }, [activeConv.messages]);
 
   // ── Conversation switching ──
@@ -150,9 +168,10 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
         return { ...conv, messages: [...conv.messages, { id: mid, role: 'assistant' as const, content: '', timestamp: Date.now() }] };
       }));
     });
-    window.electronAPI.onChatStreamToken((token: string) => {
+    window.electronAPI.onChatStreamToken((token: unknown) => {
+      const chunk = token == null ? '' : String(token);
       if (streamingMsgId.current) {
-        tokenBufferRef.current += token;
+        tokenBufferRef.current += chunk;
         if (!flushTimerRef.current) {
           flushTimerRef.current = setTimeout(() => {
             flushTimerRef.current = null;
@@ -417,6 +436,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
           {!showHistory && (
             <span className="chat-kernel-toggle"
               title={`Current: ${kernel === 'vercel' ? 'Vercel AI SDK' : 'Built-in'} — Click to switch`}
+              aria-label={kernel === 'vercel' ? 'Kernel: Vercel' : 'Kernel: Built-in'}
               onClick={() => {
                 const next = kernel === 'vercel' ? 'builtin' : 'vercel';
                 setKernel(next);
@@ -433,7 +453,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
             <span className="ctx-indicator" title={currentFileContext.path}>{currentFileContext.path.split('/').pop()}</span>
           )}
           {getStatusLabel() && <span className="agent-status-badge">{getStatusLabel()}</span>}
-          <button className={`chat-history-btn ${showHistory ? 'active' : ''}`} onClick={() => setShowHistory(!showHistory)} title={`会话历史 (${conversations.length})`}>
+          <button className={`chat-history-btn ${showHistory ? 'active' : ''}`} onClick={() => setShowHistory(!showHistory)} title={`会话历史 (${conversations.length})`} aria-label="Conversation history">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           </button>
           <button className="chat-export-btn" onClick={exportConversation} title="导出对话为 Markdown" aria-label="Export conversation">

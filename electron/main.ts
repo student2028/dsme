@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { VercelAgent } from './agents/vercel'
 import { BuiltinAgent } from './agents/builtin'
 import type { IAgent } from './agents/base'
+import { DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS, getTokenLimitsFromEnv } from './agents/token-config'
 import * as os from 'node:os'
 import * as cp from 'node:child_process'
 import { promisify } from 'node:util'
@@ -66,43 +67,109 @@ interface AppConfig {
   apiKey: string;       // Backward compat — resolved from active provider
   model: string;        // Active model
   baseUrl: string;      // Resolved from active provider
+  maxOutputTokens: number;
+  maxContextTokens: number;
   providers: ProviderConfig[];
   activeProvider: string;
 }
 
+/** Volcengine Ark Coding API — OpenAI-compatible; configured via VOLCENGINE_* env vars. */
+const VOLCENGINE_PROVIDER_NAME = 'Volcengine';
+
+/** Previous built-in Volcengine list — refresh saved config once when we detect this exact set. */
+const VOLCENGINE_MODELS_LEGACY_FALLBACK = [
+  'doubao-seed-code',
+  'kimi-k2.5',
+  'glm-4.7',
+  'deepseek-v3.2',
+  'minimax-m2.5',
+  'Doubao-Seed-2.0-pro',
+] as const;
+
+function volcengineModelsNeedRefresh(savedModels: string[]): boolean {
+  if (savedModels.length !== VOLCENGINE_MODELS_LEGACY_FALLBACK.length) return false;
+  const a = [...savedModels].sort().join('\0');
+  const b = [...VOLCENGINE_MODELS_LEGACY_FALLBACK].sort().join('\0');
+  return a === b;
+}
+
+/** Ensure these Ark IDs appear in Settings even if an older saved config omitted them. */
+const VOLCENGINE_ALWAYS_ENSURE_MODEL_IDS = ['MiniMax-M2.7', 'Kimi-K2.6'] as const;
+
+/** Matches Volcengine Ark «Coding» endpoint model IDs (console order). Override with VOLCENGINE_MODELS. */
+const VOLCENGINE_MODELS_FALLBACK = [
+  'Doubao-Seed-2.0-Code',
+  'Doubao-Seed-2.0-pro',
+  'Doubao-Seed-2.0-lite',
+  'Doubao-Seed-Code',
+  'GLM-5.1',
+  'MiniMax-M2.7',
+  'Kimi-K2.6',
+] as const;
+
+function parseCommaSeparatedModels(raw: string | undefined, fallback: readonly string[]): string[] {
+  if (!raw?.trim()) return [...fallback];
+  return raw.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function buildVolcengineProvider(): ProviderConfig {
+  const models = parseCommaSeparatedModels(process.env.VOLCENGINE_MODELS, VOLCENGINE_MODELS_FALLBACK);
+  const envDefault = process.env.VOLCENGINE_DEFAULT_MODEL?.trim();
+  /** Default when env unset: GLM-5.1 is commonly pre-enabled on new Ark projects. */
+  const defaultModel = envDefault || 'GLM-5.1';
+  const ordered = models.includes(defaultModel) ? models : [defaultModel, ...models];
+  return {
+    name: VOLCENGINE_PROVIDER_NAME,
+    apiKey: process.env.VOLCENGINE_API_KEY || '',
+    baseUrl: process.env.VOLCENGINE_API_BASE?.trim() || 'https://ark.cn-beijing.volces.com/api/coding/v3',
+    models: ordered,
+  };
+}
+
+const SILICONFLOW_PROVIDER: ProviderConfig = {
+  name: 'SiliconFlow',
+  apiKey: process.env.DSME_API_KEY || '',
+  baseUrl: 'https://api.siliconflow.cn/v1',
+  models: [
+    'deepseek-ai/DeepSeek-V4-Flash',
+    'deepseek-ai/DeepSeek-V3.2',
+    'Pro/zai-org/GLM-5',
+    'Pro/MiniMaxAI/MiniMax-M2.5',
+    'Pro/moonshotai/Kimi-K2.5',
+    'Qwen/Qwen3-8B',
+  ],
+};
+
+const GOOGLE_PROVIDER: ProviderConfig = {
+  name: 'Google',
+  apiKey: process.env.GOOGLE_API_KEY || '',
+  baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+  models: [
+    'gemma-4-31b-it',
+    'gemma-4-26b-a4b-it',
+    'gemini-2.5-flash',
+  ],
+};
+
+/** Volcengine first — default provider for new installs (see loadConfig catch block). */
 const DEFAULT_PROVIDERS: ProviderConfig[] = [
-  {
-    name: 'SiliconFlow',
-    apiKey: process.env.DSME_API_KEY || '',
-    baseUrl: 'https://api.siliconflow.cn/v1',
-    models: [
-      'deepseek-ai/DeepSeek-V4-Flash',
-      'deepseek-ai/DeepSeek-V3.2',
-      'Pro/zai-org/GLM-5',
-      'Pro/MiniMaxAI/MiniMax-M2.5',
-      'Pro/moonshotai/Kimi-K2.5',
-      'Qwen/Qwen3-8B',
-    ],
-  },
-  {
-    name: 'Google',
-    apiKey: process.env.GOOGLE_API_KEY || '',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
-    models: [
-      'gemma-4-31b-it',
-      'gemma-4-26b-a4b-it',
-      'gemini-2.5-flash',
-    ],
-  },
+  buildVolcengineProvider(),
+  SILICONFLOW_PROVIDER,
+  GOOGLE_PROVIDER,
 ];
 
 function resolveActiveConfig(full: AppConfig): AppConfig {
   const provider = full.providers.find(p => p.name === full.activeProvider) || full.providers[0];
+  const tokenLimits = getTokenLimitsFromEnv(process.env, {
+    maxOutputTokens: full.maxOutputTokens || DEFAULT_MAX_OUTPUT_TOKENS,
+    maxContextTokens: full.maxContextTokens || DEFAULT_MAX_CONTEXT_TOKENS,
+  });
   return {
     ...full,
     apiKey: provider.apiKey,
     baseUrl: provider.baseUrl,
     model: full.model || provider.models[0],
+    ...tokenLimits,
   };
 }
 
@@ -111,26 +178,69 @@ async function loadConfig(): Promise<AppConfig> {
     const parsed = JSON.parse(await fs.readFile(CONFIG_PATH, 'utf8'));
     // Migration: old config without providers array
     if (!parsed.providers) {
+      const mergedSf = DEFAULT_PROVIDERS.map(p =>
+        p.name === 'SiliconFlow' ? { ...p, apiKey: parsed.apiKey || p.apiKey } : { ...p },
+      );
       const migrated: AppConfig = {
         apiKey: parsed.apiKey || '',
-        model: parsed.model || 'deepseek-ai/DeepSeek-V4-Flash',
-        baseUrl: parsed.baseUrl || 'https://api.siliconflow.cn/v1',
-        providers: DEFAULT_PROVIDERS.map(p =>
-          p.name === 'SiliconFlow' ? { ...p, apiKey: parsed.apiKey || p.apiKey } : p
-        ),
-        activeProvider: 'SiliconFlow',
+        model:
+          mergedSf[0].models.includes(parsed.model) ? parsed.model : mergedSf[0].models[0],
+        baseUrl: parsed.baseUrl || mergedSf[0].baseUrl,
+        maxOutputTokens: parsed.maxOutputTokens || DEFAULT_MAX_OUTPUT_TOKENS,
+        maxContextTokens: parsed.maxContextTokens || DEFAULT_MAX_CONTEXT_TOKENS,
+        providers: mergedSf,
+        activeProvider: VOLCENGINE_PROVIDER_NAME,
       };
-      await fs.writeFile(CONFIG_PATH, JSON.stringify(migrated, null, 2), 'utf8');
+      await fs.writeFile(CONFIG_PATH, JSON.stringify(resolveActiveConfig(migrated), null, 2), 'utf8');
       return resolveActiveConfig(migrated);
+    }
+    // Ensure Volcengine row exists (upgrade from older installs) without overwriting user keys
+    if (!parsed.providers.some((p: ProviderConfig) => p.name === VOLCENGINE_PROVIDER_NAME)) {
+      parsed.providers = [buildVolcengineProvider(), ...parsed.providers];
+      await fs.writeFile(CONFIG_PATH, JSON.stringify(resolveActiveConfig(parsed), null, 2), 'utf8');
+    }
+    const volcIdx = parsed.providers.findIndex((p: ProviderConfig) => p.name === VOLCENGINE_PROVIDER_NAME);
+    if (volcIdx >= 0) {
+      let row = parsed.providers[volcIdx];
+      let models = [...row.models];
+      let dirty = false;
+
+      if (volcengineModelsNeedRefresh(models)) {
+        const fresh = buildVolcengineProvider();
+        models = [...fresh.models];
+        row = { ...row, baseUrl: fresh.baseUrl };
+        dirty = true;
+      }
+
+      for (const id of VOLCENGINE_ALWAYS_ENSURE_MODEL_IDS) {
+        if (!models.includes(id)) {
+          models.push(id);
+          dirty = true;
+        }
+      }
+
+      if (dirty) {
+        parsed.providers[volcIdx] = { ...row, models };
+        if (!models.includes(parsed.model)) {
+          parsed.model = models.includes('GLM-5.1') ? 'GLM-5.1' : models[0];
+        }
+        await fs.writeFile(CONFIG_PATH, JSON.stringify(resolveActiveConfig(parsed), null, 2), 'utf8');
+      }
     }
     return resolveActiveConfig(parsed);
   } catch {
+    const volc = buildVolcengineProvider();
+    const initialModel =
+      process.env.VOLCENGINE_DEFAULT_MODEL?.trim() ||
+      (volc.models.includes('GLM-5.1') ? 'GLM-5.1' : volc.models[0]);
     const defaultConfig: AppConfig = {
-      apiKey: '',
-      model: DEFAULT_PROVIDERS[0].models[0],
-      baseUrl: DEFAULT_PROVIDERS[0].baseUrl,
+      apiKey: volc.apiKey,
+      model: volc.models.includes(initialModel) ? initialModel : volc.models[0],
+      baseUrl: volc.baseUrl,
+      maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+      maxContextTokens: DEFAULT_MAX_CONTEXT_TOKENS,
       providers: DEFAULT_PROVIDERS,
-      activeProvider: 'SiliconFlow',
+      activeProvider: VOLCENGINE_PROVIDER_NAME,
     };
     return resolveActiveConfig(defaultConfig);
   }
@@ -270,8 +380,10 @@ async function initAgent() {
     model: config.model,
     baseUrl: config.baseUrl,
     cwd: currentWorkspacePath,
+    maxOutputTokens: config.maxOutputTokens,
+    maxContextTokens: config.maxContextTokens,
   };
-  console.log(`[Agent] Config: apiKey=${config.apiKey ? config.apiKey.slice(0, 8) + '...' : 'EMPTY'}, model=${config.model}, baseUrl=${config.baseUrl}`);
+  console.log(`[Agent] Config: apiKey=${config.apiKey ? config.apiKey.slice(0, 8) + '...' : 'EMPTY'}, model=${config.model}, baseUrl=${config.baseUrl}, maxOutputTokens=${config.maxOutputTokens}, maxContextTokens=${config.maxContextTokens}`);
 
   if (currentKernel === 'builtin') {
     console.log('[Agent] Initializing Built-in kernel');

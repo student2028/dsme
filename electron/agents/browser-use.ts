@@ -5,6 +5,8 @@
  * No CDP, no WebSocket, no external process — the webview IS the browser.
  *
  * Tool set:
+ *   browser_task_start(goal) — begin a named session (timeline heading + grouping)
+ *   browser_task_finish(summary?) — end session (optional banner text)
  *   browser_navigate(url)   — navigate to URL
  *   browser_snapshot()      — get page snapshot with interactive element refs
  *   browser_click(ref)      — click element by ref
@@ -164,31 +166,74 @@ function scrollScript(direction: 'up' | 'down'): string {
   })()`;
 }
 
+/** Active multi-step browser session title (set by browser_task_start, cleared by browser_task_finish). */
+let activeSessionTitle: string | null = null;
+
+function commandTimeoutMs(command: string): number {
+  switch (command) {
+    case 'navigate':
+      return 60_000;
+    case 'snapshot':
+      return 45_000;
+    case 'eval':
+      return 120_000;
+    case 'back':
+      return 30_000;
+    case 'task_start':
+    case 'task_finish':
+      return 15_000;
+    default:
+      return 45_000;
+  }
+}
+
 // ── IPC command sender — shared by all tools ──
 function sendBrowserCommand(
   command: string,
   params: Record<string, any> = {},
-  timeoutMs = 30000,
+  timeoutMs?: number,
 ): Promise<string> {
+  const ms = timeoutMs ?? commandTimeoutMs(command);
   const { BrowserWindow: BW, ipcMain } = require('electron');
   const allWindows = BW.getAllWindows();
   const mainWindow = allWindows.find((w: any) => w.getTitle()?.includes('DSME')) || allWindows[0];
   if (!mainWindow) return Promise.resolve('Error: no main window');
 
+  const payload: Record<string, any> = { id: '', command, ...params };
+  if (command !== 'task_start' && command !== 'task_finish' && activeSessionTitle) {
+    payload.sessionTitle = activeSessionTitle;
+  }
+
   return new Promise<string>((resolve) => {
     const id = `cmd_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    payload.id = id;
     const timeoutId = setTimeout(() => {
       ipcMain.removeAllListeners(`browser-result-${id}`);
-      resolve(`Error: browser command timed out after ${timeoutMs}ms`);
-    }, timeoutMs);
+      resolve(`Error: browser command timed out after ${ms}ms`);
+    }, ms);
 
     ipcMain.once(`browser-result-${id}`, (_: any, result: string) => {
       clearTimeout(timeoutId);
       resolve(result);
     });
 
-    mainWindow.webContents.send('browser-command', { id, command, ...params });
+    mainWindow.webContents.send('browser-command', payload);
   });
+}
+
+/** Start a named browser task so the UI timeline groups all following browser_* steps (call once per multi-step goal). */
+export async function browserTaskStart(goal: string): Promise<string> {
+  const title = String(goal || '').trim().slice(0, 240) || 'Browser task';
+  activeSessionTitle = title;
+  return sendBrowserCommand('task_start', { goal: title });
+}
+
+/** End the current browser task session (optional short summary for the user-visible banner). */
+export async function browserTaskFinish(summary?: string): Promise<string> {
+  const prev = activeSessionTitle;
+  activeSessionTitle = null;
+  const s = String(summary ?? '').trim().slice(0, 2000);
+  return sendBrowserCommand('task_finish', { summary: s, sessionTitle: prev || undefined });
 }
 
 // ── Exported tool functions (called by the agent) ──
