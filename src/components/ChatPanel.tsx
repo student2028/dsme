@@ -160,65 +160,82 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
 
   useEffect(() => {
     if (!window.electronAPI) return;
-    window.electronAPI.onChatStreamStart(() => {
-      const mid = newId();
-      streamingMsgId.current = mid;
-      streamStartTime.current = Date.now();
-      tokenBufferRef.current = '';
-      setConversations(prev => prev.map(conv => {
-        if (conv.id !== activeConvIdRef.current) return conv;
-        return { ...conv, messages: [...conv.messages, { id: mid, role: 'assistant' as const, content: '', timestamp: Date.now() }] };
-      }));
-    });
-    window.electronAPI.onChatStreamToken((token: unknown) => {
-      const chunk = token == null ? '' : String(token);
-      if (streamingMsgId.current) {
-        tokenBufferRef.current += chunk;
-        if (!flushTimerRef.current) {
-          flushTimerRef.current = setTimeout(() => {
-            flushTimerRef.current = null;
-            flushTokenBuffer();
-          }, 80);
-        }
-      }
-    });
-    window.electronAPI.onChatStreamEnd(() => {
-      if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
-      flushTokenBuffer();
-      const duration = streamStartTime.current ? ((Date.now() - streamStartTime.current) / 1000).toFixed(1) : null;
-      const finishedMsgId = streamingMsgId.current;
-      streamingMsgId.current = null;
-      streamStartTime.current = 0;
-      setAgentStatus('idle');
-      if (finishedMsgId) {
+    const api = window.electronAPI;
+    const unsubs: Array<() => void> = [];
+
+    unsubs.push(
+      api.onChatStreamStart(() => {
+        const mid = newId();
+        streamingMsgId.current = mid;
+        streamStartTime.current = Date.now();
+        tokenBufferRef.current = '';
         setConversations(prev => prev.map(conv => {
           if (conv.id !== activeConvIdRef.current) return conv;
-          const msg = conv.messages.find(m => m.id === finishedMsgId);
-          if (msg && !msg.content.trim()) {
-            return {
-              ...conv,
-              messages: conv.messages.map(m =>
-                m.id === finishedMsgId
-                  ? {
-                      ...m,
-                      content:
-                        '*（本轮未收到任何可见回复：可能已中断、流式出错，或模型在工具调用后未生成正文。请查看运行 DSME 的终端日志或重试。）*',
-                    }
-                  : m
-              ),
-            };
-          }
-          if (duration) {
-            return { ...conv, messages: conv.messages.map(m =>
-              m.id === finishedMsgId ? { ...m, duration: `${duration}s` } : m
-            ) };
-          }
-          return conv;
+          return { ...conv, messages: [...conv.messages, { id: mid, role: 'assistant' as const, content: '', timestamp: Date.now() }] };
         }));
-      }
-    });
-    window.electronAPI.onChatStatus((status: string) => setAgentStatus(status));
-    window.electronAPI?.onKernelChanged?.((k: string) => setKernel(k as any));
+      }),
+    );
+    unsubs.push(
+      api.onChatStreamToken((token: unknown) => {
+        const chunk = token == null ? '' : String(token);
+        if (streamingMsgId.current) {
+          tokenBufferRef.current += chunk;
+          if (!flushTimerRef.current) {
+            flushTimerRef.current = setTimeout(() => {
+              flushTimerRef.current = null;
+              flushTokenBuffer();
+            }, 80);
+          }
+        }
+      }),
+    );
+    unsubs.push(
+      api.onChatStreamEnd(() => {
+        if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
+        flushTokenBuffer();
+        const duration = streamStartTime.current ? ((Date.now() - streamStartTime.current) / 1000).toFixed(1) : null;
+        const finishedMsgId = streamingMsgId.current;
+        streamingMsgId.current = null;
+        streamStartTime.current = 0;
+        setAgentStatus('idle');
+        if (finishedMsgId) {
+          setConversations(prev => prev.map(conv => {
+            if (conv.id !== activeConvIdRef.current) return conv;
+            const msg = conv.messages.find(m => m.id === finishedMsgId);
+            if (msg && !msg.content.trim()) {
+              return {
+                ...conv,
+                messages: conv.messages.map(m =>
+                  m.id === finishedMsgId
+                    ? {
+                        ...m,
+                        content:
+                          '*（本轮未收到任何可见回复：可能已中断、流式出错，或模型在工具调用后未生成正文。请查看运行 DSME 的终端日志或重试。）*',
+                      }
+                    : m
+                ),
+              };
+            }
+            if (duration) {
+              return { ...conv, messages: conv.messages.map(m =>
+                m.id === finishedMsgId ? { ...m, duration: `${duration}s` } : m
+              ) };
+            }
+            return conv;
+          }));
+        }
+      }),
+    );
+    unsubs.push(api.onChatStatus((status: string) => setAgentStatus(status)));
+    if (api.onKernelChanged) {
+      unsubs.push(api.onKernelChanged((k: string) => setKernel(k as 'vercel' | 'builtin')));
+    }
+
+    return () => {
+      unsubs.forEach(fn => {
+        try { fn(); } catch { /* ignore */ }
+      });
+    };
   }, [flushTokenBuffer]);
 
   // ── Menu shortcuts ──

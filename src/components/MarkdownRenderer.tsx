@@ -127,7 +127,8 @@ function renderMarkdown(content: string): string {
     const raw = marked.parse(content) as string;
     return DOMPurify.sanitize(raw, {
       ADD_ATTR: ['data-code'],
-      ALLOW_TAGS: [...DOMPurify.getAllTags().length ? DOMPurify.getAllTags() : [], 'button', 'details', 'summary', 'span'],
+      // Code blocks use <details>/<summary> + <button>; DOMPurify 3.x has no getAllTags().
+      ADD_TAGS: ['details', 'summary', 'button'],
     });
   } catch { return content; }
 }
