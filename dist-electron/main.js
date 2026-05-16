@@ -24724,9 +24724,11 @@ var RAGEngine = class {
 *   - Native View layer compositing (no GuestView overhead)
 *   - Future-proof (webview tag deprecated by Electron)
 *
-* The view is attached as a child of the main BrowserWindow's contentView
-* and positioned via setBounds() — the renderer sends resize/position updates
-* through the 'browser-view-bounds' IPC channel.
+* IMPORTANT: The view is NOT attached to the window at init time.
+* It is deferred until the first navigate() or show() call.
+* This prevents a Chromium-level SIGSEGV (rust_bmp decoder null pointer)
+* that occurs when an idle WebContentsView participates in macOS
+* NSApplication event routing (e.g. right-click anywhere in the window).
 */
 var browser_view_manager_exports = /* @__PURE__ */ require_token_util$1.__exportAll({
 	BrowserViewManager: () => BrowserViewManager,
@@ -24739,6 +24741,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			this.view = null;
 			this.mainWindow = null;
 			this.visible = false;
+			this.attached = false;
 			this.currentUrl = "";
 			this.bounds = {
 				x: 0,
@@ -24757,14 +24760,39 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				nodeIntegration: false,
 				contextIsolation: true
 			} });
-			this.view.webContents.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
-			this.view.setBounds({
-				x: 0,
-				y: 0,
-				width: 0,
-				height: 0
+			const CHROME_VERSION = "131";
+			const CHROME_UA = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION}.0.0.0 Safari/537.36`;
+			this.view.webContents.setUserAgent(CHROME_UA);
+			browserSession.webRequest.onBeforeSendHeaders((details, callback) => {
+				details.requestHeaders["sec-ch-ua"] = `"Google Chrome";v="${CHROME_VERSION}", "Chromium";v="${CHROME_VERSION}", "Not_A Brand";v="24"`;
+				details.requestHeaders["sec-ch-ua-mobile"] = "?0";
+				details.requestHeaders["sec-ch-ua-platform"] = "\"macOS\"";
+				callback({ requestHeaders: details.requestHeaders });
 			});
-			mainWindow.contentView.addChildView(this.view);
+			this.view.webContents.on("dom-ready", () => {
+				this.view?.webContents.executeJavaScript(`
+        Object.defineProperty(navigator, 'userAgentData', {
+          value: {
+            brands: [
+              { brand: "Google Chrome", version: "${CHROME_VERSION}" },
+              { brand: "Chromium", version: "${CHROME_VERSION}" },
+              { brand: "Not_A Brand", version: "24" }
+            ],
+            mobile: false,
+            platform: "macOS",
+            getHighEntropyValues: () => Promise.resolve({
+              architecture: "arm",
+              model: "",
+              platform: "macOS",
+              platformVersion: "15.0.0",
+              uaFullVersion: "${CHROME_VERSION}.0.0.0"
+            })
+          },
+          configurable: true
+        });
+      `).catch(() => {});
+			});
+			this.attached = false;
 			this.view.webContents.on("did-navigate", (_e, url) => {
 				this.currentUrl = url;
 				this.notifyRenderer("browser-view-navigated", {
@@ -24787,25 +24815,36 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				event.preventDefault();
 			});
 			this.view.webContents.on("render-process-gone", (_event, details) => {
-				console.error("[BrowserViewManager] WebContentsView renderer crashed:", details.reason, details.exitCode);
+				console.error("[BrowserViewManager] Renderer crashed:", details.reason, details.exitCode);
 				this.recreateView();
 			});
-			this.view.webContents.loadURL("about:blank");
-			console.log("[BrowserViewManager] Initialized with WebContentsView");
+			console.log("[BrowserViewManager] Initialized with WebContentsView (deferred attach)");
+		}
+		/** Attach the view to the main window on first use. */
+		ensureAttached() {
+			if (this.attached || !this.view || !this.mainWindow || this.mainWindow.isDestroyed()) return;
+			this.view.setBounds({
+				x: 0,
+				y: 0,
+				width: 0,
+				height: 0
+			});
+			this.mainWindow.contentView.addChildView(this.view);
+			this.attached = true;
+			console.log("[BrowserViewManager] View attached to window");
 		}
 		/** Recreate the view after a renderer crash. */
 		recreateView() {
 			if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
 			try {
-				if (this.view) {
-					this.mainWindow.contentView.removeChildView(this.view);
-					try {
-						this.view.webContents.close();
-					} catch {}
-				}
+				if (this.view && this.attached) this.mainWindow.contentView.removeChildView(this.view);
+				if (this.view) try {
+					this.view.webContents.close();
+				} catch {}
 			} catch {}
-			console.log("[BrowserViewManager] Recreating view after crash...");
+			console.log("[BrowserViewManager] Recreating view...");
 			this.view = null;
+			this.attached = false;
 			this.init(this.mainWindow);
 		}
 		/** Clean up on app quit. */
@@ -24819,6 +24858,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		}
 		async navigate(url) {
 			if (!this.view) return "Error: view not initialized";
+			this.ensureAttached();
 			try {
 				await this.view.webContents.loadURL(url);
 				this.currentUrl = url;
@@ -24865,16 +24905,19 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		}
 		setBounds(bounds) {
 			this.bounds = bounds;
-			if (this.visible && this.view) this.view.setBounds(bounds);
+			if (this.visible && this.view && this.attached) this.view.setBounds(bounds);
 		}
 		show(bounds) {
 			if (bounds) this.bounds = bounds;
 			this.visible = true;
-			if (this.view) this.view.setBounds(this.bounds);
+			if (this.view) {
+				this.ensureAttached();
+				this.view.setBounds(this.bounds);
+			}
 		}
 		hide() {
 			this.visible = false;
-			if (this.view) this.view.setBounds({
+			if (this.view && this.attached) this.view.setBounds({
 				x: 0,
 				y: 0,
 				width: 0,

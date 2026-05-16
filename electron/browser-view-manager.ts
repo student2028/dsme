@@ -40,9 +40,43 @@ export class BrowserViewManager {
       },
     });
 
-    this.view.webContents.setUserAgent(
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-    );
+    const CHROME_VERSION = '131';
+    const CHROME_UA = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION}.0.0.0 Safari/537.36`;
+
+    this.view.webContents.setUserAgent(CHROME_UA);
+
+    // Spoof Chrome Client Hints so Google doesn't block sign-in
+    browserSession.webRequest.onBeforeSendHeaders((details, callback) => {
+      details.requestHeaders['sec-ch-ua'] = `"Google Chrome";v="${CHROME_VERSION}", "Chromium";v="${CHROME_VERSION}", "Not_A Brand";v="24"`;
+      details.requestHeaders['sec-ch-ua-mobile'] = '?0';
+      details.requestHeaders['sec-ch-ua-platform'] = '"macOS"';
+      callback({ requestHeaders: details.requestHeaders });
+    });
+
+    // Override navigator.userAgentData in page context (Google checks this)
+    this.view.webContents.on('dom-ready', () => {
+      this.view?.webContents.executeJavaScript(`
+        Object.defineProperty(navigator, 'userAgentData', {
+          value: {
+            brands: [
+              { brand: "Google Chrome", version: "${CHROME_VERSION}" },
+              { brand: "Chromium", version: "${CHROME_VERSION}" },
+              { brand: "Not_A Brand", version: "24" }
+            ],
+            mobile: false,
+            platform: "macOS",
+            getHighEntropyValues: () => Promise.resolve({
+              architecture: "arm",
+              model: "",
+              platform: "macOS",
+              platformVersion: "15.0.0",
+              uaFullVersion: "${CHROME_VERSION}.0.0.0"
+            })
+          },
+          configurable: true
+        });
+      `).catch(() => {});
+    });
 
     // DO NOT addChildView here — defer until first show/navigate.
     this.attached = false;
