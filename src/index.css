@@ -2645,6 +2645,38 @@ html.platform-darwin .app-container:not(:has(.side-panel)) .main-content > .tab-
   background: rgba(74, 222, 128, 0.08);
 }
 
+/* Collapsible raw blocks: tool-output / search-snippet fenced blocks (+ legacy unlabeled dumps) */
+.md-code-tool-output {
+  overflow: visible;
+}
+
+.md-code-tool-output > summary.md-code-header {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.md-code-tool-output:not([open]) > summary.md-code-header {
+  border-bottom: none;
+}
+
+.md-code-tool-output > summary::-webkit-details-marker {
+  display: none;
+}
+
+.md-code-tool-output > summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 8px;
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: transform var(--transition);
+}
+
+.md-code-tool-output[open] > summary::before {
+  transform: rotate(90deg);
+}
+
 .md-code-block pre {
   margin: 0;
   padding: 14px;

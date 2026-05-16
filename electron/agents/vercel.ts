@@ -19,6 +19,7 @@ import { z } from 'zod';
 import type { IAgent, AgentConfig } from './base';
 import { RAGEngine } from './rag';
 import { browsePage } from './browser';
+import { shouldContinueModelText } from './continuation';
 import {
   deriveHistoryBudgetTokens,
   deriveNonUserContentCapChars,
@@ -482,7 +483,12 @@ export class VercelAgent implements IAgent {
             .filter(Boolean)
             .slice(0, 5)
             .join('\n');
-          send('chat-stream-token', preview ? `\n搜索解析完成（${seconds}s），已提取到：\n\`\`\`\n${preview}\n\`\`\`\n` : `\n搜索完成（${seconds}s），但没有提取到可用摘要。\n`);
+          send(
+            'chat-stream-token',
+            preview
+              ? `\n搜索解析完成（${seconds}s），已提取到：\n\`\`\`search-snippet\n${preview}\n\`\`\`\n`
+              : `\n搜索完成（${seconds}s），但没有提取到可用摘要。\n`,
+          );
           return result;
         },
       }),
@@ -591,6 +597,7 @@ export class VercelAgent implements IAgent {
     this.abortController = new AbortController();
     const streamStartedAt = Date.now();
     let fullText = '';
+    let modelText = '';
     let modelTextChars = 0;          // ← Pure model text-delta bytes this run (excludes tool output / watchdog notes)
     let sawToolCallPart = false;     // ← Last step emitted a tool-call part (truncation would be on args, not final text)
     let lastEventWasText = false;    // ← Most recent stream event was text-delta (vs tool-call)
@@ -673,6 +680,7 @@ export class VercelAgent implements IAgent {
             const rawDelta = (part as any).text ?? (part as any).textDelta;
             let delta = rawDelta == null ? '' : typeof rawDelta === 'string' ? rawDelta : String(rawDelta);
             if (delta.length) {
+              modelText += delta;
               modelTextChars += delta.length;
               lastEventWasText = true;
             }
@@ -800,11 +808,14 @@ export class VercelAgent implements IAgent {
       //      (Volcengine Doubao, etc.) sporadically self-terminate after tool rounds while
       //      still inside a Chinese clause. We detect this by tail punctuation.
       // We only continue when the last stream step was model TEXT (not tool-call args).
-      const tail = fullText.replace(/\s+$/, '').slice(-4);
-      const endsWithTerminator = /[。！？.!?](["'’」』）)]*|```\s*)$/.test(tail) || tail.endsWith('```');
-      const looksMidSentence = lastStepWasText && modelTextChars > 20 && !endsWithTerminator;
+      const modelTail = modelText.replace(/\s+$/, '').slice(-12);
       const isLengthTrunc = finishReason === 'length' && lastStepWasText;
-      const isSoftTrunc = finishReason === 'stop' && looksMidSentence;
+      const isSoftTrunc = shouldContinueModelText({
+        finishReason,
+        modelText,
+        lastStepWasText,
+        lastMessageHasToolCall: !!lastMsgHasToolCall,
+      });
       // Some providers report 'unknown'/'other'/'error' when SSE is cut mid-stream.
       const fr = String(finishReason ?? '');
       const isAmbiguousTrunc =
@@ -832,7 +843,7 @@ export class VercelAgent implements IAgent {
               : isEmptyResponse
                 ? `empty(${fr || 'no-fr'})`
                 : `ambiguous(${fr})`;
-          console.warn(`[VercelAgent] Output truncated (${reason}), continuing loop (${this.truncationCount}/5), tail=${JSON.stringify(tail)}, modelTextChars=${modelTextChars}`);
+          console.warn(`[VercelAgent] Output truncated (${reason}), continuing loop (${this.truncationCount}/5), modelTail=${JSON.stringify(modelTail)}, modelTextChars=${modelTextChars}, finishReason=${finishReason}`);
           // Preserve full conversation context for next iteration:
           // push all messages produced in this run (assistant text, tool-calls, tool-results)
           // so the model sees its prior tool I/O on retry. Fall back to plain-text persistence
@@ -853,7 +864,12 @@ export class VercelAgent implements IAgent {
           } else if (isSoftTrunc || isAmbiguousTrunc) {
             this.messages.push({
               role: 'user',
-              content: '继续，从上次中断处无缝接着写，不要重复已经说过的内容，不要任何客套或元说明。',
+              content: '继续，从上次中断处无缝接着写到完整句号结尾。不要重复已经说过的内容，不要任何客套或元说明。',
+            });
+          } else if (isLengthTrunc) {
+            this.messages.push({
+              role: 'user',
+              content: '输出因token长度限制被截断，请接着完成剩余内容，不要重复已经输出的部分。',
             });
           }
           clearTimeout(timeoutId);
@@ -880,7 +896,10 @@ export class VercelAgent implements IAgent {
         if (toolTexts.trim()) {
           const cap = this.getToolResultCapChars();
           const display = toolTexts.length > cap ? `${toolTexts.slice(0, cap)}\n\n...(truncated)` : toolTexts;
-          this.send('chat-stream-token', `\n\n### 工具输出\n\n${display}\n`);
+          this.send(
+            'chat-stream-token',
+            `\n\n### 工具输出\n\n\`\`\`tool-output\n${display}\n\`\`\`\n`,
+          );
         } else {
           this.send(
             'chat-stream-token',

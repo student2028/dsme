@@ -43,7 +43,7 @@ function formatVisibleToolOutput(toolName: string | undefined, value: unknown, c
     cap,
   );
   const label = toolName ? ` (${toolName})` : '';
-  return `\n\n### 工具输出${label}\n\n\`\`\`\n${body}\n\`\`\`\n`;
+  return `\n\n### 工具输出${label}\n\n\`\`\`tool-output\n${body}\n\`\`\`\n`;
 }
 
 export function visibleTextFromStreamPart(part: any, cap = DEFAULT_VISIBLE_TOOL_OUTPUT_CAP): string {

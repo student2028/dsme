@@ -341,7 +341,7 @@ export class BuiltinAgent implements IAgent {
             result.length > visibleCap ? `${result.slice(0, visibleCap)}\n...(truncated)` : result;
           this.send(
             'chat-stream-token',
-            `\n\n### 工具输出 (${tc.name})\n\n\`\`\`\n${preview}\n\`\`\`\n`,
+            `\n\n### 工具输出 (${tc.name})\n\n\`\`\`tool-output\n${preview}\n\`\`\`\n`,
           );
 
           this.messages.push({
@@ -475,7 +475,12 @@ export class BuiltinAgent implements IAgent {
           }
           const seconds = ((Date.now() - started) / 1000).toFixed(1);
           const preview = rawResult.split('\n').map(line => line.trim()).filter(Boolean).slice(0, 5).join('\n');
-          this.send('chat-stream-token', preview ? `\n搜索解析完成（${seconds}s），已提取到：\n\`\`\`\n${preview}\n\`\`\`\n` : `\n搜索完成（${seconds}s），但没有提取到可用摘要。\n`);
+          this.send(
+            'chat-stream-token',
+            preview
+              ? `\n搜索解析完成（${seconds}s），已提取到：\n\`\`\`search-snippet\n${preview}\n\`\`\`\n`
+              : `\n搜索完成（${seconds}s），但没有提取到可用摘要。\n`,
+          );
           return result;
         }
         case 'fetch_url': return await fetchUrl(args.url);

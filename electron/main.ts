@@ -22,6 +22,7 @@ process.stderr.on('error', (e: any) => { if (e.code !== 'EPIPE') throw e; });
 // Global safety net — log and survive unexpected errors instead of silent crash
 process.on('uncaughtException', (err) => {
   console.error('[DSME] Uncaught exception:', err.message, err.stack);
+  try { win?.webContents.send('fatal-error', err.message); } catch {}
 });
 process.on('unhandledRejection', (reason) => {
   console.error('[DSME] Unhandled rejection:', reason);
@@ -44,7 +45,7 @@ const cdpProxy = net.createServer((src) => {
   dst.on('error', () => src.destroy());
 });
 cdpProxy.listen(CDP_EXTERNAL, '0.0.0.0', () => console.log(`[CDP] 0.0.0.0:${CDP_EXTERNAL} ready`));
-cdpProxy.on('error', () => {});
+cdpProxy.on('error', (e: any) => { console.error('[CDP] Proxy error:', e?.message || e); });
 
 let win: BrowserWindow | null
 let agent: IAgent | null = null
@@ -337,7 +338,7 @@ async function createWindow() {
     icon: join(__dirname, '../assets/icon.png'),
     webPreferences: {
       preload: join(__dirname, '../dist-electron/preload.js'),
-      nodeIntegration: true, contextIsolation: true,
+      nodeIntegration: false, contextIsolation: true,
       webviewTag: true,
     },
   });
@@ -383,7 +384,7 @@ async function initAgent() {
     maxOutputTokens: config.maxOutputTokens,
     maxContextTokens: config.maxContextTokens,
   };
-  console.log(`[Agent] Config: apiKey=${config.apiKey ? config.apiKey.slice(0, 8) + '...' : 'EMPTY'}, model=${config.model}, baseUrl=${config.baseUrl}, maxOutputTokens=${config.maxOutputTokens}, maxContextTokens=${config.maxContextTokens}`);
+  console.log(`[Agent] Config: apiKey=${config.apiKey ? '***SET***' : 'EMPTY'}, model=${config.model}, baseUrl=${config.baseUrl}, maxOutputTokens=${config.maxOutputTokens}, maxContextTokens=${config.maxContextTokens}`);
 
   if (currentKernel === 'builtin') {
     console.log('[Agent] Initializing Built-in kernel');
@@ -490,13 +491,20 @@ async function getGitBranch(dir: string) {
   catch { return ''; }
 }
 
+let gitStatusCache: Map<string, 'modified' | 'untracked'> = new Map();
+let gitStatusCacheTime = 0;
+const GIT_CACHE_TTL = 5000;
+
 async function getGitStatus(dir: string) {
+  if (Date.now() - gitStatusCacheTime < GIT_CACHE_TTL) return gitStatusCache;
   try {
     const { stdout } = await execAsync('git status --porcelain', { cwd: dir });
     const m = new Map<string, 'modified' | 'untracked'>();
     stdout.split('\n').filter(l => l.trim()).forEach(l => {
       m.set(l.substring(3).trim(), l.substring(0, 2).includes('?') ? 'untracked' : 'modified');
     });
+    gitStatusCache = m;
+    gitStatusCacheTime = Date.now();
     return m;
   } catch { return new Map(); }
 }
@@ -518,7 +526,11 @@ async function buildFileTree(dir: string) {
   } catch { return []; }
 }
 
-ipcMain.handle('get-file-tree', (_, dir?: string) => buildFileTree(dir || currentWorkspacePath));
+ipcMain.handle('get-file-tree', (_, dir?: string) => {
+  const target = dir || currentWorkspacePath;
+  if (!isWithinWorkspace(target)) return [];
+  return buildFileTree(target);
+});
 ipcMain.handle('get-git-branch', () => getGitBranch(currentWorkspacePath));
 
 ipcMain.handle('get-git-status', async () => {
@@ -559,13 +571,25 @@ ipcMain.handle('open-workspace', async () => {
   const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
   if (r.canceled || r.filePaths.length === 0) return null;
   currentWorkspacePath = r.filePaths[0];
-  process.chdir(currentWorkspacePath);
+  fileCacheTime = 0;
   startPty(); await initAgent();
   return currentWorkspacePath;
 });
 
-ipcMain.handle('read-file', (_, fp) => fs.readFile(fp, 'utf8'));
+function isWithinWorkspace(fp: string): boolean {
+  try {
+    const resolved = path.resolve(fp);
+    const ws = path.resolve(currentWorkspacePath) + path.sep;
+    return resolved.startsWith(ws) || resolved === path.resolve(currentWorkspacePath);
+  } catch { return false; }
+}
+
+ipcMain.handle('read-file', (_, fp) => {
+  if (!isWithinWorkspace(fp)) throw new Error('Access denied: path outside workspace');
+  return fs.readFile(fp, 'utf8');
+});
 ipcMain.handle('write-file', async (_, fp, content) => {
+  if (!isWithinWorkspace(fp)) throw new Error('Access denied: path outside workspace');
   try { await fs.writeFile(fp, content, 'utf8'); return true; }
   catch { return false; }
 });

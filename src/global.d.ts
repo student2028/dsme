@@ -30,16 +30,17 @@ interface AppConfig {
   activeProvider: string;
 }
 
+type Unsubscribe = () => void;
+
 declare global {
   interface Window {
-    /** Set when `<App />` has mounted — CDP smoke uses this before probing DOM. */
     __DSME_READY?: boolean;
     electronAPI: {
       sendChatMessage: (message: string) => void;
-      onChatStreamStart: (callback: () => void) => void;
-      onChatStreamToken: (callback: (token: string) => void) => void;
-      onChatStreamEnd: (callback: () => void) => void;
-      onChatStatus: (callback: (status: string) => void) => void;
+      onChatStreamStart: (callback: () => void) => Unsubscribe;
+      onChatStreamToken: (callback: (token: string) => void) => Unsubscribe;
+      onChatStreamEnd: (callback: () => void) => Unsubscribe;
+      onChatStatus: (callback: (status: string) => void) => Unsubscribe;
       getFileTree: (dir?: string) => Promise<FileNode[]>;
       openWorkspace: () => Promise<string | null>;
       readFile: (filepath: string) => Promise<string>;
@@ -49,12 +50,12 @@ declare global {
       getGitBranch: () => Promise<string>;
       getGitStatus: () => Promise<{ status: string; path: string; staged: boolean }[]>;
       gitCommit: (msg: string) => Promise<string>;
-      onTerminalOutput: (callback: (data: string) => void) => void;
+      onTerminalOutput: (callback: (data: string) => void) => Unsubscribe;
       sendTerminalInput: (data: string) => void;
       updateTitle: (title: string) => void;
-      onMenuAction: (callback: (action: string) => void) => void;
-      onFileChanged: (callback: (filepath: string) => void) => void;
-      onDiffPreview: (callback: (change: DiffChange) => void) => void;
+      onMenuAction: (callback: (action: string) => void) => Unsubscribe;
+      onFileChanged: (callback: (filepath: string) => void) => Unsubscribe;
+      onDiffPreview: (callback: (change: DiffChange) => void) => Unsubscribe;
       acceptDiff: (changeId: string) => void;
       rejectDiff: (changeId: string) => void;
       getConfig: () => Promise<AppConfig>;
@@ -65,24 +66,22 @@ declare global {
       loadConversations: () => Promise<string | null>;
       cancelChatRequest: () => void;
       resetConversation: () => void;
-      onRagStatus: (callback: (count: number) => void) => void;
-      onKernelChanged: (callback: (kernel: string) => void) => void;
+      onRagStatus: (callback: (count: number) => void) => Unsubscribe;
+      onKernelChanged: (callback: (kernel: string) => void) => Unsubscribe;
       switchKernel: (kernel: string) => void;
-      // Web search — webview delegation
-      onWebSearchExecute?: (callback: (data: {
+      onWebSearchExecute: (callback: (data: {
         query: string;
         stopOnFirstResult?: boolean;
         engines: { label: string; url: string; extractJS: string }[];
-      }) => void) => void;
-      sendWebSearchResults?: (results: string) => void;
-      // Browser-use — command execution
-      onBrowserCommand?: (callback: (cmd: {
+      }) => void) => Unsubscribe;
+      sendWebSearchResults: (results: string) => void;
+      onBrowserCommand: (callback: (cmd: {
         id: string;
         command: string;
         sessionTitle?: string;
         [key: string]: unknown;
-      }) => void) => void;
-      sendBrowserResult?: (id: string, result: string) => void;
+      }) => void) => Unsubscribe;
+      sendBrowserResult: (id: string, result: string) => void;
     };
   }
 }

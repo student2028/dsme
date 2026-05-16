@@ -149,10 +149,12 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   const flushTokenBuffer = useCallback(() => {
     const buffered = tokenBufferRef.current;
     if (!buffered) return;
+    const targetMsgId = streamingMsgId.current;
+    if (!targetMsgId) return;
     tokenBufferRef.current = '';
     setConversations(prev => prev.map(conv => {
       if (conv.id !== activeConvIdRef.current) return conv;
-      return { ...conv, messages: conv.messages.map(m => m.id === streamingMsgId.current ? { ...m, content: m.content + buffered } : m) };
+      return { ...conv, messages: conv.messages.map(m => m.id === targetMsgId ? { ...m, content: m.content + buffered } : m) };
     }));
   }, []);
 

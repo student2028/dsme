@@ -27,6 +27,10 @@ import {
   visibleTextFromStreamPart,
 } from '../electron/agents/stream-output.ts';
 import {
+  looksLikeIncompleteModelText,
+  shouldContinueModelText,
+} from '../electron/agents/continuation.ts';
+import {
   DEFAULT_MAX_CONTEXT_TOKENS,
   DEFAULT_MAX_OUTPUT_TOKENS,
   deriveNonUserContentCapChars,
@@ -220,6 +224,7 @@ console.log('\n🧰 Stream Tool Output Visibility');
     result: 'Results from Sogou:\n河南禹州明天天气：多云，20-33°C',
   });
   assert(toolResult.includes('工具输出'), 'Tool result is rendered as visible chat text');
+  assert(toolResult.includes('```tool-output'), 'Tool result uses collapsible tool-output fence');
   assert(toolResult.includes('河南禹州明天天气'), 'Tool result preserves useful output text');
 
   const outputAvailable = visibleTextFromStreamPart({
@@ -278,6 +283,26 @@ console.log('\n🧮 Model Token Limit Config');
   assert(limits.maxContextTokens === 64000, 'MAX_CONTEXT_TOKENS is parsed from env');
   assert(deriveNonUserContentCapChars(128000) > 3000, 'Large context budget raises non-user history cap');
   assert(deriveToolResultCapChars(128000) >= 128000, 'Large context budget raises tool result cap');
+}
+
+// ── Test 10: Mid-sentence continuation detection ──
+console.log('\n✂️ Mid-sentence Continuation Detection');
+{
+  const incomplete = '提示：出行需做好防晒防暑，农业区域注意防范干热风对';
+  assert(looksLikeIncompleteModelText(incomplete), 'Chinese answer ending mid-clause is incomplete');
+  assert(!looksLikeIncompleteModelText(`${incomplete}小麦生长的不利影响。`), 'Chinese answer ending with punctuation is complete');
+  assert(shouldContinueModelText({
+    finishReason: 'tool-calls',
+    modelText: incomplete,
+    lastStepWasText: true,
+    lastMessageHasToolCall: false,
+  }), 'Mid-sentence text continues even when provider finish reason is not stop');
+  assert(!shouldContinueModelText({
+    finishReason: 'tool-calls',
+    modelText: incomplete,
+    lastStepWasText: true,
+    lastMessageHasToolCall: true,
+  }), 'Tool-call argument streams are not treated as final-answer truncation');
 }
 
 // Cleanup
