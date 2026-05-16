@@ -268,7 +268,7 @@ function App() {
       )}
 
       <main className="main-content">
-        <div className="tab-bar" onDoubleClick={() => setCmdPaletteOpen(true)}>
+        <div className="tab-bar" onDoubleClick={() => setCmdPaletteOpen(true)} onContextMenu={(e) => e.preventDefault()}>
           {tabs.map(tab => (
             <div key={tab.path} onClick={() => setActivePath(tab.path)}
               onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); handleCloseTab(e as any, tab.path); } }}
