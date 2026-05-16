@@ -84,6 +84,7 @@ declare global {
       onBrowserViewNavigated: (callback: (data: { url: string; title: string }) => void) => Unsubscribe;
       onBrowserStep: (callback: (data: any) => void) => Unsubscribe;
       onBrowserPanelOpen: (callback: () => void) => Unsubscribe;
+      startWindowDrag: () => void;
     };
   }
 }

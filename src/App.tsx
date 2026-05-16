@@ -268,7 +268,18 @@ function App() {
       )}
 
       <main className="main-content">
-        <div className="tab-bar" onDoubleClick={() => setCmdPaletteOpen(true)} onContextMenu={(e) => e.preventDefault()}>
+        <div className="tab-bar" 
+             onDoubleClick={() => setCmdPaletteOpen(true)} 
+             onContextMenu={(e) => e.preventDefault()}
+             onMouseDown={(e) => {
+               // Initiate custom JS drag if clicking on the empty space
+               const target = e.target as HTMLElement;
+               if (target === e.currentTarget || target.className === 'tab-empty') {
+                 if (e.detail === 2 || e.button !== 0) return; // allow double-click, ignore right-click
+                 window.electronAPI?.startWindowDrag?.();
+               }
+             }}
+        >
           {tabs.map(tab => (
             <div key={tab.path} onClick={() => setActivePath(tab.path)}
               onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); handleCloseTab(e as any, tab.path); } }}

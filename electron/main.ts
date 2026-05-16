@@ -337,7 +337,8 @@ async function createWindow() {
     minWidth: 900, minHeight: 600,
     titleBarStyle: 'hiddenInset', backgroundColor: '#000000',
     title: 'DSME — DeepSeek Matrix Engine',
-    icon: join(__dirname, '../assets/icon.png'),
+    // icon parameter removed to prevent macOS proxy icon generation on right-click
+    // which triggers the rust_bmp SIGSEGV crash when WebContentsView is attached.
     webPreferences: {
       preload: join(__dirname, '../dist-electron/preload.js'),
       nodeIntegration: false, contextIsolation: true,
@@ -621,6 +622,15 @@ ipcMain.handle('read-file', (_, fp) => {
   if (!isWithinWorkspace(fp)) throw new Error('Access denied: path outside workspace');
   return fs.readFile(fp, 'utf8');
 });
+
+// Window drag API to bypass -webkit-app-region: drag bugs
+ipcMain.on('start-window-drag', (e) => {
+  const window = BrowserWindow.fromWebContents(e.sender);
+  if (window && !window.isDestroyed()) {
+    window.startWindowDrag();
+  }
+});
+
 ipcMain.handle('write-file', async (_, fp, content) => {
   if (!isWithinWorkspace(fp)) throw new Error('Access denied: path outside workspace');
   try { await fs.writeFile(fp, content, 'utf8'); return true; }

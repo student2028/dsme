@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getGitBranch: () => ipcRenderer.invoke('get-git-branch'),
   getGitStatus: () => ipcRenderer.invoke('get-git-status'),
   gitCommit: (msg: string) => ipcRenderer.invoke('git-commit', msg),
+  startWindowDrag: () => ipcRenderer.send('start-window-drag'),
 
   onTerminalOutput: createSingleListenerChannel('terminal-output'),
   sendTerminalInput: (data: string) => ipcRenderer.send('terminal-input', data),
