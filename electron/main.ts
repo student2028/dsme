@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { VercelAgent } from './agents/vercel'
 import { BuiltinAgent } from './agents/builtin'
 import type { IAgent } from './agents/base'
+import { browserViewManager } from './browser-view-manager'
 import { DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS, getTokenLimitsFromEnv } from './agents/token-config'
 import * as os from 'node:os'
 import * as cp from 'node:child_process'
@@ -340,7 +341,6 @@ async function createWindow() {
     webPreferences: {
       preload: join(__dirname, '../dist-electron/preload.js'),
       nodeIntegration: false, contextIsolation: true,
-      webviewTag: true,
     },
   });
 
@@ -369,6 +369,21 @@ async function createWindow() {
   }
 
   buildMenu();
+
+  // Initialize WebContentsView-based browser panel
+  browserViewManager.init(win);
+
+  // IPC: Renderer tells us where the browser panel placeholder is
+  ipcMain.on('browser-view-bounds', (_: any, bounds: { x: number; y: number; width: number; height: number }) => {
+    browserViewManager.setBounds(bounds);
+  });
+  ipcMain.on('browser-view-show', (_: any, bounds?: { x: number; y: number; width: number; height: number }) => {
+    browserViewManager.show(bounds);
+  });
+  ipcMain.on('browser-view-hide', () => {
+    browserViewManager.hide();
+  });
+
   initAgent(); startPty();
 }
 
@@ -418,6 +433,7 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 app.on('before-quit', () => {
   if (ptyProcess) { ptyProcess.kill(); ptyProcess = null; }
   if (agent) { agent.destroy(); agent = null; }
+  browserViewManager.destroy();
   cdpProxy.close();
 });
 app.whenReady().then(async () => {

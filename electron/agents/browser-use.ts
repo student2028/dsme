@@ -1,8 +1,8 @@
 /**
  * DSME Browser-Use — Long-running browser agent tools
  *
- * Uses Electron webview's executeJavaScript() for zero-distance DOM operations.
- * No CDP, no WebSocket, no external process — the webview IS the browser.
+ * Uses WebContentsView via BrowserViewManager for zero-distance DOM operations.
+ * All tools execute directly in the main process — no IPC to renderer.
  *
  * Tool set:
  *   browser_task_start(goal) — begin a named session (timeline heading + grouping)
@@ -16,7 +16,9 @@
  *   browser_eval(script)    — run arbitrary JS in page context
  */
 
-// ── Snapshot JS — runs inside the webview page context ──
+import { browserViewManager } from '../browser-view-manager';
+
+// ── Snapshot JS — runs inside the page context ──
 // Builds an accessibility-tree-like text representation.
 // Each interactive element gets a ref (e1, e2, ...) stored as a data attribute.
 const SNAPSHOT_SCRIPT = `(function() {
@@ -166,102 +168,101 @@ function scrollScript(direction: 'up' | 'down'): string {
   })()`;
 }
 
-/** Active multi-step browser session title (set by browser_task_start, cleared by browser_task_finish). */
+/** Active multi-step browser session title. */
 let activeSessionTitle: string | null = null;
 
-function commandTimeoutMs(command: string): number {
-  switch (command) {
-    case 'navigate':
-      return 60_000;
-    case 'snapshot':
-      return 45_000;
-    case 'eval':
-      return 120_000;
-    case 'back':
-      return 30_000;
-    case 'task_start':
-    case 'task_finish':
-      return 15_000;
-    default:
-      return 45_000;
-  }
-}
-
-// ── IPC command sender — shared by all tools ──
-function sendBrowserCommand(
-  command: string,
-  params: Record<string, any> = {},
-  timeoutMs?: number,
-): Promise<string> {
-  const ms = timeoutMs ?? commandTimeoutMs(command);
-  const { BrowserWindow: BW, ipcMain } = require('electron');
+/** Notify renderer about browser-use steps (for UI timeline). */
+function notifyBrowserStep(command: string, params: Record<string, any>, result: string) {
+  const { BrowserWindow: BW } = require('electron');
   const allWindows = BW.getAllWindows();
   const mainWindow = allWindows.find((w: any) => w.getTitle()?.includes('DSME')) || allWindows[0];
-  if (!mainWindow) return Promise.resolve('Error: no main window');
+  if (!mainWindow) return;
 
-  const payload: Record<string, any> = { id: '', command, ...params };
-  if (command !== 'task_start' && command !== 'task_finish' && activeSessionTitle) {
-    payload.sessionTitle = activeSessionTitle;
-  }
-
-  return new Promise<string>((resolve) => {
-    const id = `cmd_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    payload.id = id;
-    const timeoutId = setTimeout(() => {
-      ipcMain.removeAllListeners(`browser-result-${id}`);
-      resolve(`Error: browser command timed out after ${ms}ms`);
-    }, ms);
-
-    ipcMain.once(`browser-result-${id}`, (_: any, result: string) => {
-      clearTimeout(timeoutId);
-      resolve(result);
-    });
-
-    mainWindow.webContents.send('browser-command', payload);
+  mainWindow.webContents.send('browser-step', {
+    command,
+    sessionTitle: activeSessionTitle,
+    params,
+    result,
+    timestamp: Date.now(),
   });
-}
-
-/** Start a named browser task so the UI timeline groups all following browser_* steps (call once per multi-step goal). */
-export async function browserTaskStart(goal: string): Promise<string> {
-  const title = String(goal || '').trim().slice(0, 240) || 'Browser task';
-  activeSessionTitle = title;
-  return sendBrowserCommand('task_start', { goal: title });
-}
-
-/** End the current browser task session (optional short summary for the user-visible banner). */
-export async function browserTaskFinish(summary?: string): Promise<string> {
-  const prev = activeSessionTitle;
-  activeSessionTitle = null;
-  const s = String(summary ?? '').trim().slice(0, 2000);
-  return sendBrowserCommand('task_finish', { summary: s, sessionTitle: prev || undefined });
 }
 
 // ── Exported tool functions (called by the agent) ──
 
+/** Start a named browser task. */
+export async function browserTaskStart(goal: string): Promise<string> {
+  const title = String(goal || '').trim().slice(0, 240) || 'Browser task';
+  activeSessionTitle = title;
+  notifyBrowserStep('task_start', { goal: title }, title);
+  return `Browser task started: ${title}`;
+}
+
+/** End the current browser task session. */
+export async function browserTaskFinish(summary?: string): Promise<string> {
+  const prev = activeSessionTitle;
+  activeSessionTitle = null;
+  const s = String(summary ?? '').trim().slice(0, 2000);
+  notifyBrowserStep('task_finish', { summary: s, sessionTitle: prev || undefined }, s || 'finished');
+  return s ? `Browser task finished.\n${s}` : 'Browser task finished.';
+}
+
+/** Navigate to URL — directly via WebContentsView. */
 export async function browserNavigate(url: string): Promise<string> {
-  return sendBrowserCommand('navigate', { url });
+  // Ensure browser panel is visible in the UI
+  ensureBrowserPanelOpen();
+  const result = await browserViewManager.navigate(url);
+  notifyBrowserStep('navigate', { url }, result);
+  return result;
 }
 
+/** Get a text snapshot of the current page. */
 export async function browserSnapshot(): Promise<string> {
-  return sendBrowserCommand('snapshot', { script: SNAPSHOT_SCRIPT });
+  const result = await browserViewManager.executeJS(SNAPSHOT_SCRIPT);
+  notifyBrowserStep('snapshot', {}, `${result.split('\n').length} lines`);
+  return result;
 }
 
+/** Click element by ref. */
 export async function browserClick(ref: string): Promise<string> {
-  return sendBrowserCommand('eval', { script: clickScript(ref) });
+  const result = await browserViewManager.executeJS(clickScript(ref));
+  notifyBrowserStep('click', { ref }, result);
+  return result;
 }
 
+/** Type into element by ref. */
 export async function browserType(ref: string, text: string): Promise<string> {
-  return sendBrowserCommand('eval', { script: typeScript(ref, text) });
+  const result = await browserViewManager.executeJS(typeScript(ref, text));
+  notifyBrowserStep('type', { ref, text }, result);
+  return result;
 }
 
+/** Scroll page. */
 export async function browserScroll(direction: 'up' | 'down'): Promise<string> {
-  return sendBrowserCommand('eval', { script: scrollScript(direction) });
+  const result = await browserViewManager.executeJS(scrollScript(direction));
+  notifyBrowserStep('scroll', { direction }, result);
+  return result;
 }
 
+/** Go back in history. */
 export async function browserBack(): Promise<string> {
-  return sendBrowserCommand('back');
+  const result = await browserViewManager.goBack();
+  notifyBrowserStep('back', {}, result);
+  return result;
 }
 
+/** Run arbitrary JS in page context. */
 export async function browserEval(script: string): Promise<string> {
-  return sendBrowserCommand('eval', { script });
+  const result = await browserViewManager.executeJS(script);
+  notifyBrowserStep('eval', { script: script.slice(0, 200) }, result.slice(0, 500));
+  return result;
+}
+
+/** Tell the renderer to open the browser panel tab. */
+function ensureBrowserPanelOpen() {
+  const { BrowserWindow: BW } = require('electron');
+  const allWindows = BW.getAllWindows();
+  const mainWindow = allWindows.find((w: any) => w.getTitle()?.includes('DSME')) || allWindows[0];
+  if (mainWindow) {
+    mainWindow.webContents.send('browser-panel-open');
+  }
 }

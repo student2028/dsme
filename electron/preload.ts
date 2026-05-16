@@ -90,4 +90,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sendBrowserResult: (id: string, result: string) => {
     ipcRenderer.send(`browser-result-${id}`, result);
   },
+
+  // WebContentsView-based browser panel
+  syncBrowserBounds: (bounds: { x: number; y: number; width: number; height: number }) => {
+    ipcRenderer.send('browser-view-bounds', bounds);
+  },
+  showBrowserView: (bounds?: { x: number; y: number; width: number; height: number }) => {
+    ipcRenderer.send('browser-view-show', bounds);
+  },
+  hideBrowserView: () => {
+    ipcRenderer.send('browser-view-hide');
+  },
+  onBrowserViewNavigated: createMultiSubscriberChannel('browser-view-navigated'),
+  onBrowserStep: createMultiSubscriberChannel('browser-step'),
+  onBrowserPanelOpen: createMultiSubscriberChannel('browser-panel-open'),
 });
