@@ -464,7 +464,12 @@ app.whenReady().then(async () => {
     } catch { return true; } // First run
   })();
   if (needsSync) {
-    syncChromeCookies(session.defaultSession)
+    // Sync to both default session AND the browser panel session
+    const browserSession = session.fromPartition('persist:browser-panel');
+    Promise.all([
+      syncChromeCookies(session.defaultSession),
+      syncChromeCookies(browserSession),
+    ])
       .then(() => require('fs').writeFileSync(syncFlag, String(Date.now())))
       .catch(() => {});
   }

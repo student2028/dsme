@@ -27982,7 +27982,10 @@ electron.app.whenReady().then(async () => {
 		} catch {
 			return true;
 		}
-	})()) syncChromeCookies(electron.session.defaultSession).then(() => require("fs").writeFileSync(syncFlag, String(Date.now()))).catch(() => {});
+	})()) {
+		const browserSession = electron.session.fromPartition("persist:browser-panel");
+		Promise.all([syncChromeCookies(electron.session.defaultSession), syncChromeCookies(browserSession)]).then(() => require("fs").writeFileSync(syncFlag, String(Date.now()))).catch(() => {});
+	}
 	createWindow();
 	electron.app.on("activate", () => {
 		if (electron.BrowserWindow.getAllWindows().length === 0) createWindow();
