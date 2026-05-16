@@ -48,11 +48,17 @@ export async function browsePage(opts: BrowsePageOptions): Promise<string> {
     }
 
     // Step 3: Execute the user's script in the page context.
-    // browserEval uses BrowserPanel's execJS with a 115s timeout.
-    // Wrap in async IIFE so the user can use await.
+    // Wrap in async IIFE. If the script has no explicit `return`, we try to
+    // capture the last expression value. Results are force-stringified to avoid
+    // non-serializable values (DOM nodes, Map/Set) causing undefined/null errors.
     const wrappedScript = `(async () => {
       try {
-        ${script}
+        const __result = await (async () => { ${script} })();
+        if (__result === undefined || __result === null) {
+          // Script had no return — try extracting page text as fallback
+          return document.body?.innerText?.slice(0, 8000) || 'Script completed but returned no value.';
+        }
+        return typeof __result === 'string' ? __result : JSON.stringify(__result);
       } catch (e) {
         return 'Script error: ' + (e.message || String(e));
       }

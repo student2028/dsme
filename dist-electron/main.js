@@ -25126,7 +25126,12 @@ async function browsePage(opts) {
 		if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
 		return await browserEval(`(async () => {
       try {
-        ${script}
+        const __result = await (async () => { ${script} })();
+        if (__result === undefined || __result === null) {
+          // Script had no return — try extracting page text as fallback
+          return document.body?.innerText?.slice(0, 8000) || 'Script completed but returned no value.';
+        }
+        return typeof __result === 'string' ? __result : JSON.stringify(__result);
       } catch (e) {
         return 'Script error: ' + (e.message || String(e));
       }
