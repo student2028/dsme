@@ -73,14 +73,37 @@ export class BrowserViewManager {
     });
 
     // Suppress right-click context menu on WebContentsView
-    // Building a custom Menu can trigger Chromium-level crashes in some configurations.
-    // Simply prevent the default to avoid crashes — browser navigation is handled via
-    // the agent tools (browser_back, browser_navigate, etc.)
     this.view.webContents.on('context-menu', (event) => {
       event.preventDefault();
     });
 
+    // Prevent WebContentsView renderer crash from taking down the entire app
+    this.view.webContents.on('render-process-gone', (_event, details) => {
+      console.error('[BrowserViewManager] WebContentsView renderer crashed:', details.reason, details.exitCode);
+      // Recreate the view after a crash
+      this.recreateView();
+    });
+
+    // Load about:blank immediately so webContents is in a valid state
+    // (prevents Chromium-level segfaults when the view receives events while blank)
+    this.view.webContents.loadURL('about:blank');
+
     console.log('[BrowserViewManager] Initialized with WebContentsView');
+  }
+
+  /** Recreate the view after a renderer crash. */
+  private recreateView() {
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+    try {
+      if (this.view) {
+        this.mainWindow.contentView.removeChildView(this.view);
+        try { this.view.webContents.close(); } catch {}
+      }
+    } catch {}
+    // Re-run init to create a fresh view
+    console.log('[BrowserViewManager] Recreating view after crash...');
+    this.view = null;
+    this.init(this.mainWindow);
   }
 
   /** Clean up on app quit. */

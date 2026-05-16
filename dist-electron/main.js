@@ -24783,68 +24783,8 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				if (url && url.startsWith("http")) this.view.webContents.loadURL(url);
 				return { action: "deny" };
 			});
-			this.view.webContents.on("context-menu", (_event, params) => {
-				try {
-					const { Menu, MenuItem } = require("electron");
-					if (!this.view || !this.mainWindow || this.mainWindow.isDestroyed()) return;
-					const menu = new Menu();
-					const wc = this.view.webContents;
-					if (params.linkURL) {
-						menu.append(new MenuItem({
-							label: "在当前页面打开链接",
-							click: () => {
-								try {
-									wc.loadURL(params.linkURL);
-								} catch {}
-							}
-						}));
-						menu.append(new MenuItem({ type: "separator" }));
-					}
-					menu.append(new MenuItem({
-						label: "后退",
-						enabled: wc.navigationHistory?.canGoBack() ?? false,
-						click: () => {
-							try {
-								wc.navigationHistory.goBack();
-							} catch {}
-						}
-					}));
-					menu.append(new MenuItem({
-						label: "前进",
-						enabled: wc.navigationHistory?.canGoForward() ?? false,
-						click: () => {
-							try {
-								wc.navigationHistory.goForward();
-							} catch {}
-						}
-					}));
-					menu.append(new MenuItem({
-						label: "刷新",
-						click: () => {
-							try {
-								wc.reload();
-							} catch {}
-						}
-					}));
-					menu.append(new MenuItem({ type: "separator" }));
-					if (params.selectionText) menu.append(new MenuItem({
-						label: "复制",
-						role: "copy"
-					}));
-					if (params.isEditable) {
-						menu.append(new MenuItem({
-							label: "粘贴",
-							role: "paste"
-						}));
-						menu.append(new MenuItem({
-							label: "全选",
-							role: "selectAll"
-						}));
-					}
-					menu.popup({ window: this.mainWindow });
-				} catch (e) {
-					console.warn("[BrowserViewManager] context-menu error:", e);
-				}
+			this.view.webContents.on("context-menu", (event) => {
+				event.preventDefault();
 			});
 			console.log("[BrowserViewManager] Initialized with WebContentsView");
 		}
@@ -27835,6 +27775,12 @@ async function createWindow() {
 	win.on("unmaximize", persistState);
 	if (process.env.VITE_DEV_SERVER_URL) win.loadURL(process.env.VITE_DEV_SERVER_URL);
 	else win.loadFile((0, node_path.join)(__dirname, "../dist/index.html"));
+	win.webContents.on("context-menu", (event) => {
+		event.preventDefault();
+	});
+	win.webContents.on("render-process-gone", (_event, details) => {
+		console.error("[DSME] Renderer process gone:", details.reason, details.exitCode);
+	});
 	buildMenu();
 	browserViewManager.init(win);
 	electron.ipcMain.on("browser-view-bounds", (_, bounds) => {
