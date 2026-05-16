@@ -1029,7 +1029,9 @@ export class VercelAgent implements IAgent {
     } catch (err: any) {
       clearTimeout(timeoutId);
       clearPostToolWatchdog();
-      if (err.name === 'AbortError') {
+      const msg = err?.message || String(err);
+      
+      if (err.name === 'AbortError' || msg === 'Request was aborted.' || msg === 'aborted') {
         if (postToolWatchdogTimedOut) {
           if (fullText.trim()) {
             this.messages.push({ role: 'assistant', content: fullText.trim() });
@@ -1037,10 +1039,9 @@ export class VercelAgent implements IAgent {
           }
           return;
         }
-        this.send('chat-stream-token', '\n\n*— 请求已取消或超时。*');
+        // Silently abort instead of printing an error message
         return;
       }
-      const msg = err?.message || String(err);
       const deepErrText = this.collectErrorMessages(err);
       console.error('[VercelAgent] ERROR:', msg, deepErrText !== msg ? `(chain: ${deepErrText.slice(0, 400)})` : '');
 

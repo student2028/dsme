@@ -356,8 +356,9 @@ export class BuiltinAgent implements IAgent {
 
       } catch (err: any) {
         clearTimeout(timeoutId);
-        if (err.name === 'AbortError') return;
         const msg = err?.message || String(err);
+        if (err.name === 'AbortError' || msg === 'Request was aborted.' || msg === 'aborted') return;
+        
         console.error('[BuiltinAgent] ERROR:', msg);
 
         if (msg.includes('401') || msg.includes('Unauthorized')) {

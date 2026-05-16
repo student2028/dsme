@@ -26453,7 +26453,8 @@ var VercelAgent = class {
 			} catch (err) {
 				clearTimeout(timeoutId);
 				clearPostToolWatchdog();
-				if (err.name === "AbortError") {
+				const msg = err?.message || String(err);
+				if (err.name === "AbortError" || msg === "Request was aborted." || msg === "aborted") {
 					if (postToolWatchdogTimedOut) {
 						if (fullText.trim()) {
 							this.messages.push({
@@ -26464,10 +26465,8 @@ var VercelAgent = class {
 						}
 						return;
 					}
-					this.send("chat-stream-token", "\n\n*— 请求已取消或超时。*");
 					return;
 				}
-				const msg = err?.message || String(err);
 				const deepErrText = this.collectErrorMessages(err);
 				console.error("[VercelAgent] ERROR:", msg, deepErrText !== msg ? `(chain: ${deepErrText.slice(0, 400)})` : "");
 				if (msg.includes("401") || msg.includes("Unauthorized") || msg.includes("invalid_api_key")) {
@@ -27255,8 +27254,8 @@ var BuiltinAgent = class {
 				this.send("chat-status", "thinking");
 			} catch (err) {
 				clearTimeout(timeoutId);
-				if (err.name === "AbortError") return;
 				const msg = err?.message || String(err);
+				if (err.name === "AbortError" || msg === "Request was aborted." || msg === "aborted") return;
 				console.error("[BuiltinAgent] ERROR:", msg);
 				if (msg.includes("401") || msg.includes("Unauthorized")) {
 					this.send("chat-stream-token", "\n\n⚠️ **认证失败** — 请在 Settings 中更新 API Key。");
