@@ -1,11 +1,20 @@
 /**
  * Shared browse_page implementation for both Vercel and Builtin agents.
  *
- * Delegates to the renderer's <webview> panel so the page is
- * directly visible through CDP remote debugging.
- * The renderer creates a webview, loads the URL, runs the user's script,
- * and sends back the result via IPC.
+ * Uses the BrowserPanel's persistent webview via the browser-command IPC channel.
+ * This ensures browse_page shares state with browser_navigate/browser_eval/browser_snapshot
+ * and benefits from:
+ *   - Persistent webview (no re-creation per call)
+ *   - Full did-finish-load waiting
+ *   - 115s script execution timeout
+ *   - Proper error handling and result extraction
+ *
+ * Previously used WebSearchOverlay (web-search-execute) which created a temporary
+ * webview with only 2.5s wait and a >20 char filter — causing "No results found"
+ * on JS-rendered SPAs that need longer load times.
  */
+
+import { browserNavigate, browserEval } from './browser-use';
 
 export interface BrowsePageOptions {
   url: string;
@@ -28,39 +37,33 @@ export async function browsePage(opts: BrowsePageOptions): Promise<string> {
     return 'Error: invalid URL';
   }
 
-  const { BrowserWindow: BW, ipcMain } = require('electron');
+  try {
+    // Step 1: Navigate to the URL using BrowserPanel's persistent webview.
+    // This waits for did-finish-load with a 60s timeout.
+    const navResult = await browserNavigate(url);
+    if (navResult.startsWith('Error:')) {
+      return `Navigation failed: ${navResult}`;
+    }
 
-  const allWindows = BW.getAllWindows();
-  const mainWindow = allWindows.find((w: any) => w.getTitle()?.includes('DSME')) || allWindows[0];
-  if (!mainWindow) return 'Error: no main window found';
+    // Step 2: Wait for dynamic content to render (SPA hydration, AJAX loads, etc.)
+    if (waitMs > 0) {
+      await new Promise(r => setTimeout(r, waitMs));
+    }
 
-  return new Promise<string>((resolve) => {
-    const timeoutId = setTimeout(() => {
-      ipcMain.removeAllListeners('web-search-results');
-      resolve(`Error: browse_page timed out after ${timeoutMs}ms.`);
-    }, timeoutMs);
-
-    ipcMain.once('web-search-results', (_: any, results: string) => {
-      clearTimeout(timeoutId);
-      resolve(results);
-    });
-
-    // Wrap the user's script so it runs as an async IIFE with error handling
+    // Step 3: Execute the user's script in the page context.
+    // browserEval uses BrowserPanel's execJS with a 115s timeout.
+    // Wrap in async IIFE so the user can use await.
     const wrappedScript = `(async () => {
       try {
-        await new Promise(r => setTimeout(r, ${waitMs}));
         ${script}
       } catch (e) {
         return 'Script error: ' + (e.message || String(e));
       }
     })()`;
 
-    // Delegate to renderer — same webview panel as web_search
-    mainWindow.webContents.send('web-search-execute', {
-      query: `🌐 ${url}`,
-      engines: [
-        { label: 'Browser', url, extractJS: wrappedScript },
-      ],
-    });
-  });
+    const result = await browserEval(wrappedScript);
+    return result || 'Script returned empty result. The page may still be loading — try increasing wait_before_script or use browser_snapshot to inspect the page state.';
+  } catch (e: any) {
+    return `browse_page error: ${e.message || String(e)}`;
+  }
 }

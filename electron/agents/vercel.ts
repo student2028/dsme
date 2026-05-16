@@ -463,15 +463,22 @@ export class VercelAgent implements IAgent {
         inputSchema: z.object({ query: z.string().describe('Search query') }),
         execute: async ({ query }) => {
           if (this.currentTurnSearchResult && hasUsableSearchResults(this.currentTurnSearchResult.result)) {
-            const reused = [
-              `Skipped duplicate web_search for "${query}".`,
-              `A usable search result already exists in this turn from query "${this.currentTurnSearchResult.query}".`,
-              'Use the previous snippets to answer now.',
-              '',
-              this.currentTurnSearchResult.result,
-            ].join('\n');
-            send('chat-stream-token', `\n已拦截重复浏览器搜索：${query}\n`);
-            return formatWebSearchResult(query, reused);
+            // Only block truly duplicate queries (>60% word overlap); allow different-angle searches
+            const prevWords = new Set(this.currentTurnSearchResult.query.toLowerCase().split(/\s+/));
+            const curWords = query.toLowerCase().split(/\s+/);
+            const overlap = curWords.filter(w => prevWords.has(w)).length;
+            const similarity = curWords.length > 0 ? overlap / curWords.length : 0;
+            if (similarity > 0.6) {
+              const reused = [
+                `Skipped duplicate web_search for "${query}".`,
+                `A usable search result already exists in this turn from query "${this.currentTurnSearchResult.query}".`,
+                'Use the previous snippets to answer now.',
+                '',
+                this.currentTurnSearchResult.result,
+              ].join('\n');
+              send('chat-stream-token', `\n已拦截重复浏览器搜索：${query}\n`);
+              return formatWebSearchResult(query, reused);
+            }
           }
           send('chat-stream-token', `\n正在用浏览器搜索：${query}\n`);
           const started = Date.now();
@@ -643,7 +650,7 @@ export class VercelAgent implements IAgent {
         messages: this.messages as any,
         tools: this.getTools(),
         maxOutputTokens: this.maxOutputTokens,
-        stopWhen: stepCountIs(25),
+        stopWhen: stepCountIs(50),
         abortSignal: this.abortController.signal,
 
         // Lifecycle callbacks for UI updates
@@ -995,6 +1002,70 @@ export class VercelAgent implements IAgent {
             'chat-stream-token',
             `\n\n⚠️ **工具链未闭合**（模型发起了工具调用但流在未收齐结果时结束）。正在自动重试（${this.missingToolRecoveryAttempts}/2）；若仍失败请新开对话或更换模型。\n`,
           );
+          // Bidirectional cleanup: strip unpaired tool-calls AND unpaired tool-results.
+          // Loop until stable because removing a tool-call can orphan its tool-result,
+          // and vice versa (e.g. parallel tool calls where one was answered but the other wasn't).
+          let cleanupPasses = 0;
+          let prevLen = this.messages.length + 1;
+          while (this.messages.length < prevLen && cleanupPasses < 5) {
+            prevLen = this.messages.length;
+            cleanupPasses++;
+
+            // Collect all tool-call IDs present in assistant messages
+            const allToolCallIds = new Set<string>();
+            for (const m of this.messages) {
+              if ((m as any).role === 'assistant' && Array.isArray((m as any).content)) {
+                for (const p of (m as any).content) {
+                  if (p.type === 'tool-call' && p.toolCallId) allToolCallIds.add(p.toolCallId);
+                }
+              }
+            }
+
+            // Collect all tool-result IDs present in tool messages
+            const allToolResultIds = new Set<string>();
+            for (const m of this.messages) {
+              if ((m as any).role === 'tool') {
+                const parts = Array.isArray((m as any).content) ? (m as any).content : [m];
+                for (const p of parts) {
+                  if (p.toolCallId) allToolResultIds.add(p.toolCallId);
+                }
+              }
+            }
+
+            const cleaned: typeof this.messages = [];
+            for (const m of this.messages) {
+              if ((m as any).role === 'assistant' && Array.isArray((m as any).content)) {
+                // Strip tool-calls that have no matching tool-result
+                const filteredContent = ((m as any).content as any[]).filter((p: any) => {
+                  if (p.type === 'tool-call' && p.toolCallId && !allToolResultIds.has(p.toolCallId)) {
+                    console.log(`[VercelAgent] Stripping orphaned tool-call: ${p.toolCallId} (${p.toolName})`);
+                    return false;
+                  }
+                  return true;
+                });
+                if (filteredContent.length > 0) {
+                  cleaned.push({ ...(m as any), content: filteredContent });
+                }
+                // else: assistant message had only orphaned tool-calls → drop entirely
+              } else if ((m as any).role === 'tool') {
+                // Strip tool-results that have no matching tool-call
+                const parts = Array.isArray((m as any).content) ? (m as any).content : [m];
+                const hasMatchingCall = parts.some((p: any) => p.toolCallId && allToolCallIds.has(p.toolCallId));
+                if (hasMatchingCall) {
+                  cleaned.push(m);
+                } else {
+                  const ids = parts.map((p: any) => p.toolCallId).filter(Boolean).join(', ');
+                  console.log(`[VercelAgent] Stripping orphaned tool-result: ${ids}`);
+                }
+              } else {
+                cleaned.push(m);
+              }
+            }
+            this.messages = cleaned;
+          }
+          if (cleanupPasses > 1) {
+            console.log(`[VercelAgent] Cleanup required ${cleanupPasses} passes (${prevLen} → ${this.messages.length} messages)`);
+          }
           this.messages.push({
             role: 'user',
             content:
