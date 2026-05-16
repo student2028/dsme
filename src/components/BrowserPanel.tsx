@@ -129,6 +129,18 @@ export const BrowserPanel: React.FC<{
     }
   }, [visible]);
 
+  // ── Auto-clear timeline when a new chat round begins ──
+  useEffect(() => {
+    if (!window.electronAPI?.onChatStreamStart) return;
+    const unsub = window.electronAPI.onChatStreamStart(() => {
+      taskRef.current = null;
+      setTask(null);
+      setSummary(null);
+      setLastAction('');
+    });
+    return () => { unsub(); };
+  }, []);
+
   // ── Listen for navigation events from main process ──
   useEffect(() => {
     if (!window.electronAPI?.onBrowserViewNavigated) return;
