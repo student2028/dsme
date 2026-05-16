@@ -27856,7 +27856,6 @@ async function createWindow() {
 		titleBarStyle: "hiddenInset",
 		backgroundColor: "#000000",
 		title: "DSME — DeepSeek Matrix Engine",
-		icon: (0, node_path.join)(__dirname, "../assets/icon.png"),
 		webPreferences: {
 			preload: (0, node_path.join)(__dirname, "../dist-electron/preload.js"),
 			nodeIntegration: false,
@@ -28140,6 +28139,13 @@ function isWithinWorkspace(fp) {
 electron.ipcMain.handle("read-file", (_, fp) => {
 	if (!isWithinWorkspace(fp)) throw new Error("Access denied: path outside workspace");
 	return node_fs_promises.readFile(fp, "utf8");
+});
+electron.ipcMain.on("move-window-by", (e, dx, dy) => {
+	const window = electron.BrowserWindow.fromWebContents(e.sender);
+	if (window && !window.isDestroyed()) {
+		const [x, y] = window.getPosition();
+		window.setPosition(x + dx, y + dy, false);
+	}
 });
 electron.ipcMain.handle("write-file", async (_, fp, content) => {
 	if (!isWithinWorkspace(fp)) throw new Error("Access denied: path outside workspace");

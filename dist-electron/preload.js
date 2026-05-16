@@ -53,6 +53,7 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
 	getGitBranch: () => electron.ipcRenderer.invoke("get-git-branch"),
 	getGitStatus: () => electron.ipcRenderer.invoke("get-git-status"),
 	gitCommit: (msg) => electron.ipcRenderer.invoke("git-commit", msg),
+	moveWindowBy: (dx, dy) => electron.ipcRenderer.send("move-window-by", dx, dy),
 	onTerminalOutput: createSingleListenerChannel("terminal-output"),
 	sendTerminalInput: (data) => electron.ipcRenderer.send("terminal-input", data),
 	updateTitle: (title) => electron.ipcRenderer.send("update-title", title),

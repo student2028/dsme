@@ -272,12 +272,33 @@ function App() {
              onDoubleClick={() => setCmdPaletteOpen(true)} 
              onContextMenu={(e) => e.preventDefault()}
              onMouseDown={(e) => {
-               // Initiate custom JS drag if clicking on the empty space
                const target = e.target as HTMLElement;
-               if (target === e.currentTarget || target.className === 'tab-empty') {
-                 if (e.detail === 2 || e.button !== 0) return; // allow double-click, ignore right-click
-                 window.electronAPI?.startWindowDrag?.();
-               }
+               // Do not drag if clicking on a tab item or its children
+               if (target.closest('.tab-item')) return;
+               
+               // Only left click
+               if (e.detail === 2 || e.button !== 0) return; 
+               
+               let lastX = e.screenX;
+               let lastY = e.screenY;
+               
+               const onMouseMove = (ev: MouseEvent) => {
+                 const dx = ev.screenX - lastX;
+                 const dy = ev.screenY - lastY;
+                 lastX = ev.screenX;
+                 lastY = ev.screenY;
+                 if (dx !== 0 || dy !== 0) {
+                   window.electronAPI?.moveWindowBy?.(dx, dy);
+                 }
+               };
+               
+               const onMouseUp = () => {
+                 window.removeEventListener('mousemove', onMouseMove);
+                 window.removeEventListener('mouseup', onMouseUp);
+               };
+               
+               window.addEventListener('mousemove', onMouseMove);
+               window.addEventListener('mouseup', onMouseUp);
              }}
         >
           {tabs.map(tab => (

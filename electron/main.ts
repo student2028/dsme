@@ -624,10 +624,11 @@ ipcMain.handle('read-file', (_, fp) => {
 });
 
 // Window drag API to bypass -webkit-app-region: drag bugs
-ipcMain.on('start-window-drag', (e) => {
+ipcMain.on('move-window-by', (e, dx, dy) => {
   const window = BrowserWindow.fromWebContents(e.sender);
   if (window && !window.isDestroyed()) {
-    window.startWindowDrag();
+    const [x, y] = window.getPosition();
+    window.setPosition(x + dx, y + dy, false); // false = no animation
   }
 });
 
