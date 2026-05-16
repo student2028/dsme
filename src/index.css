@@ -3523,16 +3523,3 @@ textarea:focus-visible {
   overflow: hidden;
   background: #fff;
 }
-
-.browser-webview {
-  width: 100%;
-  height: 100%;
-  border: none;
-}
-
-.browser-divider {
-  height: 3px;
-  background: var(--border-color);
-  flex-shrink: 0;
-  cursor: row-resize;
-}

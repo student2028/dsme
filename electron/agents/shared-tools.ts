@@ -204,7 +204,13 @@ export async function webSearch(query: string): Promise<string> {
   if (!query) return 'Error: query is required';
 
   const { browserViewManager } = require('../browser-view-manager');
+  const { BrowserWindow: BW } = require('electron');
   const q = encodeURIComponent(query);
+
+  // Ensure browser panel is visible so user can see the search
+  const allWindows = BW.getAllWindows();
+  const mainWindow = allWindows.find((w: any) => w.getTitle()?.includes('DSME')) || allWindows[0];
+  if (mainWindow) mainWindow.webContents.send('browser-panel-open');
 
   const engines = [
     { label: 'Sogou', url: `https://www.sogou.com/web?query=${q}`, extractJS: SOGOU_EXTRACT },
@@ -213,10 +219,9 @@ export async function webSearch(query: string): Promise<string> {
 
   for (const engine of engines) {
     try {
-      // Navigate to search engine
       const navResult = await browserViewManager.navigate(engine.url);
       if (navResult.startsWith('Navigation error:') && !navResult.includes('ERR_ABORTED')) {
-        continue; // Try next engine
+        continue;
       }
 
       // Wait for dynamic content to load

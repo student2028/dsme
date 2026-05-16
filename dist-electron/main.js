@@ -25359,7 +25359,11 @@ function searchCodebase(query, cwd, isRegex = false) {
 async function webSearch(query) {
 	if (!query) return "Error: query is required";
 	const { browserViewManager } = (init_browser_view_manager(), require_token_util$1.__toCommonJS(browser_view_manager_exports));
+	const { BrowserWindow: BW } = require("electron");
 	const q = encodeURIComponent(query);
+	const allWindows = BW.getAllWindows();
+	const mainWindow = allWindows.find((w) => w.getTitle()?.includes("DSME")) || allWindows[0];
+	if (mainWindow) mainWindow.webContents.send("browser-panel-open");
 	const engines = [{
 		label: "Sogou",
 		url: `https://www.sogou.com/web?query=${q}`,
