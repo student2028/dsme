@@ -48,17 +48,13 @@ export async function browsePage(opts: BrowsePageOptions): Promise<string> {
     }
 
     // Step 3: Execute the user's script in the page context.
-    // Wrap in async IIFE. If the script has no explicit `return`, we try to
-    // capture the last expression value. Results are force-stringified to avoid
-    // non-serializable values (DOM nodes, Map/Set) causing undefined/null errors.
+    // Wrap in async IIFE so the user can use await. If result is non-string,
+    // stringify it. undefined/null fallback is handled by executeJS itself.
     const wrappedScript = `(async () => {
       try {
-        const __result = await (async () => { ${script} })();
-        if (__result === undefined || __result === null) {
-          // Script had no return — try extracting page text as fallback
-          return document.body?.innerText?.slice(0, 8000) || 'Script completed but returned no value.';
-        }
-        return typeof __result === 'string' ? __result : JSON.stringify(__result);
+        const __r = await (async () => { ${script} })();
+        if (__r === undefined || __r === null) return null;
+        return typeof __r === 'string' ? __r : JSON.stringify(__r);
       } catch (e) {
         return 'Script error: ' + (e.message || String(e));
       }

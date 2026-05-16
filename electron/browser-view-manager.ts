@@ -130,11 +130,16 @@ export class BrowserViewManager {
         ),
       ]);
       if (result === null || result === undefined) {
-        return (
-          '[evaluate: undefined/null] Electron cannot pass non-JSON-serializable values. ' +
-          'Do not return DOM nodes, PerformanceEntry objects, or Map/Set. ' +
-          'Return JSON.stringify(...) instead.'
-        );
+        // Script returned nothing — try extracting page text as a useful fallback
+        try {
+          const fallback = await this.view.webContents.executeJavaScript(
+            `document.body?.innerText?.slice(0, 8000) || ''`
+          );
+          if (fallback && typeof fallback === 'string' && fallback.length > 10) {
+            return fallback;
+          }
+        } catch {}
+        return 'Script completed but returned no value. Use `return` to return data.';
       }
       return typeof result === 'string' ? result : JSON.stringify(result);
     } catch (e: any) {

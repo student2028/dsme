@@ -24828,7 +24828,13 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			if (!this.view) return "Error: view not initialized";
 			try {
 				const result = await Promise.race([this.view.webContents.executeJavaScript(script), new Promise((_, reject) => setTimeout(() => reject(/* @__PURE__ */ new Error(`Timeout after ${Math.round(timeoutMs / 1e3)}s`)), timeoutMs))]);
-				if (result === null || result === void 0) return "[evaluate: undefined/null] Electron cannot pass non-JSON-serializable values. Do not return DOM nodes, PerformanceEntry objects, or Map/Set. Return JSON.stringify(...) instead.";
+				if (result === null || result === void 0) {
+					try {
+						const fallback = await this.view.webContents.executeJavaScript(`document.body?.innerText?.slice(0, 8000) || ''`);
+						if (fallback && typeof fallback === "string" && fallback.length > 10) return fallback;
+					} catch {}
+					return "Script completed but returned no value. Use `return` to return data.";
+				}
 				return typeof result === "string" ? result : JSON.stringify(result);
 			} catch (e) {
 				return `Script error: ${e.message}`;
@@ -25126,12 +25132,9 @@ async function browsePage(opts) {
 		if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
 		return await browserEval(`(async () => {
       try {
-        const __result = await (async () => { ${script} })();
-        if (__result === undefined || __result === null) {
-          // Script had no return — try extracting page text as fallback
-          return document.body?.innerText?.slice(0, 8000) || 'Script completed but returned no value.';
-        }
-        return typeof __result === 'string' ? __result : JSON.stringify(__result);
+        const __r = await (async () => { ${script} })();
+        if (__r === undefined || __r === null) return null;
+        return typeof __r === 'string' ? __r : JSON.stringify(__r);
       } catch (e) {
         return 'Script error: ' + (e.message || String(e));
       }
