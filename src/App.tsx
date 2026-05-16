@@ -293,8 +293,8 @@ function App() {
           </div>
         )}
 
-        {/* Persistent browser tab — webviews stay alive across tab switches */}
-        <BrowserPanel visible={activePath === 'browser://panel'} onTabOpen={openBrowserTab} />
+        {/* Persistent browser tab — WebContentsView stays alive across tab switches */}
+        <BrowserPanel visible={activePath === 'browser://panel'} overlayOpen={settingsOpen || cmdPaletteOpen || helpOpen || searchOpen} onTabOpen={openBrowserTab} />
 
         {activePath !== 'browser://panel' && (
           <ErrorBoundary fallbackMessage="Editor crashed">

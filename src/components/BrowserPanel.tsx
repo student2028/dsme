@@ -34,8 +34,9 @@ interface BrowserSummary {
  */
 export const BrowserPanel: React.FC<{
   visible: boolean;
+  overlayOpen?: boolean;
   onTabOpen: () => void;
-}> = ({ visible, onTabOpen }) => {
+}> = ({ visible, overlayOpen = false, onTabOpen }) => {
   const [slot, setSlot] = useState<BrowserSlot>({ url: '', label: 'Browser', status: 'idle' });
   const [lastAction, setLastAction] = useState('');
   const [summary, setSummary] = useState<BrowserSummary | null>(null);
@@ -109,9 +110,11 @@ export const BrowserPanel: React.FC<{
     };
   }, [visible]);
 
-  // ── Show/hide WebContentsView when tab visibility changes ──
+  // ── Show/hide WebContentsView when tab visibility or overlay state changes ──
+  // WebContentsView is a native layer above all DOM content, so we must explicitly
+  // hide it when any modal overlay (Settings, CommandPalette, etc.) is open.
   useEffect(() => {
-    if (visible) {
+    if (visible && !overlayOpen) {
       // Show with current bounds
       if (containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
@@ -127,7 +130,7 @@ export const BrowserPanel: React.FC<{
     } else {
       window.electronAPI?.hideBrowserView?.();
     }
-  }, [visible]);
+  }, [visible, overlayOpen]);
 
   // ── Auto-clear timeline when a new chat round begins ──
   useEffect(() => {
