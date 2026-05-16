@@ -368,6 +368,17 @@ async function createWindow() {
     win.loadFile(join(__dirname, '../dist/index.html'));
   }
 
+  // Prevent default right-click context menu on the main window renderer
+  // (Electron's built-in "Inspect Element" menu can crash in some configurations)
+  win.webContents.on('context-menu', (event) => {
+    event.preventDefault();
+  });
+
+  // Monitor renderer crashes — log details instead of silently dying
+  win.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[DSME] Renderer process gone:', details.reason, details.exitCode);
+  });
+
   buildMenu();
 
   // Initialize WebContentsView-based browser panel

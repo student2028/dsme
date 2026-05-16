@@ -72,50 +72,12 @@ export class BrowserViewManager {
       return { action: 'deny' as const };
     });
 
-    // Handle right-click context menu — prevents crash from unhandled event
-    this.view.webContents.on('context-menu', (_event, params) => {
-      try {
-        const { Menu, MenuItem } = require('electron');
-        if (!this.view || !this.mainWindow || this.mainWindow.isDestroyed()) return;
-        const menu = new Menu();
-        const wc = this.view.webContents;
-
-        if (params.linkURL) {
-          menu.append(new MenuItem({
-            label: '在当前页面打开链接',
-            click: () => { try { wc.loadURL(params.linkURL); } catch {} },
-          }));
-          menu.append(new MenuItem({ type: 'separator' }));
-        }
-
-        menu.append(new MenuItem({
-          label: '后退',
-          enabled: wc.navigationHistory?.canGoBack() ?? false,
-          click: () => { try { wc.navigationHistory.goBack(); } catch {} },
-        }));
-        menu.append(new MenuItem({
-          label: '前进',
-          enabled: wc.navigationHistory?.canGoForward() ?? false,
-          click: () => { try { wc.navigationHistory.goForward(); } catch {} },
-        }));
-        menu.append(new MenuItem({
-          label: '刷新',
-          click: () => { try { wc.reload(); } catch {} },
-        }));
-        menu.append(new MenuItem({ type: 'separator' }));
-
-        if (params.selectionText) {
-          menu.append(new MenuItem({ label: '复制', role: 'copy' }));
-        }
-        if (params.isEditable) {
-          menu.append(new MenuItem({ label: '粘贴', role: 'paste' }));
-          menu.append(new MenuItem({ label: '全选', role: 'selectAll' }));
-        }
-
-        menu.popup({ window: this.mainWindow });
-      } catch (e) {
-        console.warn('[BrowserViewManager] context-menu error:', e);
-      }
+    // Suppress right-click context menu on WebContentsView
+    // Building a custom Menu can trigger Chromium-level crashes in some configurations.
+    // Simply prevent the default to avoid crashes — browser navigation is handled via
+    // the agent tools (browser_back, browser_navigate, etc.)
+    this.view.webContents.on('context-menu', (event) => {
+      event.preventDefault();
     });
 
     console.log('[BrowserViewManager] Initialized with WebContentsView');
