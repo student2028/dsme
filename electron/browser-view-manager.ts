@@ -64,6 +64,16 @@ export class BrowserViewManager {
       });
     });
 
+    // Intercept window.open() — navigate in-place instead of spawning a popup
+    this.view.webContents.setWindowOpenHandler(({ url }) => {
+      if (url && url.startsWith('http')) {
+        // Load the target URL in the same view instead of opening a new window
+        this.view!.webContents.loadURL(url);
+      }
+      // Deny the new window creation
+      return { action: 'deny' as const };
+    });
+
     console.log('[BrowserViewManager] Initialized with WebContentsView');
   }
 
