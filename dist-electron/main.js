@@ -24771,25 +24771,69 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			});
 			this.view.webContents.on("dom-ready", () => {
 				this.view?.webContents.executeJavaScript(`
-        Object.defineProperty(navigator, 'userAgentData', {
-          value: {
-            brands: [
-              { brand: "Google Chrome", version: "${CHROME_VERSION}" },
-              { brand: "Chromium", version: "${CHROME_VERSION}" },
-              { brand: "Not_A Brand", version: "24" }
-            ],
-            mobile: false,
-            platform: "macOS",
-            getHighEntropyValues: () => Promise.resolve({
-              architecture: "arm",
-              model: "",
+        // 1. navigator.userAgentData
+        try {
+          Object.defineProperty(navigator, 'userAgentData', {
+            value: {
+              brands: [
+                { brand: "Google Chrome", version: "${CHROME_VERSION}" },
+                { brand: "Chromium", version: "${CHROME_VERSION}" },
+                { brand: "Not_A Brand", version: "24" }
+              ],
+              mobile: false,
               platform: "macOS",
-              platformVersion: "15.0.0",
-              uaFullVersion: "${CHROME_VERSION}.0.0.0"
-            })
-          },
-          configurable: true
-        });
+              getHighEntropyValues: () => Promise.resolve({
+                architecture: "arm",
+                model: "",
+                platform: "macOS",
+                platformVersion: "15.0.0",
+                uaFullVersion: "${CHROME_VERSION}.0.0.0",
+                fullVersionList: [
+                  { brand: "Google Chrome", version: "${CHROME_VERSION}.0.0.0" },
+                  { brand: "Chromium", version: "${CHROME_VERSION}.0.0.0" }
+                ]
+              })
+            },
+            configurable: true
+          });
+        } catch {}
+
+        // 2. window.chrome (Google checks its existence + shape)
+        if (!window.chrome) window.chrome = {};
+        if (!window.chrome.runtime) {
+          window.chrome.runtime = {
+            connect: () => {},
+            sendMessage: () => {},
+            id: undefined
+          };
+        }
+        window.chrome.csi = () => ({});
+        window.chrome.loadTimes = () => ({});
+
+        // 3. navigator.plugins — Chrome always has at least these
+        try {
+          Object.defineProperty(navigator, 'plugins', {
+            get: () => [
+              { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+              { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+              { name: 'Native Client', filename: 'internal-nacl-plugin' }
+            ]
+          });
+        } catch {}
+
+        // 4. Remove Electron fingerprints
+        try {
+          delete window.process;
+          delete window.require;
+          delete window.module;
+          delete window.exports;
+          delete window.__electron_preload;
+        } catch {}
+
+        // 5. navigator.webdriver (Google checks automation detection)
+        try {
+          Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        } catch {}
       `).catch(() => {});
 			});
 			this.attached = false;
