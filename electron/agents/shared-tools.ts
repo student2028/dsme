@@ -198,40 +198,41 @@ export function searchCodebase(query: string, cwd: string, isRegex = false): Pro
   });
 }
 
-// ── Web search — delegates to renderer's <webview> for CDP visibility ──
-// Electron IS Chrome. Instead of hidden windows + screenshot streaming,
-// we send the query to the renderer which creates native <webview> elements.
-// These are directly visible through CDP remote debugging — no hacks needed.
+// ── Web search — uses BrowserViewManager directly (no IPC to renderer) ──
+// Navigates the WebContentsView to search engines, extracts results via executeJS.
 export async function webSearch(query: string): Promise<string> {
   if (!query) return 'Error: query is required';
+
+  const { browserViewManager } = require('../browser-view-manager');
   const q = encodeURIComponent(query);
-  const { BrowserWindow: BW, ipcMain } = require('electron');
 
-  const allWindows = BW.getAllWindows();
-  const mainWindow = allWindows.find((w: any) => w.getTitle()?.includes('DSME')) || allWindows[0];
-  if (!mainWindow) return 'Error: no main window found';
+  const engines = [
+    { label: 'Sogou', url: `https://www.sogou.com/web?query=${q}`, extractJS: SOGOU_EXTRACT },
+    { label: 'Google', url: `https://www.google.com/search?q=${q}&hl=zh-CN`, extractJS: GOOGLE_EXTRACT },
+  ];
 
-  return new Promise<string>((resolve) => {
-    const timeoutId = setTimeout(() => {
-      ipcMain.removeAllListeners('web-search-results');
-      resolve(`Search timeout for "${query}".`);
-    }, 25000);
+  for (const engine of engines) {
+    try {
+      // Navigate to search engine
+      const navResult = await browserViewManager.navigate(engine.url);
+      if (navResult.startsWith('Navigation error:') && !navResult.includes('ERR_ABORTED')) {
+        continue; // Try next engine
+      }
 
-    ipcMain.once('web-search-results', (_: any, results: string) => {
-      clearTimeout(timeoutId);
-      resolve(results);
-    });
+      // Wait for dynamic content to load
+      await new Promise(r => setTimeout(r, 2000));
 
-    // Send search request to renderer — it creates webviews and extracts results
-    mainWindow.webContents.send('web-search-execute', {
-      query,
-      stopOnFirstResult: true,
-      engines: [
-        { label: 'Sogou', url: `https://www.sogou.com/web?query=${q}`, extractJS: SOGOU_EXTRACT },
-        { label: 'Google', url: `https://www.google.com/search?q=${q}&hl=zh-CN`, extractJS: GOOGLE_EXTRACT },
-      ],
-    });
-  });
+      // Extract search results
+      const text = await browserViewManager.executeJS(engine.extractJS, 10000);
+      if (text && text.length > 20 && !text.startsWith('Script error:') && !text.startsWith('[evaluate:')) {
+        return `Results from ${engine.label}:\n${text}`;
+      }
+    } catch (e: any) {
+      console.warn(`[webSearch] ${engine.label} failed:`, e.message);
+    }
+  }
+
+  return `No results found for "${query}".`;
 }
 
 // ── Fetch URL (Node.js native — no shell, no injection risk) ──
