@@ -25738,14 +25738,17 @@ var VercelAgent = class {
 				const tc = data?.choices?.[0]?.delta?.tool_calls;
 				if (Array.isArray(tc)) {
 					let patched = false;
-					for (const call of tc) if (call.index !== void 0 && typeof call.index !== "number") {
-						call.index = Number(call.index);
-						patched = true;
+					for (const call of tc) {
+						if (call.index !== void 0 && typeof call.index !== "number") {
+							call.index = Number(call.index);
+							patched = true;
+						}
+						if (call.extra_content !== void 0) {
+							delete call.extra_content;
+							patched = true;
+						}
 					}
-					if (patched) {
-						console.log("[VercelAgent] Patched tool_calls index type in SSE chunk");
-						return "data: " + JSON.stringify(data);
-					}
+					if (patched) return "data: " + JSON.stringify(data);
 				}
 			} catch {}
 			return line;
