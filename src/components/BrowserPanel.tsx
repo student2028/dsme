@@ -85,13 +85,11 @@ export const BrowserPanel: React.FC<{
     const syncBounds = () => {
       if (!containerRef.current || !visible) return;
       const rect = containerRef.current.getBoundingClientRect();
-      // Account for devicePixelRatio on retina displays
-      const dpr = window.devicePixelRatio || 1;
       const bounds = {
-        x: Math.round(rect.x * dpr),
-        y: Math.round(rect.y * dpr),
-        width: Math.round(rect.width * dpr),
-        height: Math.round(rect.height * dpr),
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
       };
       window.electronAPI?.syncBrowserBounds?.(bounds);
     };
@@ -117,12 +115,11 @@ export const BrowserPanel: React.FC<{
       // Show with current bounds
       if (containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
-        const dpr = window.devicePixelRatio || 1;
         window.electronAPI?.showBrowserView?.({
-          x: Math.round(rect.x * dpr),
-          y: Math.round(rect.y * dpr),
-          width: Math.round(rect.width * dpr),
-          height: Math.round(rect.height * dpr),
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
         });
       } else {
         window.electronAPI?.showBrowserView?.();
