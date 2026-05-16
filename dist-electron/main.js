@@ -24786,7 +24786,27 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			this.view.webContents.on("context-menu", (event) => {
 				event.preventDefault();
 			});
+			this.view.webContents.on("render-process-gone", (_event, details) => {
+				console.error("[BrowserViewManager] WebContentsView renderer crashed:", details.reason, details.exitCode);
+				this.recreateView();
+			});
+			this.view.webContents.loadURL("about:blank");
 			console.log("[BrowserViewManager] Initialized with WebContentsView");
+		}
+		/** Recreate the view after a renderer crash. */
+		recreateView() {
+			if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+			try {
+				if (this.view) {
+					this.mainWindow.contentView.removeChildView(this.view);
+					try {
+						this.view.webContents.close();
+					} catch {}
+				}
+			} catch {}
+			console.log("[BrowserViewManager] Recreating view after crash...");
+			this.view = null;
+			this.init(this.mainWindow);
 		}
 		/** Clean up on app quit. */
 		destroy() {

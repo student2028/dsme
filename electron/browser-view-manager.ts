@@ -8,9 +8,11 @@
  *   - Native View layer compositing (no GuestView overhead)
  *   - Future-proof (webview tag deprecated by Electron)
  *
- * The view is attached as a child of the main BrowserWindow's contentView
- * and positioned via setBounds() — the renderer sends resize/position updates
- * through the 'browser-view-bounds' IPC channel.
+ * IMPORTANT: The view is NOT attached to the window at init time.
+ * It is deferred until the first navigate() or show() call.
+ * This prevents a Chromium-level SIGSEGV (rust_bmp decoder null pointer)
+ * that occurs when an idle WebContentsView participates in macOS
+ * NSApplication event routing (e.g. right-click anywhere in the window).
  */
 
 import { WebContentsView, BrowserWindow, session } from 'electron';
@@ -19,6 +21,7 @@ export class BrowserViewManager {
   private view: WebContentsView | null = null;
   private mainWindow: BrowserWindow | null = null;
   private visible = false;
+  private attached = false;
   private currentUrl = '';
   private bounds = { x: 0, y: 0, width: 0, height: 0 };
 
@@ -26,45 +29,35 @@ export class BrowserViewManager {
   init(mainWindow: BrowserWindow) {
     this.mainWindow = mainWindow;
 
-    // Use a separate persistent session so we don't pollute the app's own cookies
     const browserSession = session.fromPartition('persist:browser-panel');
 
     this.view = new WebContentsView({
       webPreferences: {
         sandbox: true,
         session: browserSession,
-        // No node integration — this is a plain browser view
         nodeIntegration: false,
         contextIsolation: true,
       },
     });
 
-    // Set a standard Chrome UA
     this.view.webContents.setUserAgent(
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
     );
 
-    // Add to window but initially hidden (zero bounds)
-    this.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
-    mainWindow.contentView.addChildView(this.view);
+    // DO NOT addChildView here — defer until first show/navigate.
+    this.attached = false;
 
-    // Notify renderer on navigation events (URL bar, loading status)
+    // Notify renderer on navigation events
     this.view.webContents.on('did-navigate', (_e, url) => {
       this.currentUrl = url;
-      this.notifyRenderer('browser-view-navigated', {
-        url,
-        title: this.view!.webContents.getTitle(),
-      });
+      this.notifyRenderer('browser-view-navigated', { url, title: this.view!.webContents.getTitle() });
     });
     this.view.webContents.on('did-navigate-in-page', (_e, url) => {
       this.currentUrl = url;
-      this.notifyRenderer('browser-view-navigated', {
-        url,
-        title: this.view!.webContents.getTitle(),
-      });
+      this.notifyRenderer('browser-view-navigated', { url, title: this.view!.webContents.getTitle() });
     });
 
-    // Intercept window.open() — navigate in-place instead of spawning a popup
+    // Intercept window.open() — navigate in-place
     this.view.webContents.setWindowOpenHandler(({ url }) => {
       if (url && url.startsWith('http')) {
         this.view!.webContents.loadURL(url);
@@ -72,37 +65,43 @@ export class BrowserViewManager {
       return { action: 'deny' as const };
     });
 
-    // Suppress right-click context menu on WebContentsView
+    // Suppress right-click context menu
     this.view.webContents.on('context-menu', (event) => {
       event.preventDefault();
     });
 
-    // Prevent WebContentsView renderer crash from taking down the entire app
+    // Auto-recover from renderer crashes
     this.view.webContents.on('render-process-gone', (_event, details) => {
-      console.error('[BrowserViewManager] WebContentsView renderer crashed:', details.reason, details.exitCode);
-      // Recreate the view after a crash
+      console.error('[BrowserViewManager] Renderer crashed:', details.reason, details.exitCode);
       this.recreateView();
     });
 
-    // Load about:blank immediately so webContents is in a valid state
-    // (prevents Chromium-level segfaults when the view receives events while blank)
-    this.view.webContents.loadURL('about:blank');
+    console.log('[BrowserViewManager] Initialized with WebContentsView (deferred attach)');
+  }
 
-    console.log('[BrowserViewManager] Initialized with WebContentsView');
+  /** Attach the view to the main window on first use. */
+  private ensureAttached() {
+    if (this.attached || !this.view || !this.mainWindow || this.mainWindow.isDestroyed()) return;
+    this.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+    this.mainWindow.contentView.addChildView(this.view);
+    this.attached = true;
+    console.log('[BrowserViewManager] View attached to window');
   }
 
   /** Recreate the view after a renderer crash. */
   private recreateView() {
     if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
     try {
-      if (this.view) {
+      if (this.view && this.attached) {
         this.mainWindow.contentView.removeChildView(this.view);
+      }
+      if (this.view) {
         try { this.view.webContents.close(); } catch {}
       }
     } catch {}
-    // Re-run init to create a fresh view
-    console.log('[BrowserViewManager] Recreating view after crash...');
+    console.log('[BrowserViewManager] Recreating view...');
     this.view = null;
+    this.attached = false;
     this.init(this.mainWindow);
   }
 
@@ -118,6 +117,7 @@ export class BrowserViewManager {
 
   async navigate(url: string): Promise<string> {
     if (!this.view) return 'Error: view not initialized';
+    this.ensureAttached();
     try {
       await this.view.webContents.loadURL(url);
       this.currentUrl = url;
@@ -125,7 +125,6 @@ export class BrowserViewManager {
       this.notifyRenderer('browser-view-navigated', { url, title });
       return `Navigated to ${url}. Title: ${title}`;
     } catch (e: any) {
-      // ERR_ABORTED is common for redirects / resource loads — page may still be usable
       if (e.message?.includes('ERR_ABORTED')) {
         const title = this.view.webContents.getTitle();
         return `Navigated to ${url} (with redirect). Title: ${title}`;
@@ -139,7 +138,6 @@ export class BrowserViewManager {
     const nav = this.view.webContents.navigationHistory;
     if (!nav.canGoBack()) return 'Cannot go back — no history.';
     nav.goBack();
-    // Wait a bit for navigation to complete
     await new Promise(r => setTimeout(r, 1500));
     const url = this.view.webContents.getURL();
     this.currentUrl = url;
@@ -147,7 +145,7 @@ export class BrowserViewManager {
     return `Went back. Now at: ${url}`;
   }
 
-  // ── Script execution (ZERO IPC — main process direct) ──
+  // ── Script execution ──
 
   async executeJS(script: string, timeoutMs = 115_000): Promise<string> {
     if (!this.view) return 'Error: view not initialized';
@@ -159,7 +157,6 @@ export class BrowserViewManager {
         ),
       ]);
       if (result === null || result === undefined) {
-        // Script returned nothing — try extracting page text as a useful fallback
         try {
           const fallback = await this.view.webContents.executeJavaScript(
             `document.body?.innerText?.slice(0, 8000) || ''`
@@ -180,7 +177,7 @@ export class BrowserViewManager {
 
   setBounds(bounds: { x: number; y: number; width: number; height: number }) {
     this.bounds = bounds;
-    if (this.visible && this.view) {
+    if (this.visible && this.view && this.attached) {
       this.view.setBounds(bounds);
     }
   }
@@ -189,13 +186,14 @@ export class BrowserViewManager {
     if (bounds) this.bounds = bounds;
     this.visible = true;
     if (this.view) {
+      this.ensureAttached();
       this.view.setBounds(this.bounds);
     }
   }
 
   hide() {
     this.visible = false;
-    if (this.view) {
+    if (this.view && this.attached) {
       this.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
     }
   }
