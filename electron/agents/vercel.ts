@@ -333,6 +333,81 @@ export class VercelAgent implements IAgent {
     while (this.messages.length > 12 && estimateMessagesTokens(this.messages) > maxHistoryTokens) {
       this.messages.shift();
     }
+
+    // ── Post-prune: repair broken tool-call / tool-result pairs ──
+    // Both slice (sliding window) and shift (token budget) can cut through
+    // assistant(tool-call) ↔ tool(tool-result) boundaries, leaving orphans
+    // that trigger AI_MissingToolResultsError on the next streamText call.
+    this.repairToolPairs();
+  }
+
+  /**
+   * Remove orphaned tool-calls (assistant content parts with no matching tool-result)
+   * and orphaned tool-results (tool messages with no matching tool-call).
+   * Loops until stable because removing one can orphan another.
+   */
+  private repairToolPairs(): void {
+    let prevLen = this.messages.length + 1;
+    let passes = 0;
+    while (this.messages.length < prevLen && passes < 5) {
+      prevLen = this.messages.length;
+      passes++;
+
+      // Collect all tool-call IDs from assistant messages
+      const allToolCallIds = new Set<string>();
+      for (const m of this.messages) {
+        if ((m as any).role === 'assistant' && Array.isArray((m as any).content)) {
+          for (const p of (m as any).content) {
+            if (p.type === 'tool-call' && p.toolCallId) allToolCallIds.add(p.toolCallId);
+          }
+        }
+      }
+
+      // Collect all tool-result IDs from tool messages
+      const allToolResultIds = new Set<string>();
+      for (const m of this.messages) {
+        if ((m as any).role === 'tool') {
+          const parts = Array.isArray((m as any).content) ? (m as any).content : [m];
+          for (const p of parts) {
+            if (p.toolCallId) allToolResultIds.add(p.toolCallId);
+          }
+        }
+      }
+
+      const cleaned: typeof this.messages = [];
+      for (const m of this.messages) {
+        if ((m as any).role === 'assistant' && Array.isArray((m as any).content)) {
+          // Strip tool-calls that have no matching tool-result
+          const filteredContent = ((m as any).content as any[]).filter((p: any) => {
+            if (p.type === 'tool-call' && p.toolCallId && !allToolResultIds.has(p.toolCallId)) {
+              console.log(`[VercelAgent] pruneHistory: stripping orphaned tool-call ${p.toolCallId} (${p.toolName})`);
+              return false;
+            }
+            return true;
+          });
+          if (filteredContent.length > 0) {
+            cleaned.push({ ...(m as any), content: filteredContent });
+          }
+          // else: assistant message had only orphaned tool-calls → drop entirely
+        } else if ((m as any).role === 'tool') {
+          // Strip tool-results that have no matching tool-call
+          const parts = Array.isArray((m as any).content) ? (m as any).content : [m];
+          const hasMatchingCall = parts.some((p: any) => p.toolCallId && allToolCallIds.has(p.toolCallId));
+          if (hasMatchingCall) {
+            cleaned.push(m);
+          } else {
+            const ids = parts.map((p: any) => p.toolCallId).filter(Boolean).join(', ');
+            console.log(`[VercelAgent] pruneHistory: stripping orphaned tool-result ${ids}`);
+          }
+        } else {
+          cleaned.push(m);
+        }
+      }
+      this.messages = cleaned;
+    }
+    if (passes > 1) {
+      console.log(`[VercelAgent] repairToolPairs: ${passes} passes (now ${this.messages.length} messages)`);
+    }
   }
 
   private getToolResultCapChars(): number {
