@@ -29,12 +29,22 @@ function createSingleListenerChannel(channel: string) {
   };
 }
 
+/** One live handler per channel; new subscribe clears previous (fixes stacked chat-stream under Strict Mode / HMR). */
+function createExclusiveListenerChannel(channel: string) {
+  return (callback: (...args: any[]) => void) => {
+    ipcRenderer.removeAllListeners(channel);
+    const handler = (_e: any, ...args: any[]) => callback(...args);
+    ipcRenderer.on(channel, handler);
+    return () => { ipcRenderer.removeListener(channel, handler); };
+  };
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
   sendChatMessage: (message: string) => ipcRenderer.send('chat-message', message),
   sendChatMessageWithImages: (message: string, imageDataUrls: string[]) => ipcRenderer.send('chat-message-images', message, imageDataUrls),
-  onChatStreamStart: createSingleListenerChannel('chat-stream-start'),
-  onChatStreamToken: createSingleListenerChannel('chat-stream-token'),
-  onChatStreamEnd: createSingleListenerChannel('chat-stream-end'),
+  onChatStreamStart: createExclusiveListenerChannel('chat-stream-start'),
+  onChatStreamToken: createExclusiveListenerChannel('chat-stream-token'),
+  onChatStreamEnd: createExclusiveListenerChannel('chat-stream-end'),
   onChatStatus: createMultiSubscriberChannel('chat-status'),
 
   getFileTree: (dir?: string) => ipcRenderer.invoke('get-file-tree', dir),
@@ -53,7 +63,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   updateTitle: (title: string) => ipcRenderer.send('update-title', title),
   onMenuAction: createSingleListenerChannel('menu-action'),
 
-  onFileChanged: createSingleListenerChannel('file-changed'),
+  onFileChanged: createMultiSubscriberChannel('file-changed'),
   onDiffPreview: createSingleListenerChannel('diff-preview'),
   acceptDiff: (changeId: string) => ipcRenderer.send('diff-accept', changeId),
   rejectDiff: (changeId: string) => ipcRenderer.send('diff-reject', changeId),
@@ -69,14 +79,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onRagStatus: createSingleListenerChannel('rag-status'),
 
   switchKernel: (kernel: string) => ipcRenderer.send('switch-kernel', kernel),
-  onKernelChanged: createSingleListenerChannel('kernel-changed'),
+  onKernelChanged: createExclusiveListenerChannel('kernel-changed'),
 
-  onWebSearchExecute: createSingleListenerChannel('web-search-execute'),
+  onWebSearchExecute: createExclusiveListenerChannel('web-search-execute'),
   sendWebSearchResults: (results: string) => {
     ipcRenderer.send('web-search-results', results);
   },
 
-  onBrowserCommand: createSingleListenerChannel('browser-command'),
+  onBrowserCommand: createExclusiveListenerChannel('browser-command'),
   sendBrowserResult: (id: string, result: string) => {
     ipcRenderer.send(`browser-result-${id}`, result);
   },

@@ -107,6 +107,8 @@ export class VercelAgent implements IAgent {
   private pendingChanges = new Map<string, { filepath: string; newContent: string; resolve: (v: string) => void }>();
   private changeIdCounter = 0;
   private retryCount = 0;
+  /** Retries when the provider ends the stream without pairing tool calls to results (MissingToolResults / similar). */
+  private missingToolRecoveryAttempts = 0;
   private truncationCount = 0;
   private busy = false;
   private rag = new RAGEngine();
@@ -243,6 +245,7 @@ export class VercelAgent implements IAgent {
       return;
     }
     this.busy = true;
+    this.missingToolRecoveryAttempts = 0;
     this.messages.push({ role: 'user', content });
     this.send('chat-stream-start', '');
     try {
@@ -268,6 +271,7 @@ export class VercelAgent implements IAgent {
       return;
     }
     this.busy = true;
+    this.missingToolRecoveryAttempts = 0;
     // Build multimodal message with text + image parts (Vercel AI SDK format)
     const parts: any[] = [{ type: 'text', text: content }];
     for (const dataUrl of imageDataUrls) {
@@ -628,6 +632,7 @@ export class VercelAgent implements IAgent {
       console.warn('[VercelAgent] Stream timeout after 300s — aborting');
       this.abortController?.abort();
     }, STREAM_TIMEOUT_MS);
+    let streamHadMissingToolError = false;
     try {
       const result = streamText({
         model: this.provider.chat(this.model),
@@ -752,8 +757,20 @@ export class VercelAgent implements IAgent {
           case 'error': {
             const e = (part as any).error;
             const msg = typeof e?.message === 'string' ? e.message : String(e ?? 'stream error');
+            const ename = typeof (e as any)?.name === 'string' ? (e as any).name : '';
+            if (
+              /tool result(?:s)? (?:is|are) missing for tool call/i.test(msg) ||
+              /missing for tool call/i.test(msg) ||
+              /MissingTool|AI_MissingToolResultsError/i.test(ename)
+            ) {
+              streamHadMissingToolError = true;
+            }
             console.error('[VercelAgent] Stream error:', e);
-            this.send('chat-stream-token', `\n\n⚠️ **流式错误** — ${msg.slice(0, 800)}\n`);
+            const missingToolHint =
+              /tool result(?:s)? (?:is|are) missing for tool call/i.test(msg) || /missing for tool call/i.test(msg)
+                ? ' *（工具链未闭合：随后可能自动重试；若反复出现请新开对话或换模型。）*'
+                : '';
+            this.send('chat-stream-token', `\n\n⚠️ **流式错误** — ${msg.slice(0, 800)}${missingToolHint}\n`);
             break;
           }
           case 'tool-error': {
@@ -920,6 +937,7 @@ export class VercelAgent implements IAgent {
       // Context window management: sliding window + content truncation
       this.pruneHistory();
       this.retryCount = 0; // Reset retry budget on success
+      this.missingToolRecoveryAttempts = 0;
       clearTimeout(timeoutId);
       clearPostToolWatchdog();
 
@@ -938,7 +956,8 @@ export class VercelAgent implements IAgent {
         return;
       }
       const msg = err?.message || String(err);
-      console.error('[VercelAgent] ERROR:', msg);
+      const deepErrText = this.collectErrorMessages(err);
+      console.error('[VercelAgent] ERROR:', msg, deepErrText !== msg ? `(chain: ${deepErrText.slice(0, 400)})` : '');
 
       // Auth errors → guide user to Settings
       if (msg.includes('401') || msg.includes('Unauthorized') || msg.includes('invalid_api_key')) {
@@ -960,17 +979,74 @@ export class VercelAgent implements IAgent {
         continue; // True iterative retry via while(true) loop
       }
 
+      // SDK may throw AI_NoOutputGeneratedError while the real reason lives on `cause` (e.g. missing tool results).
+      const missingToolRound =
+        streamHadMissingToolError ||
+        /tool result(?:s)? (?:is|are) missing for tool call/i.test(deepErrText) ||
+        /missing for tool call/i.test(deepErrText) ||
+        /AI_MissingToolResultsError|MissingToolResultsError/i.test(deepErrText);
+      if (missingToolRound) {
+        this.missingToolRecoveryAttempts += 1;
+        if (this.missingToolRecoveryAttempts <= 2) {
+          console.warn(
+            `[VercelAgent] Missing tool results — recovery attempt ${this.missingToolRecoveryAttempts}/2`,
+          );
+          this.send(
+            'chat-stream-token',
+            `\n\n⚠️ **工具链未闭合**（模型发起了工具调用但流在未收齐结果时结束）。正在自动重试（${this.missingToolRecoveryAttempts}/2）；若仍失败请新开对话或更换模型。\n`,
+          );
+          this.messages.push({
+            role: 'user',
+            content:
+              '【系统】请不要再调用任何工具。若你上一轮已看到工具返回的数据，请只用文字总结回答用户；若没有，请如实说明未能完成查询。',
+          });
+          continue;
+        }
+        this.send(
+          'chat-stream-token',
+          '\n\n⚠️ **工具链未闭合**，已自动重试 2 次仍失败。请新开对话或更换模型。\n',
+        );
+        return;
+      }
+
       // Network errors → friendly message
       if (msg.includes('ECONNRESET') || msg.includes('ETIMEDOUT') || msg.includes('fetch failed') || msg.includes('network')) {
         this.send('chat-stream-token', '\n\n⚠️ **网络连接异常** — 请检查网络连接和代理设置。');
         return;
       }
 
-      // Generic error
+      // Generic error — avoid duplicating "No output" when we already streamed tool errors + recovery may apply next run
+      if (/^no output generated/i.test(msg.trim()) && streamHadMissingToolError) {
+        this.send(
+          'chat-stream-token',
+          '\n\n⚠️ **本轮未正常收尾**（模型未输出正文，常与上方工具链未闭合有关）。若未自动重试成功，请新开对话或换模型。\n',
+        );
+        return;
+      }
+
       this.send('chat-stream-token', `\n\n⚠️ Error: ${msg.slice(0, 500)}`);
     }
     break; // Exit while(true) on non-retriable errors or success
     } // end while(true)
+  }
+
+  /** Flatten `Error.cause` chains so AI_NoOutputGeneratedError can still reveal MissingToolResultsError. */
+  private collectErrorMessages(err: unknown, maxDepth = 10): string {
+    const parts: string[] = [];
+    let e: any = err;
+    let depth = 0;
+    const seen = new Set<unknown>();
+    while (e != null && depth++ < maxDepth) {
+      if (typeof e === 'object' && e !== null) {
+        if (seen.has(e)) break;
+        seen.add(e);
+      }
+      if (typeof e?.name === 'string') parts.push(e.name);
+      if (typeof e?.message === 'string') parts.push(e.message);
+      else if (typeof e === 'string') parts.push(e);
+      e = e?.cause;
+    }
+    return parts.join('\n');
   }
 
   /** Safely extract text content from a message (handles multimodal arrays) */

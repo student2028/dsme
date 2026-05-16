@@ -4,6 +4,9 @@ import { useTheme } from '../ThemeContext';
 interface Props {
   activePanel: string;
   onPanelChange: (panel: string) => void;
+  /** Bottom terminal panel — separate from side panels. */
+  terminalOpen?: boolean;
+  onTerminalToggle?: () => void;
 }
 
 // SVG icons for a crisp, modern look
@@ -23,6 +26,13 @@ const GitIcon = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/>
     <line x1="6" y1="9" x2="6" y2="21"/>
+  </svg>
+);
+
+const TerminalIcon = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="4 17 10 11 4 5" />
+    <line x1="12" y1="19" x2="20" y2="19" />
   </svg>
 );
 
@@ -53,7 +63,7 @@ const panels = [
   { id: 'git', Icon: GitIcon, label: 'Source Control' },
 ];
 
-export const ActivityBar: React.FC<Props> = ({ activePanel, onPanelChange }) => {
+export const ActivityBar: React.FC<Props> = ({ activePanel, onPanelChange, terminalOpen, onTerminalToggle }) => {
   const { theme, toggleTheme } = useTheme();
 
   return (
@@ -77,6 +87,25 @@ export const ActivityBar: React.FC<Props> = ({ activePanel, onPanelChange }) => 
           <p.Icon />
         </div>
       ))}
+      {onTerminalToggle && (
+        <div
+          className={`activity-bar-icon ${terminalOpen ? 'active' : ''}`}
+          onClick={onTerminalToggle}
+          title="Terminal (⌃`)"
+          role="button"
+          tabIndex={0}
+          aria-label="Toggle terminal panel"
+          aria-pressed={terminalOpen ?? false}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onTerminalToggle();
+            }
+          }}
+        >
+          <TerminalIcon />
+        </div>
+      )}
       <div className="activity-bar-spacer" />
       <div
         className="activity-bar-icon bottom activity-bar-theme-btn"

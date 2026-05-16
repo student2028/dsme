@@ -33,8 +33,12 @@ export const StatusBar: React.FC<Props> = ({ activePath, language, cursorPositio
   // Listen to agent status for real-time indicator
   useEffect(() => {
     if (!window.electronAPI) return;
-    window.electronAPI.onChatStatus((status: string) => setAgentStatus(status));
-    window.electronAPI.onRagStatus((count: number) => setRagFiles(count));
+    const unsubChat = window.electronAPI.onChatStatus((status: string) => setAgentStatus(status));
+    const unsubRag = window.electronAPI.onRagStatus((count: number) => setRagFiles(count));
+    return () => {
+      unsubChat();
+      unsubRag();
+    };
   }, []);
 
   const getStatusText = () => {

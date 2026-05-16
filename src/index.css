@@ -1359,7 +1359,11 @@ body {
   z-index: 10000;
   display: flex;
   justify-content: center;
-  padding-top: 15vh;
+  align-items: center;
+  padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px))
+    max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .command-palette {
@@ -1424,23 +1428,40 @@ body {
 /* ===== SETTINGS PANEL ===== */
 .settings-panel {
   width: 480px;
+  max-width: min(480px, calc(100vw - 32px));
+  max-height: min(calc(100vh - 32px), 900px);
   background: var(--bg-elevated);
   border: 1px solid var(--border-color);
-  padding: 28px;
+  padding: 24px 28px 20px;
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.settings-panel-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 6px;
+  margin-right: -2px;
+  -webkit-overflow-scrolling: touch;
 }
 
 .settings-title {
   font-size: 15px;
   font-weight: 600;
   color: var(--text-primary);
-  margin-bottom: 24px;
+  margin-bottom: 20px;
   text-align: center;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .settings-section-label {
@@ -1530,7 +1551,10 @@ body {
 .settings-actions {
   display: flex;
   gap: 12px;
-  margin-top: 28px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color);
+  flex-shrink: 0;
 }
 
 .settings-save-btn {
@@ -1807,7 +1831,7 @@ body {
 }
 
 .terminal-header {
-  padding: 6px 16px;
+  padding: 6px 10px 6px 16px;
   font-size: 11px;
   color: var(--text-secondary);
   border-bottom: 1px solid var(--border-color);
@@ -1818,7 +1842,42 @@ body {
   text-transform: uppercase;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
+}
+
+.terminal-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.terminal-header-led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  flex-shrink: 0;
+}
+
+.terminal-header-collapse {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  margin: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.terminal-header-collapse:hover {
+  background: var(--bg-hover, rgba(255, 255, 255, 0.06));
+  color: var(--text-primary);
 }
 
 .terminal-content {
@@ -1826,6 +1885,41 @@ body {
   padding: 4px 8px;
   background: var(--bg-primary);
   overflow: hidden;
+}
+
+/* Collapsed terminal strip — tap to expand (default: hidden panel) */
+.terminal-dock {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 7px 16px;
+  border: none;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.terminal-dock:hover {
+  color: var(--accent-color);
+  background: var(--bg-tertiary, var(--bg-primary));
+}
+
+.terminal-dock-led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  flex-shrink: 0;
 }
 
 /* ===== DIFF PREVIEW ===== */
@@ -2815,6 +2909,14 @@ textarea:focus-visible {
   background: var(--bg-secondary);
 }
 
+[data-theme="light"] .terminal-dock {
+  background: var(--bg-secondary);
+}
+
+[data-theme="light"] .terminal-dock:hover {
+  background: var(--bg-tertiary, #eef0f3);
+}
+
 [data-theme="light"] .welcome-screen {
   background: var(--bg-primary);
 }
@@ -3207,8 +3309,12 @@ textarea:focus-visible {
 .browser-task-timeline {
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
-  padding: 8px 12px 10px;
+  padding: 6px 12px 8px;
   flex-shrink: 0;
+}
+
+.browser-task-timeline.is-steps-open {
+  padding-bottom: 10px;
 }
 
 .browser-task-header {
@@ -3216,6 +3322,10 @@ textarea:focus-visible {
   justify-content: space-between;
   gap: 12px;
   align-items: flex-start;
+  margin-bottom: 0;
+}
+
+.browser-task-timeline.is-steps-open .browser-task-header {
   margin-bottom: 8px;
 }
 

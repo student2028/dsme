@@ -77,6 +77,8 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
           Settings
         </div>
 
+        <div className="settings-panel-scroll" role="region" aria-label="Settings form">
+
         {/* Theme Section */}
         <div className="settings-section-label">Appearance</div>
         <div className="settings-group">
@@ -196,6 +198,8 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
           <div style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
             ⚡ Vercel AI SDK — streamText + Zod tool schemas
           </div>
+        </div>
+
         </div>
 
         <div className="settings-actions">

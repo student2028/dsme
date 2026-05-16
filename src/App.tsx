@@ -29,10 +29,13 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  /** Terminal tucked in a bottom dock by default; use strip, activity bar, ⌃`, or View menu to show. */
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(220);
   const [chatWidth, setChatWidth] = useState(460);
   const [gitBranch, setGitBranch] = useState('');
-  const [sidePanel, setSidePanel] = useState<string>('explorer');
+  /** Empty by default so the main area (editor/chat) is wider; ⌘B or Explorer icon opens the tree. */
+  const [sidePanel, setSidePanel] = useState<string>('');
   const [diffChanges, setDiffChanges] = useState<DiffChange[]>([]);
   const autoSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activePathRef = useRef(activePath);
@@ -41,6 +44,22 @@ function App() {
   const [tabMenu, setTabMenu] = useState<{x: number; y: number; path: string} | null>(null);
 
   const activeTab = tabs.find(t => t.path === activePath);
+
+  /** Fix duplicate browser://panel tabs left over from older race / stacked IPC listeners. */
+  useEffect(() => {
+    setTabs(prev => {
+      let seenBrowser = false;
+      const next = prev.filter(t => {
+        if (t.path !== 'browser://panel') return true;
+        if (!seenBrowser) {
+          seenBrowser = true;
+          return true;
+        }
+        return false;
+      });
+      return next.length === prev.length ? prev : next;
+    });
+  }, [tabs.length]);
 
   useEffect(() => {
     window.__DSME_READY = true;
@@ -84,13 +103,14 @@ function App() {
   // Native menu actions
   useEffect(() => {
     if (!window.electronAPI) return;
-    window.electronAPI.onMenuAction((action: string) => {
+    const unsub = window.electronAPI.onMenuAction((action: string) => {
       switch (action) {
         case 'settings': setSettingsOpen(p => !p); break;
         case 'quick-open': setCmdPaletteOpen(p => !p); break;
         case 'search': setSearchOpen(p => !p); break;
         case 'shortcuts': setHelpOpen(p => !p); break;
         case 'toggle-sidebar': setSidePanel(p => p ? '' : 'explorer'); break;
+        case 'toggle-terminal': setTerminalOpen(o => !o); break;
         case 'save': handleSave(); break;
         case 'find': window.dispatchEvent(new CustomEvent('dsme-find')); break;
         case 'new-conversation': window.dispatchEvent(new CustomEvent('dsme-new-conversation')); break;
@@ -113,6 +133,7 @@ function App() {
           break;
       }
     });
+    return () => { unsub(); };
   }, [handleSave]);
 
   const handleEditorChange = useCallback((v: string | undefined) => {
@@ -138,27 +159,28 @@ function App() {
   }, [activePath]);
 
   useEffect(() => {
-    if (window.electronAPI) {
-      window.electronAPI.onFileChanged(async (fp: string) => {
-        try {
-          const c = await window.electronAPI.readFile(fp);
-          setTabs(prev => prev.map(t => t.path === fp ? { ...t, content: c, isDirty: false } : t));
-          showToast(`Applied: ${fp.split('/').pop()}`, 'success');
-        } catch {}
-      });
-
-      // Diff preview from agent
-      window.electronAPI.onDiffPreview(change => {
-        setDiffChanges(prev => [...prev, {
-          id: change.id,
-          filepath: change.filepath,
-          filename: change.filename,
-          oldContent: change.oldContent,
-          newContent: change.newContent,
-          status: 'pending' as const,
-        }]);
-      });
-    }
+    if (!window.electronAPI) return;
+    const unsubFile = window.electronAPI.onFileChanged(async (fp: string) => {
+      try {
+        const c = await window.electronAPI.readFile(fp);
+        setTabs(prev => prev.map(t => t.path === fp ? { ...t, content: c, isDirty: false } : t));
+        showToast(`Applied: ${fp.split('/').pop()}`, 'success');
+      } catch { /* ignore */ }
+    });
+    const unsubDiff = window.electronAPI.onDiffPreview(change => {
+      setDiffChanges(prev => [...prev, {
+        id: change.id,
+        filepath: change.filepath,
+        filename: change.filename,
+        oldContent: change.oldContent,
+        newContent: change.newContent,
+        status: 'pending' as const,
+      }]);
+    });
+    return () => {
+      unsubFile();
+      unsubDiff();
+    };
   }, []);
 
   useEffect(() => {
@@ -171,6 +193,7 @@ function App() {
       if (mod && e.shiftKey && e.key === 'F') { e.preventDefault(); setSearchOpen(p => !p); }
       if (mod && e.key === '?') { e.preventDefault(); setHelpOpen(p => !p); }
       if (mod && e.key === 'b') { e.preventDefault(); setSidePanel(p => p ? '' : 'explorer'); }
+      if (mod && e.code === 'Backquote') { e.preventDefault(); setTerminalOpen(o => !o); }
       if (mod && e.shiftKey && e.key === 'L') { e.preventDefault(); toggleTheme(); }
       if (mod && e.key === 'l' && !e.shiftKey) { e.preventDefault(); window.dispatchEvent(new Event('focus-chat')); }
     };
@@ -196,6 +219,16 @@ function App() {
     document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
   }, [chatWidth]);
 
+  /** Single browser tab — must use functional setTabs so rapid IPC / stale state cannot open duplicates. */
+  const openBrowserTab = useCallback(() => {
+    setTabs(prev =>
+      prev.some(t => t.path === 'browser://panel')
+        ? prev
+        : [...prev, { path: 'browser://panel', name: '🌐 Browser', content: '', isDirty: false }],
+    );
+    setActivePath('browser://panel');
+  }, []);
+
   const getLang = (n: string) => {
     const ext = n?.split('.').pop()?.toLowerCase() || '';
     return ({ ts:'TS', tsx:'TSX', js:'JS', jsx:'JSX', css:'CSS', html:'HTML', json:'JSON', md:'MD', py:'PY', kt:'KT', dart:'Dart', swift:'Swift', go:'Go', rs:'Rust', java:'Java', sh:'SH' } as any)[ext] || ext.toUpperCase() || 'TXT';
@@ -208,7 +241,12 @@ function App() {
 
   return (
     <div className="app-container">
-      <ActivityBar activePanel={sidePanel} onPanelChange={handlePanelChange} />
+      <ActivityBar
+        activePanel={sidePanel}
+        onPanelChange={handlePanelChange}
+        terminalOpen={terminalOpen}
+        onTerminalToggle={() => setTerminalOpen(o => !o)}
+      />
 
       {/* Side panel */}
       {sidePanel && (
@@ -241,7 +279,9 @@ function App() {
               <span className="tab-close" onClick={(e) => handleCloseTab(e, tab.path)}>×</span>
             </div>
           ))}
-          {tabs.length === 0 && <div className="tab-empty">⌘P open file · ⌘L chat · ⌘B sidebar · double-click to open</div>}
+          {tabs.length === 0 && (
+            <div className="tab-empty">⌘P open file · ⌘L chat · ⌘B sidebar · ⌃` terminal · double-click to open</div>
+          )}
         </div>
 
         {activeTab && (
@@ -254,15 +294,7 @@ function App() {
         )}
 
         {/* Persistent browser tab — webviews stay alive across tab switches */}
-        <BrowserPanel
-          visible={activePath === 'browser://panel'}
-          onTabOpen={() => {
-            if (!tabs.find(t => t.path === 'browser://panel')) {
-              setTabs(prev => [...prev, { path: 'browser://panel', name: '🌐 Browser', content: '', isDirty: false }]);
-            }
-            setActivePath('browser://panel');
-          }}
-        />
+        <BrowserPanel visible={activePath === 'browser://panel'} onTabOpen={openBrowserTab} />
 
         {activePath !== 'browser://panel' && (
           <ErrorBoundary fallbackMessage="Editor crashed">
@@ -274,9 +306,32 @@ function App() {
           </ErrorBoundary>
         )}
 
-        <div className="resize-handle-h" onMouseDown={handleTerminalDrag} />
-        <div style={{ height: `${terminalHeight}px`, flexShrink: 0 }}>
-          <ErrorBoundary fallbackMessage="Terminal crashed"><TerminalPanel /></ErrorBoundary>
+        {terminalOpen ? (
+          <div className="resize-handle-h" onMouseDown={handleTerminalDrag} />
+        ) : (
+          <button
+            type="button"
+            className="terminal-dock"
+            onClick={() => setTerminalOpen(true)}
+            title="Show terminal (⌃`)"
+            aria-label="Show terminal"
+          >
+            <span className="terminal-dock-led" aria-hidden />
+            <span>Terminal</span>
+          </button>
+        )}
+        <div
+          className="terminal-stack"
+          style={{
+            height: terminalOpen ? terminalHeight : 0,
+            overflow: 'hidden',
+            flexShrink: 0,
+            minHeight: 0,
+          }}
+        >
+          <ErrorBoundary fallbackMessage="Terminal crashed">
+            <TerminalPanel onRequestCollapse={() => setTerminalOpen(false)} />
+          </ErrorBoundary>
         </div>
       </main>
 

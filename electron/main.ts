@@ -296,6 +296,7 @@ function buildMenu() {
       label: 'View',
       submenu: [
         { label: 'Toggle Sidebar', accelerator: 'CmdOrCtrl+B', click: () => win?.webContents.send('menu-action', 'toggle-sidebar') },
+        { label: 'Toggle Terminal', accelerator: 'CmdOrCtrl+`', click: () => win?.webContents.send('menu-action', 'toggle-terminal') },
         { type: 'separator' },
         { role: 'toggleDevTools' },
         { role: 'togglefullscreen' },

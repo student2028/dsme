@@ -217,7 +217,7 @@ export const BrowserPanel: React.FC<{
   useEffect(() => {
     if (!window.electronAPI?.onBrowserCommand) return;
 
-    window.electronAPI.onBrowserCommand(async (cmd) => {
+    const unsub = window.electronAPI.onBrowserCommand(async (cmd) => {
       const { id, command } = cmd;
       const sessionTitle = typeof cmd.sessionTitle === 'string' ? cmd.sessionTitle : undefined;
 
@@ -325,13 +325,16 @@ export const BrowserPanel: React.FC<{
 
       window.electronAPI.sendBrowserResult?.(id, result);
     });
+    return () => {
+      unsub();
+    };
   }, [onTabOpen, navigateTo, getWebview, execJS, beginStep, completeStep, beginTask, ensureBrowserTaskForCmd]);
 
   // ── Web search handler (existing, for backward compat) ──
   useEffect(() => {
     if (!window.electronAPI?.onWebSearchExecute) return;
 
-    window.electronAPI.onWebSearchExecute(async (data) => {
+    const unsub = window.electronAPI.onWebSearchExecute(async (data) => {
       const { query, engines, stopOnFirstResult } = data;
       resultsRef.current.clear();
       onTabOpen();
@@ -406,6 +409,9 @@ export const BrowserPanel: React.FC<{
 
       sendAllResults(query);
     });
+    return () => {
+      unsub();
+    };
   }, [onTabOpen, navigateTo, getWebview, extractFromWebview, beginTask, beginStep, completeStep]);
 
   const sendAllResults = (query: string) => {
@@ -492,6 +498,8 @@ const BrowserTaskTimeline: React.FC<{
 }> = ({ task, pageUrl, onClearTimeline }) => {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [copyState, setCopyState] = useState<'idle' | 'ok' | 'err'>('idle');
+  /** Default collapsed so the webview stays visible during long search/browser runs. */
+  const [stepsListOpen, setStepsListOpen] = useState(false);
 
   const toggleExpand = (id: string) => {
     setExpanded(prev => ({ ...prev, [id]: !prev[id] }));
@@ -512,7 +520,7 @@ const BrowserTaskTimeline: React.FC<{
   const copyLabel = copyState === 'ok' ? '已复制' : copyState === 'err' ? '复制失败' : '复制 Markdown';
 
   return (
-    <div className="browser-task-timeline">
+    <div className={`browser-task-timeline${stepsListOpen ? ' is-steps-open' : ''}`}>
       <div className="browser-task-header">
         <div>
           <div className="browser-task-title">{task.title}</div>
@@ -523,6 +531,14 @@ const BrowserTaskTimeline: React.FC<{
           </div>
         </div>
         <div className="browser-task-toolbar">
+          <button
+            type="button"
+            className="browser-task-tool-btn muted"
+            onClick={() => setStepsListOpen(v => !v)}
+            title={stepsListOpen ? '收起步骤列表，留出网页区域' : '展开步骤列表'}
+          >
+            {stepsListOpen ? '收起步骤' : `展开步骤 (${task.steps.length})`}
+          </button>
           <button type="button" className="browser-task-tool-btn" onClick={copyMarkdown}>
             {copyLabel}
           </button>
@@ -532,16 +548,18 @@ const BrowserTaskTimeline: React.FC<{
           <span className="browser-task-elapsed">{formatDuration(task.summary.elapsedMs)}</span>
         </div>
       </div>
-      <div className="browser-task-steps">
-        {task.steps.map(step => (
-          <BrowserTaskStepRow
-            key={step.id}
-            step={step}
-            expanded={Boolean(expanded[step.id])}
-            onToggleExpand={() => toggleExpand(step.id)}
-          />
-        ))}
-      </div>
+      {stepsListOpen && (
+        <div className="browser-task-steps">
+          {task.steps.map(step => (
+            <BrowserTaskStepRow
+              key={step.id}
+              step={step}
+              expanded={Boolean(expanded[step.id])}
+              onToggleExpand={() => toggleExpand(step.id)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 };

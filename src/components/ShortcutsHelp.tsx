@@ -11,6 +11,7 @@ const shortcuts = [
       { keys: ['⌘', 'P'], desc: 'Quick Open (file)' },
       { keys: ['⌘', ','], desc: 'Settings' },
       { keys: ['⌘', 'B'], desc: 'Toggle sidebar' },
+      { keys: ['⌃', '`'], desc: 'Toggle terminal' },
       { keys: ['⌘', 'O'], desc: 'Open workspace' },
       { keys: ['⇧', '⌘', 'L'], desc: 'Toggle theme' },
       { keys: ['⌘', '?'], desc: 'This help panel' },

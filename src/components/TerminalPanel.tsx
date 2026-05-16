@@ -36,7 +36,7 @@ const LIGHT_THEME = {
   white: '#fafbfc',
 };
 
-export const TerminalPanel: React.FC = () => {
+export const TerminalPanel: React.FC<{ onRequestCollapse?: () => void }> = ({ onRequestCollapse }) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termInstance = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -78,11 +78,10 @@ export const TerminalPanel: React.FC = () => {
     term.writeln('');
 
     // IPC: terminal output → xterm
-    // Note: preload's removeAllListeners pattern handles re-registration,
-    // but we still need to gate writes on component mount status
     let mounted = true;
+    let unsubTerminal: (() => void) | undefined;
     if (window.electronAPI) {
-      window.electronAPI.onTerminalOutput((data: string) => {
+      unsubTerminal = window.electronAPI.onTerminalOutput((data: string) => {
         if (mounted && termInstance.current) {
           term.write(data);
         }
@@ -109,7 +108,8 @@ export const TerminalPanel: React.FC = () => {
     window.addEventListener('resize', handleResize);
 
     return () => {
-      mounted = false; // Prevent stale IPC writes after unmount
+      mounted = false;
+      unsubTerminal?.();
       window.removeEventListener('resize', handleResize);
       observer.disconnect();
       term.dispose();
@@ -120,8 +120,23 @@ export const TerminalPanel: React.FC = () => {
   return (
     <div className="terminal-panel">
       <div className="terminal-header">
-        <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--green)', flexShrink: 0 }} />
-        Terminal
+        <div className="terminal-header-left">
+          <span className="terminal-header-led" />
+          Terminal
+        </div>
+        {onRequestCollapse && (
+          <button
+            type="button"
+            className="terminal-header-collapse"
+            onClick={onRequestCollapse}
+            title="收起终端"
+            aria-label="Collapse terminal"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+        )}
       </div>
       <div ref={terminalRef} className="terminal-content" />
     </div>

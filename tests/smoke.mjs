@@ -1387,7 +1387,7 @@ async function main() {
         appContainer: !!document.querySelector('.app-container'),
         chatPanel: !!document.querySelector('.chat-panel'),
         statusBar: !!document.querySelector('.status-bar'),
-        terminalPanel: !!document.querySelector('.terminal-panel'),
+        terminalPresent: !!(document.querySelector('.terminal-panel') || document.querySelector('.terminal-dock')),
         welcomeOrEditor: !!(document.querySelector('.welcome-screen') || document.querySelector('.editor-container')),
         chatInput: !!document.querySelector('.chat-input'),
         statusBarHeight: (() => {
@@ -1409,7 +1409,7 @@ async function main() {
       c.appContainer &&
       c.chatPanel &&
       c.statusBar &&
-      c.terminalPanel &&
+      c.terminalPresent &&
       c.welcomeOrEditor &&
       c.chatInput;
     return allPresent && heightOk;
