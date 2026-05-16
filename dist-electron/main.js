@@ -24783,6 +24783,49 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				if (url && url.startsWith("http")) this.view.webContents.loadURL(url);
 				return { action: "deny" };
 			});
+			this.view.webContents.on("context-menu", (_event, params) => {
+				const { Menu, MenuItem } = require("electron");
+				const menu = new Menu();
+				const wc = this.view.webContents;
+				if (params.linkURL) {
+					menu.append(new MenuItem({
+						label: "在当前页面打开链接",
+						click: () => wc.loadURL(params.linkURL)
+					}));
+					menu.append(new MenuItem({ type: "separator" }));
+				}
+				const nav = wc.navigationHistory;
+				menu.append(new MenuItem({
+					label: "后退",
+					enabled: nav.canGoBack(),
+					click: () => nav.goBack()
+				}));
+				menu.append(new MenuItem({
+					label: "前进",
+					enabled: nav.canGoForward(),
+					click: () => nav.goForward()
+				}));
+				menu.append(new MenuItem({
+					label: "刷新",
+					click: () => wc.reload()
+				}));
+				menu.append(new MenuItem({ type: "separator" }));
+				if (params.selectionText) menu.append(new MenuItem({
+					label: "复制",
+					role: "copy"
+				}));
+				if (params.isEditable) {
+					menu.append(new MenuItem({
+						label: "粘贴",
+						role: "paste"
+					}));
+					menu.append(new MenuItem({
+						label: "全选",
+						role: "selectAll"
+					}));
+				}
+				menu.popup();
+			});
 			console.log("[BrowserViewManager] Initialized with WebContentsView");
 		}
 		/** Clean up on app quit. */
