@@ -1,17 +1,14 @@
 /**
  * Shared browse_page implementation for both Vercel and Builtin agents.
  *
- * Uses the BrowserPanel's persistent webview via the browser-command IPC channel.
- * This ensures browse_page shares state with browser_navigate/browser_eval/browser_snapshot
- * and benefits from:
- *   - Persistent webview (no re-creation per call)
- *   - Full did-finish-load waiting
+ * Uses BrowserViewManager (WebContentsView) via browserNavigate/browserEval.
+ * All operations execute directly in the main process — zero IPC overhead.
+ *
+ * Benefits:
+ *   - Persistent WebContentsView (no re-creation per call)
+ *   - loadURL() with full navigation waiting
  *   - 115s script execution timeout
  *   - Proper error handling and result extraction
- *
- * Previously used WebSearchOverlay (web-search-execute) which created a temporary
- * webview with only 2.5s wait and a >20 char filter — causing "No results found"
- * on JS-rendered SPAs that need longer load times.
  */
 
 import { browserNavigate, browserEval } from './browser-use';

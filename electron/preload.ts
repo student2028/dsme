@@ -81,15 +81,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   switchKernel: (kernel: string) => ipcRenderer.send('switch-kernel', kernel),
   onKernelChanged: createExclusiveListenerChannel('kernel-changed'),
 
-  onWebSearchExecute: createExclusiveListenerChannel('web-search-execute'),
-  sendWebSearchResults: (results: string) => {
-    ipcRenderer.send('web-search-results', results);
-  },
-
-  onBrowserCommand: createExclusiveListenerChannel('browser-command'),
-  sendBrowserResult: (id: string, result: string) => {
-    ipcRenderer.send(`browser-result-${id}`, result);
-  },
+  // [DEPRECATED] Legacy IPC — no longer used after WebContentsView migration.
+  // web_search now calls BrowserViewManager directly; browser-use tools do too.
+  // Kept as no-ops to prevent runtime errors if any stale code references them.
+  onWebSearchExecute: (_cb: any) => () => {},
+  sendWebSearchResults: (_results: string) => {},
+  onBrowserCommand: (_cb: any) => () => {},
+  sendBrowserResult: (_id: string, _result: string) => {},
 
   // WebContentsView-based browser panel
   syncBrowserBounds: (bounds: { x: number; y: number; width: number; height: number }) => {

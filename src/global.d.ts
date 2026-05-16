@@ -69,19 +69,21 @@ declare global {
       onRagStatus: (callback: (count: number) => void) => Unsubscribe;
       onKernelChanged: (callback: (kernel: string) => void) => Unsubscribe;
       switchKernel: (kernel: string) => void;
-      onWebSearchExecute: (callback: (data: {
-        query: string;
-        stopOnFirstResult?: boolean;
-        engines: { label: string; url: string; extractJS: string }[];
-      }) => void) => Unsubscribe;
+      /** @deprecated No longer used — web_search uses BrowserViewManager directly */
+      onWebSearchExecute: (callback: (data: any) => void) => Unsubscribe;
+      /** @deprecated No longer used */
       sendWebSearchResults: (results: string) => void;
-      onBrowserCommand: (callback: (cmd: {
-        id: string;
-        command: string;
-        sessionTitle?: string;
-        [key: string]: unknown;
-      }) => void) => Unsubscribe;
+      /** @deprecated No longer used — browser-use tools use BrowserViewManager directly */
+      onBrowserCommand: (callback: (cmd: any) => void) => Unsubscribe;
+      /** @deprecated No longer used */
       sendBrowserResult: (id: string, result: string) => void;
+      // WebContentsView browser panel
+      syncBrowserBounds: (bounds: { x: number; y: number; width: number; height: number }) => void;
+      showBrowserView: (bounds?: { x: number; y: number; width: number; height: number }) => void;
+      hideBrowserView: () => void;
+      onBrowserViewNavigated: (callback: (data: { url: string; title: string }) => void) => Unsubscribe;
+      onBrowserStep: (callback: (data: any) => void) => Unsubscribe;
+      onBrowserPanelOpen: (callback: () => void) => Unsubscribe;
     };
   }
 }

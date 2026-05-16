@@ -107,8 +107,9 @@ export class BrowserViewManager {
 
   async goBack(): Promise<string> {
     if (!this.view) return 'Error: view not initialized';
-    if (!this.view.webContents.canGoBack()) return 'Cannot go back — no history.';
-    this.view.webContents.goBack();
+    const nav = this.view.webContents.navigationHistory;
+    if (!nav.canGoBack()) return 'Cannot go back — no history.';
+    nav.goBack();
     // Wait a bit for navigation to complete
     await new Promise(r => setTimeout(r, 1500));
     const url = this.view.webContents.getURL();

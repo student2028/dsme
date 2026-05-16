@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>小红书「赵雅芝」搜索结果</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #f5f5f5;
+      color: #333;
+      padding: 20px;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 30px;
+      padding: 24px 20px;
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+    }
+    .header h1 {
+      font-size: 26px;
+      margin-bottom: 6px;
+      color: #ff2442;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .header p {
+      font-size: 14px;
+      color: #999;
+      margin-top: 6px;
+    }
+    .gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 18px;
+      max-width: 1440px;
+      margin: 0 auto;
+    }
+    .card {
+      background: #fff;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+      transition: transform 0.25s cubic-bezier(.34,1.56,.64,1), box-shadow 0.25s ease;
+      cursor: pointer;
+      position: relative;
+    }
+    .card:hover {
+      transform: translateY(-6px) scale(1.01);
+      box-shadow: 0 16px 40px rgba(0,0,0,0.14);
+    }
+    .card img {
+      width: 100%;
+      height: 320px;
+      object-fit: cover;
+      display: block;
+      background: #f0f0f0;
+    }
+    .card .info {
+      padding: 12px 14px;
+      font-size: 13px;
+      color: #999;
+      text-align: center;
+      border-top: 1px solid #f5f5f5;
+    }
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.88);
+      z-index: 1000;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+      animation: fadeIn 0.2s ease;
+    }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .modal.active { display: flex; }
+    .modal img {
+      max-width: 92vw;
+      max-height: 90vh;
+      border-radius: 10px;
+      object-fit: contain;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+    .modal .close {
+      position: absolute;
+      top: 20px; right: 30px;
+      font-size: 36px;
+      color: #fff;
+      cursor: pointer;
+      user-select: none;
+      opacity: 0.7;
+      transition: opacity 0.2s;
+    }
+    .modal .close:hover { opacity: 1; }
+    @media (max-width: 600px) {
+      .gallery { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+      .card img { height: 200px; }
+      .header h1 { font-size: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🔍 小红书「赵雅芝」搜索结果</h1>
+    <p>从小红书搜索页提取的 20 张站内图片 · 点击可放大查看</p>
+  </div>
+
+  <div class="gallery" id="gallery"></div>
+
+  <div class="modal" id="modal">
+    <span class="close" id="close">&times;</span>
+    <img id="modalImg" src="" alt="">
+  </div>
+
+  <script>
+    const images = [
+      "https://sns-webpic-qc.xhscdn.com/202605162203/d8de5aa9789937d1abaf8ac54d7b68c1/110/0/01e975e7559d4f240010000000019bf48fb040_0.jpg!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/e23f727520dc153b2a0c046ecfc675e8/1040g00831pv4j67una0049v16lk4n245120o6n8!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/05f1c0466551484db10d4bfaeaa7ebee/spectrum/1040g0k031sa9t6f6l80g415nlhqak2hmv0rmrdg!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/d06fc2cee4a7a3653db75ae759b04adf/1040g00831t2ugd1ile1g5o23hrpg8ij8qb15pa8!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/f980b588aa471ce93f0211206bdc2c7d/1040g2sg31ped4uhq2o705q6ipj38crfk2i2fo20!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/e9621eaa2e3ef4dd505664de25c0e987/notes_pre_post/1040g3k831q1m6r5m7o705pfneo0ipmq2mr7eobo!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/04f8f0171e69af83d0fbdecb5fed5054/spectrum/1040g0k031p00hq4q2a0g5plpf1j7e44uppn0vt8!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/f00fc9cd15376ee7a0bacf495afe6935/1040g00831s85so2alc6g5q59uqh69ksj54klp1g!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/30d6e89d2f8d2956d6961b3334aa7eec/1040g2sg31r5hl5nq00e049o8icgq9ftj8ar3vg8!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/bae519a6f3530406ffe7ce0ce0924e4b/1040g2sg31enbmr9tls705nhg7la09elj30hkt98!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/c94dfbf64cfb36d7b5c9a8f45a0529a2/1040g2sg31el838falkd05nrf6tbgbv9d1c460po!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/6d5c3793b6e450fd852d49a57c2d1e5c/1040g00831a12vaneng00401fm854e6tnd58ag5o!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/0561f564695b5d4c997714a90c6faee0/1040g008315fqgocegu5g5o108t608jdtbrv8v60!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/ec4df1b7b1f653fb5d0638d23886e883/1040g2sg31d6tigvogm705oaem6dgjibg5qumb0g!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/8b31f4652f7133eeda72f65a2524a5a1/1040g00831fh0lgcm6o605opo9v66bj4lrubd500!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/cb0c5264fe6a1011c19368920a2a21c2/1040g2sg31fh1v4gb6o7040o2njqapr45af742g8!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/e6492bbe52d93845aacf9d253e03cb93/1040g0083142iv4jp1o005p69o1c3krtojb0a9c0!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/c609e809af8fc7053e7a723289f6987d/1040g00831ei58inp08d05pri4is62i691g96498!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/a0fdd27174b32160847baa47428ded05/1040g00831q90jh3gga005nem4qv08v62li4gqqg!nc_n_webp_mw_1",
+      "https://sns-webpic-qc.xhscdn.com/202605162203/3e5c7f475b34533745192a29d69ef081/1040g2sg31fcr6apnmokg5p0sfokkc76mda4mpug!nc_n_webp_mw_1"
+    ];
+
+    const gallery = document.getElementById('gallery');
+    const modal = document.getElementById('modal');
+    const modalImg = document.getElementById('modalImg');
+    const close = document.getElementById('close');
+
+    images.forEach((src, i) => {
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = `
+        <img src="${src}" alt="赵雅芝 ${i + 1}" loading="lazy" onerror="this.style.display='none'">
+        <div class="info">#${i + 1} · 来自小红书</div>
+      `;
+      card.addEventListener('click', () => {
+        modalImg.src = src;
+        modal.classList.add('active');
+      });
+      gallery.appendChild(card);
+    });
+
+    close.addEventListener('click', () => modal.classList.remove('active'));
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) modal.classList.remove('active');
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') modal.classList.remove('active');
+    });
+  </script>
+</body>
+</html>
