@@ -17,6 +17,8 @@ let node_child_process = require("node:child_process");
 node_child_process = require_token_util$1.__toESM(node_child_process);
 let node_util = require("node:util");
 let fs_promises = require("fs/promises");
+let node_fs = require("node:fs");
+node_fs = require_token_util$1.__toESM(node_fs);
 let openai = require("openai");
 openai = require_token_util$1.__toESM(openai);
 let node_os = require("node:os");
@@ -24877,6 +24879,15 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			this.attached = true;
 			console.log("[BrowserViewManager] View attached to window");
 		}
+		/** Ensure the view and its webContents are alive; recreate if needed. Returns false if unrecoverable. */
+		ensureHealthyView() {
+			if (!this.view) return false;
+			if (!this.view.webContents || this.view.webContents.isDestroyed()) {
+				this.recreateView();
+				if (!this.view || !this.view.webContents) return false;
+			}
+			return true;
+		}
 		/** Recreate the view after a renderer crash. */
 		recreateView() {
 			if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
@@ -24900,8 +24911,8 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				this.view = null;
 			}
 		}
-		async navigate(url) {
-			if (!this.view) return "Error: view not initialized";
+		async navigate(url, _retryCount = 0) {
+			if (!this.ensureHealthyView()) return "Error: view not initialized";
 			this.ensureAttached();
 			try {
 				await this.view.webContents.loadURL(url);
@@ -24913,26 +24924,39 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				});
 				return `Navigated to ${url}. Title: ${title}`;
 			} catch (e) {
-				if (e.message?.includes("ERR_ABORTED")) return `Navigated to ${url} (with redirect). Title: ${this.view.webContents.getTitle()}`;
+				if (e.message?.includes("ERR_ABORTED")) try {
+					return `Navigated to ${url} (with redirect). Title: ${this.view.webContents.getTitle()}`;
+				} catch {
+					return `Navigated to ${url} (with redirect).`;
+				}
+				if (_retryCount < 1 && (e.message?.includes("Cannot read properties") || e.message?.includes("object has been destroyed"))) {
+					console.error("[BrowserViewManager] WebContents in bad state, recreating and retrying...", e.message);
+					this.recreateView();
+					return this.navigate(url, _retryCount + 1);
+				}
 				return `Navigation error: ${e.message}`;
 			}
 		}
 		async goBack() {
-			if (!this.view) return "Error: view not initialized";
-			const nav = this.view.webContents.navigationHistory;
-			if (!nav.canGoBack()) return "Cannot go back — no history.";
-			nav.goBack();
-			await new Promise((r) => setTimeout(r, 1500));
-			const url = this.view.webContents.getURL();
-			this.currentUrl = url;
-			this.notifyRenderer("browser-view-navigated", {
-				url,
-				title: this.view.webContents.getTitle()
-			});
-			return `Went back. Now at: ${url}`;
+			if (!this.ensureHealthyView()) return "Error: view not initialized";
+			try {
+				const nav = this.view.webContents.navigationHistory;
+				if (!nav.canGoBack()) return "Cannot go back — no history.";
+				nav.goBack();
+				await new Promise((r) => setTimeout(r, 1500));
+				const url = this.view.webContents.getURL();
+				this.currentUrl = url;
+				this.notifyRenderer("browser-view-navigated", {
+					url,
+					title: this.view.webContents.getTitle()
+				});
+				return `Went back. Now at: ${url}`;
+			} catch (e) {
+				return `GoBack error: ${e.message}`;
+			}
 		}
 		async executeJS(script, timeoutMs = 115e3) {
-			if (!this.view) return "Error: view not initialized";
+			if (!this.ensureHealthyView()) return "Error: view not initialized";
 			try {
 				const result = await Promise.race([this.view.webContents.executeJavaScript(script), new Promise((_, reject) => setTimeout(() => reject(/* @__PURE__ */ new Error(`Timeout after ${Math.round(timeoutMs / 1e3)}s`)), timeoutMs))]);
 				if (result === null || result === void 0) {
@@ -25317,117 +25341,144 @@ function deriveToolResultCapChars(maxContextTokens) {
 * Security: This module uses NO shell commands (exec/spawn).
 * All external interactions go through native Node.js APIs or Electron IPC.
 */
-var SEARCH_EXTRACT_HELPERS = `
-function cleanText(value) {
-  return String(value || '').replace(/\\s+/g, ' ').trim();
+var _readabilitySource = null;
+function getReadabilitySource() {
+	if (_readabilitySource) return _readabilitySource;
+	try {
+		const readabilityPath = require.resolve("@mozilla/readability/Readability.js");
+		_readabilitySource = node_fs.readFileSync(readabilityPath, "utf8");
+		console.log(`[SharedTools] Readability.js loaded (${(_readabilitySource.length / 1024).toFixed(0)}KB)`);
+	} catch (e) {
+		console.warn("[SharedTools] @mozilla/readability not found, deep extraction disabled");
+		_readabilitySource = "";
+	}
+	return _readabilitySource;
 }
-function pushResult(results, title, snippet, url) {
-  title = cleanText(title);
-  snippet = cleanText(snippet);
-  url = cleanText(url);
-  if (!title || title.length < 4) return;
-  var line = title;
-  if (snippet && !title.includes(snippet)) line += ' — ' + snippet;
-  if (url) line += ' — ' + url;
-  if (line.length > 20 && !results.some(function(x) { return x.slice(0, 80) === line.slice(0, 80); })) {
-    results.push(line.slice(0, 420));
-  }
+/**
+* Run Readability.js inside WebContentsView page context.
+* Returns { title, textContent, excerpt } or null if extraction fails.
+* This leverages the full Chromium DOM — our project's unique advantage.
+*/
+async function extractWithReadability(browserViewManager) {
+	const src = getReadabilitySource();
+	if (!src) return null;
+	try {
+		const script = `(function(){
+      ${src}
+      var dc = document.cloneNode(true);
+      var reader = new Readability(dc);
+      var article = reader.parse();
+      if (!article) return null;
+      return JSON.stringify({
+        title: article.title || '',
+        textContent: (article.textContent || '').slice(0, 8000),
+        excerpt: article.excerpt || ''
+      });
+    })()`;
+		const raw = await browserViewManager.executeJS(script, 15e3);
+		if (!raw || raw === "null" || raw.startsWith("Script error:")) return null;
+		return JSON.parse(raw);
+	} catch (e) {
+		console.warn("[SharedTools] Readability extraction failed:", e.message);
+		return null;
+	}
 }
-function genericSearchExtract(preferredSelectors) {
-  var results = [];
-  var special = extractSpecialAnswer();
-  if (special) results.push(special);
-  preferredSelectors.forEach(function(selector) {
-    document.querySelectorAll(selector).forEach(function(item) {
-      if (results.length >= 8) return;
-      var title = item.querySelector('h1,h2,h3,.vrTitle,.title,[role="heading"]');
-      var link = item.querySelector('a[href]');
-      var snippet = item.querySelector('p,.VwiC3b,.IsZvec,[data-sncf],.str_info,.space-txt,.b_caption,.b_snippet');
-      pushResult(results, title && title.innerText, snippet && snippet.innerText, link && link.href);
-    });
-  });
-  if (results.length < 3) {
-    document.querySelectorAll('a[href]').forEach(function(link) {
-      if (results.length >= 8) return;
-      var href = link.href || '';
-      var text = cleanText(link.innerText || link.textContent);
-      if (!/^https?:/.test(href)) return;
-      if (href.includes('/search?') || href.includes('javascript:')) return;
-      if (text.length < 8 || text.length > 120) return;
-      var container = link.closest('div,article,section,li');
-      var snippet = container ? cleanText(container.innerText).replace(text, '').slice(0, 180) : '';
-      pushResult(results, text, snippet, href);
-    });
-  }
-  if (results.length === 0) {
-    var body = cleanText(document.body && document.body.innerText).slice(0, 1200);
-    return body ? 'Page text:\\n' + body : '';
-  }
-  return results.slice(0, 8).join('\\n');
+function buildExtractScript() {
+	return [
+		"(function(){",
+		"var MR=10;",
+		"function cl(v){return String(v||\"\").replace(/\\s+/g,\" \").trim();}",
+		"function extractCards(){",
+		"  var cards=[];",
+		"  var ws=[\"#wob_wc\",\"[data-attrid*=weather]\",\"[data-attrid*=temperature]\",",
+		"    \"[aria-label*=天气]\",\"[aria-label*=weather]\",",
+		"    \".weather-card\",\".wtr_card\",\".weather-box\",\".tq-box\",\"#tq_main\"];",
+		"  for(var i=0;i<ws.length;i++){try{",
+		"    var el=document.querySelector(ws[i]);",
+		"    if(el){var t=cl(el.innerText);",
+		"      if(t.length>15&&t.length<1000){cards.push(\"[天气] \"+t.slice(0,600));break;}}",
+		"  }catch(e){}}",
+		"  if(!cards.length){",
+		"    var bt=document.body?(document.body.innerText||\"\"):\"\";",
+		"    if(/\\d{1,3}\\s*[°℃℉]/.test(bt)&&/天气|weather|气温|温度|humidity|湿度|降水|风速|风力|多云|晴|阴|雨|雪/i.test(bt)){",
+		"      var ls=bt.split(\"\\n\"),wl=[];",
+		"      for(var j=0;j<ls.length&&wl.length<12;j++){",
+		"        var ln=cl(ls[j]);",
+		"        if(ln.length<3||ln.length>200)continue;",
+		"        if(/[°℃℉]|天气|weather|气温|温度|humidity|湿度|降水|风速|风力|wind|多云|晴|阴|雨|雪|紫外|UV/i.test(ln))wl.push(ln);",
+		"      }",
+		"      if(wl.length>=2)cards.push(\"[天气] \"+wl.join(\", \"));",
+		"    }",
+		"  }",
+		"  var ks=[\"[class*=kno-rdesc]\",\"[data-attrid=description]\",\".knowledge-panel\",\".kp-wholepage\",",
+		"    \"[class*=featured-snippet]\",\".xpdopen\",\"[data-tts=answers]\",\".answer-box\",",
+		"    \".vr_ans\",\".vrwrap_ans\",\".op_exactqa_s_answer\",\".c-border\"];",
+		"  for(var k=0;k<ks.length&&cards.length<3;k++){try{",
+		"    var ke=document.querySelector(ks[k]);",
+		"    if(ke){var kt=cl(ke.innerText);",
+		"      if(kt.length>30&&kt.length<1500){",
+		"        if(cards.length>0&&cards[0].indexOf(kt.slice(0,40))!==-1)continue;",
+		"        cards.push(\"[知识卡片] \"+kt.slice(0,600));}}",
+		"  }catch(e){}}",
+		"  return cards;",
+		"}",
+		"function extractResults(){",
+		"  var res=[],seen={};",
+		"  var fam=[",
+		"    {c:\"#search .g,#rso .g,#rso [data-sokoban-container],div[data-header-feature]\",",
+		"     t:\"h3,[role=heading]\",s:\".VwiC3b,[data-sncf],[style*=-webkit-line-clamp],.IsZvec,.lEBKkf\",l:\"a[href]\"},",
+		"    {c:\".vrwrap,.rb,.results>div,.result\",",
+		"     t:\"h3,.vrTitle,.title\",s:\"p,.str_info,.space-txt,.text-layout\",l:\"a[href]\"},",
+		"    {c:\".b_algo,.b_ans\",t:\"h2,.b_title\",s:\".b_caption p,.b_snippet\",l:\"a[href]\"},",
+		"    {c:\".c-container,.result,.result-op\",t:\"h3,.t,.c-title\",s:\".c-abstract,.content-right,.c-span-last\",l:\"a[href]\"}",
+		"  ];",
+		"  for(var fi=0;fi<fam.length;fi++){",
+		"    if(res.length>=MR)break;var f=fam[fi];try{",
+		"    var cs=document.querySelectorAll(f.c);",
+		"    for(var ci=0;ci<cs.length&&res.length<MR;ci++){",
+		"      var bx=cs[ci],tE=bx.querySelector(f.t),sE=bx.querySelector(f.s),lE=bx.querySelector(f.l);",
+		"      var ti=cl(tE&&tE.innerText);if(!ti||ti.length<4)continue;",
+		"      var ky=ti.slice(0,50);if(seen[ky])continue;seen[ky]=1;",
+		"      var sn=cl(sE&&sE.innerText),ur=lE?(lE.href||\"\"):\"\";",
+		"      var ln=ti;",
+		"      if(sn&&sn.length>10&&ti.indexOf(sn.slice(0,25))===-1)ln+=\" -- \"+sn.slice(0,300);",
+		"      if(ur&&/^https?:/.test(ur)&&ur.indexOf(\"/search?\")===-1&&ur.indexOf(\"javascript:\")===-1)ln+=\" -- \"+ur;",
+		"      res.push(ln);",
+		"    }}catch(e){}}",
+		"  return res;",
+		"}",
+		"function extractLinks(){",
+		"  var res=[],seen={},all=document.querySelectorAll(\"a[href]\");",
+		"  for(var i=0;i<all.length&&res.length<MR;i++){",
+		"    var a=all[i],hr=a.href||\"\";",
+		"    if(!/^https?:/.test(hr))continue;",
+		"    if(/\\/search\\?|google\\.com\\/url|javascript:|#$/.test(hr))continue;",
+		"    var tx=cl(a.innerText||a.textContent);",
+		"    if(tx.length<8||tx.length>150)continue;",
+		"    var ky=tx.slice(0,50);if(seen[ky])continue;seen[ky]=1;",
+		"    var pa=a.closest(\"div,article,section,li,td\"),ctx=\"\";",
+		"    if(pa){ctx=cl(pa.innerText).replace(tx,\"\").slice(0,200);}",
+		"    var ln=tx;if(ctx&&ctx.length>15)ln+=\" -- \"+ctx;",
+		"    ln+=\" -- \"+hr;res.push(ln);",
+		"  }",
+		"  return res;",
+		"}",
+		"function run(){",
+		"  var out=[];",
+		"  var cards=extractCards();for(var i=0;i<cards.length;i++)out.push(cards[i]);",
+		"  var sr=extractResults();for(var j=0;j<sr.length;j++)out.push(sr[j]);",
+		"  if(sr.length<3){var sl=extractLinks();",
+		"    for(var k=0;k<sl.length&&out.length<MR+2;k++){",
+		"      if(!out.some(function(x){return x.slice(0,60)===sl[k].slice(0,60);}))out.push(sl[k]);",
+		"    }",
+		"  }",
+		"  return out.join(\"\\n\")||\"No content extracted.\";",
+		"}",
+		"return run();",
+		"})()"
+	].join("\n");
 }
-function readFirst(selectors) {
-  for (var i = 0; i < selectors.length; i++) {
-    var node = document.querySelector(selectors[i]);
-    var text = cleanText(node && (node.innerText || node.textContent));
-    if (text) return text;
-  }
-  return '';
-}
-/** Avoid "34" + "93" → "3493" when #wob_ttm accidentally picks humidity/precip digits instead of °C/°F. */
-function normalizeWeatherTemp(tempRaw, unitRaw) {
-  var t = cleanText(tempRaw);
-  var u = cleanText(unitRaw);
-  if (!t) return '';
-  if (/°|℃|℉/.test(t)) return t;
-  var numOnly = t.replace(/\\s/g, '');
-  if (/^-?\\d{1,3}(\\.\\d+)?$/.test(numOnly)) {
-    var uTrim = u.replace(/\\s/g, '');
-    var looksLikeUnit = /°|℃|℉/.test(u) || /^°?[CFcf]$/.test(uTrim) || /^[CFcf]°$/.test(uTrim);
-    if (looksLikeUnit) return t + (u.charAt(0) === '°' ? '' : ' ') + u;
-    return t + '°';
-  }
-  return t;
-}
-function extractSpecialAnswer() {
-  var body = cleanText(document.body && (document.body.innerText || document.body.textContent));
-  var weatherRoot = document.querySelector('#wob_wc,div[data-attrid*="weather"],div[aria-label*="天气"],div[aria-label*="weather"]');
-  var looksLikeWeather = weatherRoot || (body.includes('天气') && body.includes('温度') && body.includes('降水概率') && /\\d+\\s*°/.test(body));
-  if (looksLikeWeather) {
-    var location = readFirst(['#wob_loc','[data-attrid="title"]','[role="heading"]']);
-    var time = readFirst(['#wob_dts']);
-    var temp = readFirst(['#wob_tm']);
-    if (!temp) temp = readFirst(['[aria-label*="°"]']);
-    var unit = readFirst(['#wob_ttm']);
-    var condition = readFirst(['#wob_dc']);
-    var precip = readFirst(['#wob_pp']);
-    var humidity = readFirst(['#wob_hm']);
-    var wind = readFirst(['#wob_ws']);
-    if (!temp) {
-      var tempMatch = body.match(/(\\d{1,3}\\s*°\\s*[CF℃℉]?)/);
-      temp = tempMatch ? tempMatch[1] : '';
-    }
-    temp = normalizeWeatherTemp(temp, unit);
-    if (!condition) {
-      var conditionMatch = body.match(/天气\\s*([\\u4e00-\\u9fa5]{1,8})/);
-      condition = conditionMatch ? conditionMatch[1] : '';
-    }
-    var parts = [];
-    if (location) parts.push(location);
-    if (time) parts.push(time);
-    if (temp) parts.push('温度 ' + temp);
-    if (condition) parts.push('天气 ' + condition);
-    if (precip) parts.push('降水概率 ' + precip);
-    if (humidity) parts.push('湿度 ' + humidity);
-    if (wind) parts.push('风速 ' + wind);
-    if (parts.length >= 2) return '天气卡片：' + parts.join('，');
-    var weatherSlice = body.match(/中国[^\\n]{0,80}天气[\\s\\S]{0,260}(温度|降水概率|风力|风速)[\\s\\S]{0,180}/);
-    if (weatherSlice) return '天气卡片：' + cleanText(weatherSlice[0]).slice(0, 420);
-  }
-  return '';
-}
-`;
-var GOOGLE_EXTRACT = `(function(){${SEARCH_EXTRACT_HELPERS};return genericSearchExtract(['#search .g','#rso .g','#rso [data-sokoban-container]','div[data-header-feature]']);})()`;
-var SOGOU_EXTRACT = `(function(){${SEARCH_EXTRACT_HELPERS};return genericSearchExtract(['.vrwrap','.rb','.results > div','.result']);})()`;
+var UNIVERSAL_EXTRACT = buildExtractScript();
 function countSearchResultLines(result) {
 	return result.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("Results from ") && line !== "---" && !line.startsWith("WEB_SEARCH_") && !line.startsWith("QUERY:") && !line.startsWith("RESULT_COUNT:") && !line.startsWith("INTERPRETATION_HINT:") && !/^No results found for /i.test(line) && !/^Search timeout for /i.test(line) && !/^Error:/i.test(line)).length;
 }
@@ -25474,7 +25525,7 @@ function searchCodebase(query, cwd, isRegex = false) {
 		proc.on("error", () => resolve("No matches."));
 	});
 }
-async function webSearch(query) {
+async function webSearch(query, engine) {
 	if (!query) return "Error: query is required";
 	const { browserViewManager } = (init_browser_view_manager(), require_token_util$1.__toCommonJS(browser_view_manager_exports));
 	const { BrowserWindow: BW } = require("electron");
@@ -25482,23 +25533,49 @@ async function webSearch(query) {
 	const allWindows = BW.getAllWindows();
 	const mainWindow = allWindows.find((w) => w.getTitle()?.includes("DSME")) || allWindows[0];
 	if (mainWindow) mainWindow.webContents.send("browser-panel-open");
-	const engines = [{
-		label: "Sogou",
-		url: `https://www.sogou.com/web?query=${q}`,
-		extractJS: SOGOU_EXTRACT
-	}, {
-		label: "Google",
-		url: `https://www.google.com/search?q=${q}&hl=zh-CN`,
-		extractJS: GOOGLE_EXTRACT
-	}];
-	for (const engine of engines) try {
-		const navResult = await browserViewManager.navigate(engine.url);
+	const allEngines = {
+		google: {
+			label: "Google",
+			url: `https://www.google.com/search?q=${q}&hl=zh-CN`,
+			extractJS: UNIVERSAL_EXTRACT
+		},
+		sogou: {
+			label: "Sogou",
+			url: `https://www.sogou.com/web?query=${q}`,
+			extractJS: UNIVERSAL_EXTRACT
+		},
+		baidu: {
+			label: "Baidu",
+			url: `https://www.baidu.com/s?wd=${q}`,
+			extractJS: UNIVERSAL_EXTRACT
+		},
+		bing: {
+			label: "Bing",
+			url: `https://www.bing.com/search?q=${q}`,
+			extractJS: UNIVERSAL_EXTRACT
+		}
+	};
+	let engineList;
+	const requestedEngine = engine?.toLowerCase().trim();
+	if (requestedEngine && allEngines[requestedEngine]) engineList = [allEngines[requestedEngine]];
+	else engineList = [allEngines.google, allEngines.sogou];
+	for (const eng of engineList) try {
+		const navResult = await browserViewManager.navigate(eng.url);
 		if (navResult.startsWith("Navigation error:") && !navResult.includes("ERR_ABORTED")) continue;
 		await new Promise((r) => setTimeout(r, 2e3));
-		const text = await browserViewManager.executeJS(engine.extractJS, 1e4);
-		if (text && text.length > 20 && !text.startsWith("Script error:") && !text.startsWith("[evaluate:")) return `Results from ${engine.label}:\n${text}`;
+		const text = await browserViewManager.executeJS(eng.extractJS, 1e4);
+		if (text && text.length > 20 && !text.startsWith("Script error:") && !text.startsWith("[evaluate:")) {
+			let result = `Results from ${eng.label}:\n${text}`;
+			if (countSearchResultLines(text) < 3) {
+				const article = await extractWithReadability(browserViewManager);
+				if (article && article.textContent.length > 100) result += `\n\n[深度提取 by Readability]\n${article.textContent.slice(0, 3e3)}`;
+			}
+			return result;
+		}
+		const article = await extractWithReadability(browserViewManager);
+		if (article && article.textContent.length > 50) return `Results from ${eng.label} (Readability):\n${article.title}\n${article.textContent.slice(0, 5e3)}`;
 	} catch (e) {
-		console.warn(`[webSearch] ${engine.label} failed:`, e.message);
+		console.warn(`[webSearch] ${eng.label} failed:`, e.message);
 	}
 	return `No results found for "${query}".`;
 }
@@ -26091,8 +26168,16 @@ var VercelAgent = class {
 			}),
 			web_search: tool({
 				description: "Search the web for real-time information. Use this when you need current data, news, or anything beyond your training cutoff.",
-				inputSchema: object$1({ query: string().describe("Search query") }),
-				execute: async ({ query }) => {
+				inputSchema: object$1({
+					query: string().describe("Search query"),
+					engine: _enum([
+						"google",
+						"sogou",
+						"baidu",
+						"bing"
+					]).optional().describe("Search engine to use. Default: google. Options: google, sogou (Chinese), baidu (Chinese), bing.")
+				}),
+				execute: async ({ query, engine }) => {
 					if (this.currentTurnSearchResult && hasUsableSearchResults(this.currentTurnSearchResult.result)) {
 						const prevWords = new Set(this.currentTurnSearchResult.query.toLowerCase().split(/\s+/));
 						const curWords = query.toLowerCase().split(/\s+/);
@@ -26109,9 +26194,9 @@ var VercelAgent = class {
 							return formatWebSearchResult(query, reused);
 						}
 					}
-					send("chat-stream-token", `\n正在用浏览器搜索：${query}\n`);
+					send("chat-stream-token", `\n正在用 ${engine || "google"} 搜索：${query}\n`);
 					const started = Date.now();
-					const rawResult = await webSearch(query);
+					const rawResult = await webSearch(query, engine);
 					const result = formatWebSearchResult(query, rawResult);
 					if (hasUsableSearchResults(rawResult)) this.currentTurnSearchResult = {
 						query,
@@ -26454,7 +26539,7 @@ var VercelAgent = class {
 				clearTimeout(timeoutId);
 				clearPostToolWatchdog();
 				const msg = err?.message || String(err);
-				if (err.name === "AbortError" || msg === "Request was aborted." || msg === "aborted") {
+				if (err?.name === "AbortError" || msg === "Request was aborted." || msg === "aborted") {
 					if (postToolWatchdogTimedOut) {
 						if (fullText.trim()) {
 							this.messages.push({
@@ -26818,7 +26903,19 @@ var TOOLS = [
 			description: "Search the web for real-time info.",
 			parameters: {
 				type: "object",
-				properties: { query: { type: "string" } },
+				properties: {
+					query: { type: "string" },
+					engine: {
+						type: "string",
+						enum: [
+							"google",
+							"sogou",
+							"baidu",
+							"bing"
+						],
+						description: "Search engine to use. Default: google."
+					}
+				},
 				required: ["query"]
 			}
 		}
@@ -27255,7 +27352,7 @@ var BuiltinAgent = class {
 			} catch (err) {
 				clearTimeout(timeoutId);
 				const msg = err?.message || String(err);
-				if (err.name === "AbortError" || msg === "Request was aborted." || msg === "aborted") return;
+				if (err?.name === "AbortError" || msg === "Request was aborted." || msg === "aborted") return;
 				console.error("[BuiltinAgent] ERROR:", msg);
 				if (msg.includes("401") || msg.includes("Unauthorized")) {
 					this.send("chat-stream-token", "\n\n⚠️ **认证失败** — 请在 Settings 中更新 API Key。");
@@ -27350,9 +27447,10 @@ var BuiltinAgent = class {
 						this.send("chat-stream-token", `\n已拦截重复浏览器搜索：${args.query}\n`);
 						return formatWebSearchResult(args.query, reused);
 					}
-					this.send("chat-stream-token", `\n正在用浏览器搜索：${args.query}\n`);
+					const engineLabel = args.engine || "google";
+					this.send("chat-stream-token", `\n正在用 ${engineLabel} 搜索：${args.query}\n`);
 					const started = Date.now();
-					const rawResult = await webSearch(args.query);
+					const rawResult = await webSearch(args.query, args.engine);
 					const result = formatWebSearchResult(args.query, rawResult);
 					if (hasUsableSearchResults(rawResult)) this.currentTurnSearchResult = {
 						query: args.query,

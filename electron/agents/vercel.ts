@@ -538,8 +538,11 @@ export class VercelAgent implements IAgent {
 
       web_search: tool({
         description: 'Search the web for real-time information. Use this when you need current data, news, or anything beyond your training cutoff.',
-        inputSchema: z.object({ query: z.string().describe('Search query') }),
-        execute: async ({ query }) => {
+        inputSchema: z.object({
+          query: z.string().describe('Search query'),
+          engine: z.enum(['google', 'sogou', 'baidu', 'bing']).optional().describe('Search engine to use. Default: google. Options: google, sogou (Chinese), baidu (Chinese), bing.'),
+        }),
+        execute: async ({ query, engine }) => {
           if (this.currentTurnSearchResult && hasUsableSearchResults(this.currentTurnSearchResult.result)) {
             // Only block truly duplicate queries (>60% word overlap); allow different-angle searches
             const prevWords = new Set(this.currentTurnSearchResult.query.toLowerCase().split(/\s+/));
@@ -558,9 +561,10 @@ export class VercelAgent implements IAgent {
               return formatWebSearchResult(query, reused);
             }
           }
-          send('chat-stream-token', `\n正在用浏览器搜索：${query}\n`);
+          const engineLabel = engine || 'google';
+          send('chat-stream-token', `\n正在用 ${engineLabel} 搜索：${query}\n`);
           const started = Date.now();
-          const rawResult = await webSearch(query);
+          const rawResult = await webSearch(query, engine);
           const result = formatWebSearchResult(query, rawResult);
           if (hasUsableSearchResults(rawResult)) {
             this.currentTurnSearchResult = { query, result: rawResult };
@@ -1031,7 +1035,7 @@ export class VercelAgent implements IAgent {
       clearPostToolWatchdog();
       const msg = err?.message || String(err);
       
-      if (err.name === 'AbortError' || msg === 'Request was aborted.' || msg === 'aborted') {
+      if (err?.name === 'AbortError' || msg === 'Request was aborted.' || msg === 'aborted') {
         if (postToolWatchdogTimedOut) {
           if (fullText.trim()) {
             this.messages.push({ role: 'assistant', content: fullText.trim() });

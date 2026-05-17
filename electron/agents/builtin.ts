@@ -58,7 +58,7 @@ const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   { type: 'function', function: { name: 'list_directory', description: 'List files in a directory.', parameters: { type: 'object', properties: { dirpath: { type: 'string' } }, required: ['dirpath'] } } },
   { type: 'function', function: { name: 'search_codebase', description: 'Grep search across workspace.', parameters: { type: 'object', properties: { query: { type: 'string' }, is_regex: { type: 'boolean' } }, required: ['query'] } } },
   { type: 'function', function: { name: 'run_command', description: 'Run shell command.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
-  { type: 'function', function: { name: 'web_search', description: 'Search the web for real-time info.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } } },
+  { type: 'function', function: { name: 'web_search', description: 'Search the web for real-time info.', parameters: { type: 'object', properties: { query: { type: 'string' }, engine: { type: 'string', enum: ['google', 'sogou', 'baidu', 'bing'], description: 'Search engine to use. Default: google.' } }, required: ['query'] } } },
   { type: 'function', function: { name: 'fetch_url', description: 'Fetch and read content from a URL (static HTML only, no JS rendering).', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
   { type: 'function', function: { name: 'browse_page', description: 'Open a URL in a real browser with full JS rendering, then execute a custom script to interact with and extract data from the page. Use for SPAs, dynamic tables, clicking/scrolling. Script runs in page context, can use async/await, MUST return a string.', parameters: { type: 'object', properties: { url: { type: 'string', description: 'URL to open' }, script: { type: 'string', description: 'JavaScript to execute in page context. MUST return a string.' }, wait_before_script: { type: 'number', description: 'Ms to wait after page load. Default: 2000' }, timeout: { type: 'number', description: 'Total timeout ms. Default: 30000' } }, required: ['url', 'script'] } } },
   { type: 'function', function: { name: 'browser_task_start', description: 'Start a named multi-step browser session so all following browser_* steps appear under one timeline heading in the UI. Call once per complex browser workflow.', parameters: { type: 'object', properties: { goal: { type: 'string', description: 'Short user-visible goal, e.g. "Export CSV from dashboard"' } }, required: ['goal'] } } },
@@ -357,7 +357,7 @@ export class BuiltinAgent implements IAgent {
       } catch (err: any) {
         clearTimeout(timeoutId);
         const msg = err?.message || String(err);
-        if (err.name === 'AbortError' || msg === 'Request was aborted.' || msg === 'aborted') return;
+        if (err?.name === 'AbortError' || msg === 'Request was aborted.' || msg === 'aborted') return;
         
         console.error('[BuiltinAgent] ERROR:', msg);
 
@@ -467,9 +467,10 @@ export class BuiltinAgent implements IAgent {
             this.send('chat-stream-token', `\n已拦截重复浏览器搜索：${args.query}\n`);
             return formatWebSearchResult(args.query, reused);
           }
-          this.send('chat-stream-token', `\n正在用浏览器搜索：${args.query}\n`);
+          const engineLabel = args.engine || 'google';
+          this.send('chat-stream-token', `\n正在用 ${engineLabel} 搜索：${args.query}\n`);
           const started = Date.now();
-          const rawResult = await webSearch(args.query);
+          const rawResult = await webSearch(args.query, args.engine);
           const result = formatWebSearchResult(args.query, rawResult);
           if (hasUsableSearchResults(rawResult)) {
             this.currentTurnSearchResult = { query: args.query, result: rawResult };

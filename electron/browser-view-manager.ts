@@ -167,6 +167,16 @@ export class BrowserViewManager {
     console.log('[BrowserViewManager] View attached to window');
   }
 
+  /** Ensure the view and its webContents are alive; recreate if needed. Returns false if unrecoverable. */
+  private ensureHealthyView(): boolean {
+    if (!this.view) return false;
+    if (!this.view.webContents || this.view.webContents.isDestroyed()) {
+      this.recreateView();
+      if (!this.view || !this.view.webContents) return false;
+    }
+    return true;
+  }
+
   /** Recreate the view after a renderer crash. */
   private recreateView() {
     if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
@@ -194,40 +204,56 @@ export class BrowserViewManager {
 
   // ── Navigation ──
 
-  async navigate(url: string): Promise<string> {
-    if (!this.view) return 'Error: view not initialized';
+  async navigate(url: string, _retryCount = 0): Promise<string> {
+    if (!this.ensureHealthyView()) return 'Error: view not initialized';
     this.ensureAttached();
     try {
-      await this.view.webContents.loadURL(url);
+      await this.view!.webContents.loadURL(url);
       this.currentUrl = url;
-      const title = this.view.webContents.getTitle();
+      const title = this.view!.webContents.getTitle();
       this.notifyRenderer('browser-view-navigated', { url, title });
       return `Navigated to ${url}. Title: ${title}`;
     } catch (e: any) {
       if (e.message?.includes('ERR_ABORTED')) {
-        const title = this.view.webContents.getTitle();
-        return `Navigated to ${url} (with redirect). Title: ${title}`;
+        try {
+          const title = this.view!.webContents.getTitle();
+          return `Navigated to ${url} (with redirect). Title: ${title}`;
+        } catch {
+          return `Navigated to ${url} (with redirect).`;
+        }
       }
+      
+      // Native WebContents in a bad state — recreate and retry once.
+      if (_retryCount < 1 && (e.message?.includes('Cannot read properties') || e.message?.includes('object has been destroyed'))) {
+        console.error('[BrowserViewManager] WebContents in bad state, recreating and retrying...', e.message);
+        this.recreateView();
+        return this.navigate(url, _retryCount + 1);
+      }
+      
       return `Navigation error: ${e.message}`;
     }
   }
 
   async goBack(): Promise<string> {
-    if (!this.view) return 'Error: view not initialized';
-    const nav = this.view.webContents.navigationHistory;
-    if (!nav.canGoBack()) return 'Cannot go back — no history.';
-    nav.goBack();
-    await new Promise(r => setTimeout(r, 1500));
-    const url = this.view.webContents.getURL();
-    this.currentUrl = url;
-    this.notifyRenderer('browser-view-navigated', { url, title: this.view.webContents.getTitle() });
-    return `Went back. Now at: ${url}`;
+    if (!this.ensureHealthyView()) return 'Error: view not initialized';
+    try {
+      const nav = this.view!.webContents.navigationHistory;
+      if (!nav.canGoBack()) return 'Cannot go back — no history.';
+      nav.goBack();
+      await new Promise(r => setTimeout(r, 1500));
+      const url = this.view!.webContents.getURL();
+      this.currentUrl = url;
+      this.notifyRenderer('browser-view-navigated', { url, title: this.view!.webContents.getTitle() });
+      return `Went back. Now at: ${url}`;
+    } catch (e: any) {
+      return `GoBack error: ${e.message}`;
+    }
   }
 
   // ── Script execution ──
 
   async executeJS(script: string, timeoutMs = 115_000): Promise<string> {
-    if (!this.view) return 'Error: view not initialized';
+    if (!this.ensureHealthyView()) return 'Error: view not initialized';
     try {
       const result = await Promise.race([
         this.view.webContents.executeJavaScript(script),
