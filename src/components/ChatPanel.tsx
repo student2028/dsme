@@ -92,7 +92,12 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
             const saved = JSON.parse(data);
             if (saved.conversations?.length > 0) {
               setConversations(saved.conversations);
-              setActiveConvId(saved.activeConvId || saved.conversations[0].id);
+              const targetId = saved.activeConvId || saved.conversations[0].id;
+              setActiveConvId(targetId);
+              if (window.electronAPI.syncHistory) {
+                const activeConv = saved.conversations.find((c: any) => c.id === targetId);
+                if (activeConv) window.electronAPI.syncHistory(activeConv.messages);
+              }
             }
           } catch {}
         }
@@ -137,7 +142,13 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   useEffect(() => {
     const prev = activeConvIdRef.current;
     activeConvIdRef.current = activeConvId;
-    if (prev !== activeConvId && window.electronAPI?.resetConversation) {
+    if (prev !== activeConvId && window.electronAPI?.syncHistory) {
+      setConversations(currentConvs => {
+        const activeConv = currentConvs.find(c => c.id === activeConvId);
+        if (activeConv) window.electronAPI.syncHistory(activeConv.messages);
+        return currentConvs;
+      });
+    } else if (prev !== activeConvId && window.electronAPI?.resetConversation) {
       window.electronAPI.resetConversation();
     }
   }, [activeConvId]);
@@ -362,14 +373,45 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
     const conv = conversations.find(c => c.id === activeConvId);
     if (!conv) return;
     const msgs = [...conv.messages];
-    let lastUserMsg = '';
+    
+    let lastUserMsgObj = null;
     for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'user') { lastUserMsg = msgs[i].content; break; }
+      if (msgs[i].role === 'user') { lastUserMsgObj = msgs[i]; break; }
     }
-    if (!lastUserMsg) return;
+    if (!lastUserMsgObj) return;
+
+    // Reconstruct the payload to send to backend, since lastUserMsgObj.content is just display text
+    const attachments = lastUserMsgObj.attachments || [];
+    let attachContext = '';
+    for (const att of attachments) {
+      if (att.type === 'file' && att.content) {
+        attachContext += `\n[ATTACHED FILE: ${att.name}]\n\`\`\`\n${att.content.slice(0, 5000)}\n\`\`\`\n`;
+      } else if (att.type === 'image' && att.dataUrl) {
+        attachContext += `\n[ATTACHED IMAGE: ${att.name}]\n`;
+      }
+    }
+    
+    let msg = lastUserMsgObj.content;
+    if (attachContext) msg = attachContext + '\n' + msg;
+    const imageDataUrls = attachments.filter(a => a.type === 'image' && a.dataUrl).map(a => a.dataUrl!);
+
+    // Remove trailing assistant messages
     while (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant') { msgs.pop(); }
+    
+    // We also remove the user message from frontend history so it can be re-appended normally?
+    // No, handleSubmit appends a new user message. If we don't pop it here, we'd have duplicate user messages
+    // wait, sendChatMessage triggers the backend, but backend streams assistant response.
+    // The frontend doesn't re-append the user message on regenerate! It just streams the assistant response.
+    // So we just update the msgs array (which keeps the user message).
     setConversations(prev => prev.map(c => c.id === activeConvId ? { ...c, messages: msgs } : c));
-    if (window.electronAPI) window.electronAPI.sendChatMessage(lastUserMsg);
+    
+    if (window.electronAPI) {
+      if (imageDataUrls.length > 0 && window.electronAPI.sendChatMessageWithImages) {
+        window.electronAPI.sendChatMessageWithImages(msg, imageDataUrls);
+      } else {
+        window.electronAPI.sendChatMessage(msg);
+      }
+    }
   }, [isLoading, conversations, activeConvId]);
 
   const handleEditMessage = useCallback((msgId: string, content: string) => {

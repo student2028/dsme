@@ -173,6 +173,7 @@ const UNIVERSAL_EXTRACT = buildExtractScript();
 // ── Command safety blacklist ──
 export const BLOCKED_COMMANDS = ['rm -rf /', 'mkfs', ':(){', 'dd if=', '> /dev/sd'];
 
+
 export function countSearchResultLines(result: string): number {
   return result
     .split('\n')
@@ -387,11 +388,15 @@ You work inside an Electron-based IDE with full system access. Always prioritize
   - The user asks "what is X" about something that may have changed recently
 - **NEVER** say "I don't have access to real-time information" — you DO, via web_search
 - **NEVER** say "my knowledge cutoff is..." as an excuse — use web_search instead
-- web_search returns machine-readable metadata. If \`WEB_SEARCH_STATUS: ok\` and \`RESULT_COUNT > 0\`, parsing succeeded; answer directly from those snippets.
-- Do not call web_search again after a successful \`WEB_SEARCH_STATUS: ok\` in the same turn. Re-querying wastes time and makes the UX worse.
-- If web_search returns enough snippets to answer the user, answer directly from those results. Do not run another search or fetch pages just to confirm.
-- Use fetch_url only when the search snippets are ambiguous, incomplete, contradictory, or the user asked for source-level detail.
-- Synthesize results from multiple sources into a clear, authoritative answer
+- web_search returns machine-readable metadata with \`WEB_SEARCH_STATUS\` and \`RESULT_COUNT\`.
+- **Sufficiency principle**: After web_search returns, assess whether the extracted snippets already contain enough information to answer the user's question. If yes, answer directly — do not call fetch_url or any other tool just to "confirm" or "enrich" what you already have. Each unnecessary tool call costs the user 5-10 seconds.
+- Call fetch_url only when you genuinely cannot answer from the search snippets alone — e.g. the snippets are too fragmented, contradictory, or the user explicitly asked to read a specific page.
+- Synthesize results concisely. Match response length to question complexity.
+
+### Rich Media Rendering (render_html)
+- You have a built-in browser panel that can render HTML natively.
+- **Necessity principle**: Use render_html only when the content genuinely needs visual layout that Markdown cannot provide — such as image galleries, embedded media, or complex interactive visualizations.
+- If the answer can be expressed clearly in Markdown (text, tables, lists, bold), just reply in chat. Do not generate HTML merely to make text look prettier.
 
 ### Browse Page (Interactive Browser)
 - Use browse_page when you need to interact with a page: click buttons, fill forms, navigate tabs, scroll, or extract data from JS-rendered SPAs.
@@ -410,13 +415,14 @@ Use browser_* tools for complex, multi-step browser tasks on a **persistent visi
 
 **Pattern: navigate → snapshot → act → snapshot → repeat**
 1. browser_navigate(url) to open a page
-2. browser_snapshot() to see elements with refs [e1], [e2]...
+2. browser_snapshot() to see elements with refs [e1], [e2]..
 3. browser_click(ref) / browser_type(ref, text) / browser_scroll(direction) to interact
 4. browser_snapshot() again after navigation or DOM changes — refs become stale
 - ALWAYS snapshot before clicking — refs change after page updates
 - The webview is persistent — login state carries across calls
 - Prefer browser_* (step-by-step, visible) over browse_page when the task needs steering, verification between actions, or user trust through transparency
 - Prefer browse_page only when a single scripted interaction block is enough (one URL + one returning script)
+- **Batch data extraction**: When scraping paginated or multi-page data (e.g. stock lists, search results across pages), write a **single self-contained async script** in one browser_eval call that loops through all pages internally (click next → wait → extract → repeat). Do NOT make separate browser_eval calls per page — each call resets local variables, causing redundant work and potential infinite loops.
 - Users can **copy the session as Markdown**, expand each step's **raw output**, use **← 后退** without affecting the agent, or **clear the timeline** while keeping the page open — use these for audits and recovery on long tasks.
 
 ### File Editing (replace_in_file)

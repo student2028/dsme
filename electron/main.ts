@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu, session } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Menu, session, shell, clipboard } from 'electron'
 import { syncChromeCookies } from './agents/chrome-cookies'
 import { join } from 'node:path'
 import * as fs from 'node:fs/promises'
@@ -496,6 +496,7 @@ ipcMain.on('chat-message-images', async (_, msg, imageDataUrls) => {
 ipcMain.on('terminal-input', (_, data) => { if (ptyProcess) ptyProcess.stdin.write(data); });
 ipcMain.on('cancel-chat-request', () => agent?.abort());
 ipcMain.on('reset-conversation', () => agent?.resetConversation());
+ipcMain.on('sync-history', (_, messages) => agent?.loadHistory(messages));
 ipcMain.on('switch-kernel', async (_, kernel: string) => {
   const k = kernel === 'builtin' ? 'builtin' : 'vercel';
   if (k === currentKernel) return;
@@ -623,6 +624,71 @@ ipcMain.handle('read-file', (_, fp) => {
   return fs.readFile(fp, 'utf8');
 });
 
+ipcMain.handle('rename-file', async (_, oldPath, newPath) => {
+  if (!isWithinWorkspace(oldPath) || !isWithinWorkspace(newPath)) {
+    throw new Error('Access denied: path outside workspace');
+  }
+  await fs.rename(oldPath, newPath);
+  return true;
+});
+
+ipcMain.on('show-context-menu', (event, fp: string, isDirectory: boolean) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) return;
+
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'Reveal in Finder',
+      click: () => shell.showItemInFolder(fp)
+    },
+    {
+      label: 'Open in Integrated Terminal',
+      click: () => {
+        const targetDir = isDirectory ? fp : path.dirname(fp);
+        ptyProcess?.write(`cd "${targetDir}"\r`);
+        // We could also tell the renderer to open the terminal panel if it's closed, but sending the cd command is enough for now.
+        event.sender.send('menu-action', 'open-terminal');
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Copy Path',
+      click: () => clipboard.writeText(fp)
+    },
+    {
+      label: 'Copy Relative Path',
+      click: () => clipboard.writeText(path.relative(currentWorkspacePath, fp))
+    },
+    { type: 'separator' },
+    {
+      label: 'Rename...',
+      click: () => event.sender.send('context-menu-action', 'rename', fp)
+    },
+    {
+      label: 'Delete',
+      click: () => {
+        const choice = dialog.showMessageBoxSync(window, {
+          type: 'warning',
+          buttons: ['Cancel', 'Delete'],
+          defaultId: 1,
+          cancelId: 0,
+          title: 'Confirm Delete',
+          message: `Are you sure you want to delete '${path.basename(fp)}'?`,
+          detail: 'This action cannot be undone.'
+        });
+        if (choice === 1) {
+          fs.rm(fp, { recursive: true, force: true }).catch(err => {
+            dialog.showErrorBox('Delete Failed', err.message);
+          });
+        }
+      }
+    }
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  menu.popup({ window });
+});
+
 // Window drag API to bypass -webkit-app-region: drag bugs
 ipcMain.on('move-window-by', (e, dx, dy) => {
   const window = BrowserWindow.fromWebContents(e.sender);
@@ -636,6 +702,16 @@ ipcMain.handle('write-file', async (_, fp, content) => {
   if (!isWithinWorkspace(fp)) throw new Error('Access denied: path outside workspace');
   try { await fs.writeFile(fp, content, 'utf8'); return true; }
   catch { return false; }
+});
+
+ipcMain.handle('capture-window', async () => {
+  if (!win || win.isDestroyed()) return null;
+  try {
+    const nativeImg = await win.capturePage();
+    return nativeImg.toDataURL(); // e.g. data:image/png;base64,...
+  } catch (e) {
+    return null;
+  }
 });
 
 // File search

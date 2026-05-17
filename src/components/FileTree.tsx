@@ -43,9 +43,25 @@ export const FileTree: React.FC<Props> = ({ onFileSelect, activePath }) => {
       window.electronAPI?.onFileChanged(() => {
         setTimeout(loadRootTree, 500);
       });
+    const unsubMenu = window.electronAPI?.onContextMenuAction?.(async (action, path) => {
+      if (action === 'rename') {
+        const name = path.split('/').pop();
+        const newName = window.prompt(`Rename '${name}' to:`, name);
+        if (newName && newName !== name) {
+          const newPath = path.substring(0, path.lastIndexOf('/')) + '/' + newName;
+          try {
+            await window.electronAPI.renameFile(path, newPath);
+            loadRootTree();
+          } catch (e: any) {
+            alert(`Rename failed: ${e.message}`);
+          }
+        }
+      }
+    });
     return () => {
       clearInterval(interval);
       unsubFile?.();
+      unsubMenu?.();
     };
   }, [loadRootTree]);
 
@@ -157,6 +173,10 @@ export const FileTree: React.FC<Props> = ({ onFileSelect, activePath }) => {
             key={node.path}
             className={`filetree-item ${!node.isDirectory && node.path === activePath ? 'active' : ''}`}
             onClick={() => node.isDirectory ? toggleDir(node) : onFileSelect(node.path, node.name)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              window.electronAPI?.showContextMenu(node.path, node.isDirectory);
+            }}
             style={{
               paddingLeft: `${16 + node.depth * 16}px`,
               color: getStatusColor(node.gitStatus),

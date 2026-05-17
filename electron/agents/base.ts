@@ -49,6 +49,9 @@ export interface IAgent {
   /** Reset the conversation (new session) */
   resetConversation(): void;
 
+  /** Load history from frontend to restore context after app restart */
+  loadHistory(messages: any[]): void;
+
   /** Abort the current request */
   abort(): void;
 

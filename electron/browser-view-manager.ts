@@ -37,6 +37,7 @@ export class BrowserViewManager {
         session: browserSession,
         nodeIntegration: false,
         contextIsolation: true,
+        webSecurity: false, // Allow file:// to load other local files directly
       },
     });
 
@@ -202,6 +203,32 @@ export class BrowserViewManager {
     }
   }
 
+  // ── HTML Rendering ──
+
+  /** Render HTML content by writing to a temp file and loading it.
+   *  This avoids data: URL issues (length limits, encoding bugs) that cause
+   *  raw text to display instead of rendered HTML. */
+  async loadHTML(html: string): Promise<string> {
+    if (!this.ensureHealthyView()) return 'Error: view not initialized';
+    this.ensureAttached();
+    const fsP = require('node:fs/promises');
+    const os = require('node:os');
+    const path = require('node:path');
+    const tmpFile = path.join(os.tmpdir(), `dsme-render-${Date.now()}.html`);
+    try {
+      await fsP.writeFile(tmpFile, html, 'utf8');
+      await this.view!.webContents.loadFile(tmpFile);
+      this.currentUrl = `file://${tmpFile}`;
+      const title = this.view!.webContents.getTitle();
+      this.notifyRenderer('browser-view-navigated', { url: this.currentUrl, title });
+      // Clean up temp file after a delay (page is already loaded in memory)
+      setTimeout(() => fsP.unlink(tmpFile).catch(() => {}), 5000);
+      return `HTML rendered successfully. Title: ${title}`;
+    } catch (e: any) {
+      return `HTML render error: ${e.message}`;
+    }
+  }
+
   // ── Navigation ──
 
   async navigate(url: string, _retryCount = 0): Promise<string> {
@@ -252,7 +279,7 @@ export class BrowserViewManager {
 
   // ── Script execution ──
 
-  async executeJS(script: string, timeoutMs = 115_000): Promise<string> {
+  async executeJS(script: string, timeoutMs = 600_000): Promise<string> {
     if (!this.ensureHealthyView()) return 'Error: view not initialized';
     try {
       const result = await Promise.race([

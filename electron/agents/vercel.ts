@@ -295,7 +295,35 @@ export class VercelAgent implements IAgent {
     }
   }
 
-  resetConversation(): void { this.messages = []; this.abort(); this.busy = false; }
+  resetConversation(): void {
+    if (this.busy) this.abort();
+    this.messages = [];
+  }
+
+  loadHistory(history: any[]): void {
+    if (this.busy) this.abort();
+    this.messages = history.map(m => {
+      // Reconstruct image attachments
+      if (m.role === 'user' && m.attachments && m.attachments.some((a: any) => a.type === 'image' && a.dataUrl)) {
+        const imageParts = m.attachments
+          .filter((a: any) => a.type === 'image' && a.dataUrl)
+          .map((a: any) => ({
+            type: 'image' as const,
+            image: new URL(a.dataUrl)
+          }));
+        
+        return {
+          role: 'user',
+          content: [
+            { type: 'text' as const, text: m.content },
+            ...imageParts
+          ]
+        };
+      }
+      return { role: m.role, content: m.content };
+    });
+  }
+
   abort(): void { this.abortController?.abort(); this.abortController = null; }
 
   /** Clean up resources (file watcher, timers) before disposal */
@@ -329,7 +357,7 @@ export class VercelAgent implements IAgent {
     // Truncate oversized tool results to prevent context bloat
     for (const msg of this.messages) {
       if (typeof msg.content === 'string' && msg.content.length > maxContentLen && msg.role !== 'user') {
-        msg.content = msg.content.slice(0, maxContentLen) + '\n...(truncated for context)';
+        msg.content = msg.content.slice(0, maxContentLen) + '\n\n[DISPLAY_TRUNCATED: Content was trimmed to fit context window. The original data was fully collected. Do NOT retry the tool call.]';
       }
     }
 
@@ -674,15 +702,44 @@ export class VercelAgent implements IAgent {
       browser_eval: tool({
         description: 'Execute arbitrary JavaScript in the current page context. Use for complex interactions not covered by other browser tools. Script MUST return a string.',
         inputSchema: z.object({ script: z.string().describe('JavaScript to execute in page context') }),
-        execute: async ({ script }) => browserEval(script),
+        execute: async ({ script }) => {
+          const evalResult = await browserEval(script);
+          // Auto-save large results to file to avoid context truncation loops
+          if (evalResult.length > 50_000) {
+            const filename = `scratch/browser_eval_${Date.now()}.txt`;
+            const fp = path.resolve(cwd, filename);
+            await fs.mkdir(path.dirname(fp), { recursive: true });
+            await fs.writeFile(fp, evalResult, 'utf8');
+            const lineCount = evalResult.split('\n').length;
+            const preview = evalResult.slice(0, 2000);
+            return `Data saved to ${filename} (${evalResult.length} chars, ${lineCount} lines).\n\nPreview (first 2000 chars):\n${preview}\n\n[Full data is in the file. Do NOT re-run this script — data collection is complete.]`;
+          }
+          return evalResult;
+        },
+      }),
+
+      render_html: tool({
+        description: 'Render a beautiful, rich HTML document directly in the IDE browser panel. Use this for highly visual results like shopping items, social media posts, image galleries, or dashboards. You can use absolute local file paths (e.g. file:///Users/...) directly in src/href attributes.',
+        inputSchema: z.object({ html: z.string().describe('The complete HTML document string to render (include <style> tags or Tailwind via CDN for styling).') }),
+        execute: async ({ html }) => {
+          const { browserViewManager } = require('../browser-view-manager');
+          const { BrowserWindow } = require('electron');
+          const allWindows = BrowserWindow.getAllWindows();
+          const mainWindow = allWindows.find((w: any) => w.getTitle()?.includes('DSME')) || allWindows[0];
+          if (mainWindow) mainWindow.webContents.send('browser-panel-open');
+
+          this.send('chat-stream-token', `\n正在渲染丰富的 HTML 视图...\n`);
+          await browserViewManager.loadHTML(html);
+          return 'HTML rendered successfully in the IDE browser panel. Tell the user to look at the browser panel.';
+        },
       }),
     };
   }
 
   // ── Main stream using Vercel AI SDK streamText ──
   private async runStream(): Promise<void> {
-    const STREAM_TIMEOUT_MS = 300_000; // 5 min hard timeout per attempt
-    const POST_TOOL_TEXT_TIMEOUT_MS = 120_000;
+    const STREAM_TIMEOUT_MS = 900_000; // 15 min hard timeout — allows for slow image/video generation
+    const POST_TOOL_TEXT_TIMEOUT_MS = 600_000; // 10 min — AI image/video generation can take 5+ minutes
     this.currentTurnSearchResult = null;
     // True iterative retry loop (no recursion, no stack growth)
     while (true) {

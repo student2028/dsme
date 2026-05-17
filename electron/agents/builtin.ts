@@ -70,6 +70,7 @@ const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   { type: 'function', function: { name: 'browser_scroll', description: 'Scroll the page up or down.', parameters: { type: 'object', properties: { direction: { type: 'string', enum: ['up', 'down'] } }, required: ['direction'] } } },
   { type: 'function', function: { name: 'browser_back', description: 'Browser history back.', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'browser_eval', description: 'Run arbitrary JS in page context; must return a string.', parameters: { type: 'object', properties: { script: { type: 'string' } }, required: ['script'] } } },
+  { type: 'function', function: { name: 'render_html', description: 'Render a beautiful, rich HTML document directly in the IDE browser panel. Use this for highly visual results like shopping items, social media posts, image galleries, or dashboards. You can use absolute local file paths (e.g. file:///Users/...) directly in src/href attributes.', parameters: { type: 'object', properties: { html: { type: 'string', description: 'The complete HTML document string to render (include <style> tags or Tailwind via CDN for styling).' } }, required: ['html'] } } },
 ];
 
 // webSearch, fetchUrl, browsePage — all imported from shared modules
@@ -167,7 +168,33 @@ export class BuiltinAgent implements IAgent {
     finally { this.busy = false; this.send('chat-stream-end', ''); this.send('chat-status', 'idle'); }
   }
 
-  resetConversation(): void { this.messages = []; this.abort(); this.busy = false; }
+  resetConversation(): void {
+    if (this.busy) this.abort();
+    this.messages = [];
+  }
+
+  loadHistory(history: any[]): void {
+    if (this.busy) this.abort();
+    this.messages = history.map(m => {
+      if (m.role === 'user' && m.attachments && m.attachments.some((a: any) => a.type === 'image' && a.dataUrl)) {
+        const imageParts = m.attachments
+          .filter((a: any) => a.type === 'image' && a.dataUrl)
+          .map((a: any) => ({
+            type: 'image_url',
+            image_url: { url: a.dataUrl }
+          }));
+        
+        return {
+          role: 'user',
+          content: [
+            { type: 'text', text: m.content },
+            ...imageParts
+          ]
+        };
+      }
+      return { role: m.role, content: m.content };
+    });
+  }
   abort(): void { this.abortController?.abort(); this.abortController = null; }
   destroy(): void {
     this.abort();
@@ -182,7 +209,7 @@ export class BuiltinAgent implements IAgent {
   // ── Agent loop: streaming + tool calls ──
   private async runLoop(): Promise<void> {
     const MAX_ITERATIONS = 25;
-    const LOOP_TIMEOUT_MS = 90_000; // 90s hard timeout per iteration
+    const LOOP_TIMEOUT_MS = 600_000; // 10 min per iteration — allows for slow image/video generation
     this.abortController = new AbortController();
     this.currentTurnSearchResult = null;
 
@@ -394,7 +421,7 @@ export class BuiltinAgent implements IAgent {
 
     for (const msg of this.messages) {
       if (typeof msg.content === 'string' && msg.content.length > maxContentLen && msg.role !== 'user') {
-        msg.content = msg.content.slice(0, maxContentLen) + '\n...(truncated for context)';
+        msg.content = msg.content.slice(0, maxContentLen) + '\n\n[DISPLAY_TRUNCATED: Content was trimmed to fit context window. The original data was fully collected. Do NOT retry the tool call.]';
       }
     }
 
@@ -409,7 +436,13 @@ export class BuiltinAgent implements IAgent {
 
   private clipToolResult(result: string): string {
     const cap = this.getToolResultCapChars();
-    return result.length > cap ? result.slice(0, cap) + '\n...(truncated for context)' : result;
+    if (result.length <= cap) return result;
+    // Count lines/items to give model a sense of completeness
+    const totalLines = result.split('\n').length;
+    return result.slice(0, cap) +
+      `\n\n[DISPLAY_TRUNCATED: Output was ${result.length} chars / ${totalLines} lines. ` +
+      `Only the first ${cap} chars are shown above, but the full data was successfully collected. ` +
+      `Do NOT retry this tool call — the data is complete.]`;
   }
 
   // ── Tool execution ──
@@ -523,7 +556,29 @@ export class BuiltinAgent implements IAgent {
         case 'browser_back': return await browserBack();
         case 'browser_eval': {
           this.send('chat-stream-token', `\n浏览器执行脚本…\n`);
-          return await browserEval(args.script);
+          const evalResult = await browserEval(args.script);
+          // Auto-save large results to file to avoid context truncation loops
+          if (evalResult.length > 50_000) {
+            const filename = `scratch/browser_eval_${Date.now()}.txt`;
+            const fp = path.resolve(this.cwd, filename);
+            await fs.mkdir(path.dirname(fp), { recursive: true });
+            await fs.writeFile(fp, evalResult, 'utf8');
+            const lineCount = evalResult.split('\n').length;
+            const preview = evalResult.slice(0, 2000);
+            return `Data saved to ${filename} (${evalResult.length} chars, ${lineCount} lines).\n\nPreview (first 2000 chars):\n${preview}\n\n[Full data is in the file. Do NOT re-run this script — data collection is complete.]`;
+          }
+          return evalResult;
+        }
+        case 'render_html': {
+          const { browserViewManager } = require('../browser-view-manager');
+          const { BrowserWindow } = require('electron');
+          const allWindows = BrowserWindow.getAllWindows();
+          const mainWindow = allWindows.find((w: any) => w.getTitle()?.includes('DSME')) || allWindows[0];
+          if (mainWindow) mainWindow.webContents.send('browser-panel-open');
+
+          this.send('chat-stream-token', `\n正在渲染丰富的 HTML 视图...\n`);
+          await browserViewManager.loadHTML(args.html);
+          return 'HTML rendered successfully in the IDE browser panel. Tell the user to look at the browser panel.';
         }
         default: return `Unknown tool: ${name}`;
       }

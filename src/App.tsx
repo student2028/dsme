@@ -111,6 +111,7 @@ function App() {
         case 'shortcuts': setHelpOpen(p => !p); break;
         case 'toggle-sidebar': setSidePanel(p => p ? '' : 'explorer'); break;
         case 'toggle-terminal': setTerminalOpen(o => !o); break;
+        case 'open-terminal': setTerminalOpen(true); break;
         case 'save': handleSave(); break;
         case 'find': window.dispatchEvent(new CustomEvent('dsme-find')); break;
         case 'new-conversation': window.dispatchEvent(new CustomEvent('dsme-new-conversation')); break;

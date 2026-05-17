@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openWorkspace: () => ipcRenderer.invoke('open-workspace'),
   readFile: (filepath: string) => ipcRenderer.invoke('read-file', filepath),
   writeFile: (filepath: string, content: string) => ipcRenderer.invoke('write-file', filepath, content),
+  renameFile: (oldPath: string, newPath: string) => ipcRenderer.invoke('rename-file', oldPath, newPath),
   searchFiles: (query: string) => ipcRenderer.invoke('search-files', query),
   searchCodebase: (query: string) => ipcRenderer.invoke('search-codebase', query),
 
@@ -63,6 +64,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sendTerminalInput: (data: string) => ipcRenderer.send('terminal-input', data),
   updateTitle: (title: string) => ipcRenderer.send('update-title', title),
   onMenuAction: createSingleListenerChannel('menu-action'),
+  showContextMenu: (path: string, isDir: boolean) => ipcRenderer.send('show-context-menu', path, isDir),
+  onContextMenuAction: createMultiSubscriberChannel('context-menu-action'),
 
   onFileChanged: createMultiSubscriberChannel('file-changed'),
   onDiffPreview: createSingleListenerChannel('diff-preview'),
@@ -76,6 +79,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   resetConversation: () => ipcRenderer.send('reset-conversation'),
   saveConversations: (data: string) => ipcRenderer.invoke('save-conversations', data),
   loadConversations: () => ipcRenderer.invoke('load-conversations'),
+  syncHistory: (messages: any[]) => ipcRenderer.send('sync-history', messages),
 
   onRagStatus: createSingleListenerChannel('rag-status'),
 
@@ -103,4 +107,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onBrowserViewNavigated: createMultiSubscriberChannel('browser-view-navigated'),
   onBrowserStep: createMultiSubscriberChannel('browser-step'),
   onBrowserPanelOpen: createMultiSubscriberChannel('browser-panel-open'),
+  
+  captureWindow: () => ipcRenderer.invoke('capture-window'),
 });

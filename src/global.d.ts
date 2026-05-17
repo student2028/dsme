@@ -45,6 +45,7 @@ declare global {
       openWorkspace: () => Promise<string | null>;
       readFile: (filepath: string) => Promise<string>;
       writeFile: (filepath: string, content: string) => Promise<boolean>;
+      renameFile: (oldPath: string, newPath: string) => Promise<boolean>;
       searchFiles: (query: string) => Promise<{ name: string; path: string }[]>;
       searchCodebase: (query: string) => Promise<string>;
       getGitBranch: () => Promise<string>;
@@ -54,6 +55,8 @@ declare global {
       sendTerminalInput: (data: string) => void;
       updateTitle: (title: string) => void;
       onMenuAction: (callback: (action: string) => void) => Unsubscribe;
+      showContextMenu: (path: string, isDir: boolean) => void;
+      onContextMenuAction: (callback: (action: string, path: string) => void) => Unsubscribe;
       onFileChanged: (callback: (filepath: string) => void) => Unsubscribe;
       onDiffPreview: (callback: (change: DiffChange) => void) => Unsubscribe;
       acceptDiff: (changeId: string) => void;
@@ -66,6 +69,7 @@ declare global {
       loadConversations: () => Promise<string | null>;
       cancelChatRequest: () => void;
       resetConversation: () => void;
+      syncHistory: (messages: any[]) => void;
       onRagStatus: (callback: (count: number) => void) => Unsubscribe;
       onKernelChanged: (callback: (kernel: string) => void) => Unsubscribe;
       switchKernel: (kernel: string) => void;
