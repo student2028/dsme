@@ -89,6 +89,7 @@ declare global {
       onBrowserStep: (callback: (data: any) => void) => Unsubscribe;
       onBrowserPanelOpen: (callback: () => void) => Unsubscribe;
       moveWindowBy: (dx: number, dy: number) => void;
+      syncChromeCookies: () => Promise<{ success: boolean; count: number; error?: string }>;
     };
   }
 }

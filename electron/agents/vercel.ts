@@ -45,6 +45,8 @@ import {
   browserEval,
   browserTaskStart,
   browserTaskFinish,
+  browserWaitForIdle,
+  browserPressKey,
 } from './browser-use';
 
 const execAsync = promisify(exec);
@@ -81,6 +83,7 @@ function formatToolArgs(name: string, args: any): string {
       case 'browser_scroll': return args.direction ? ` ${args.direction}` : '';
       case 'browser_back': return ' ←';
       case 'browser_eval': return args.script ? ` \`${args.script.slice(0, 40)}...\`` : '';
+      case 'browser_press_key': return args.key ? ` ⌨️ ${args.key}` : '';
       case 'browser_task_start': return args.goal ? ` — ${args.goal.slice(0, 80)}${args.goal.length > 80 ? '…' : ''}` : '';
       case 'browser_task_finish':
         return args.summary
@@ -661,19 +664,19 @@ export class VercelAgent implements IAgent {
 
       browser_navigate: tool({
         description:
-          'Navigate the built-in browser to a URL. The browser tab opens automatically. For multi-step flows, call browser_task_start(goal) first so steps stay grouped.',
+          'Navigate the built-in browser to a URL. The browser tab opens automatically. Auto-waits for page idle after navigation. For multi-step flows, call browser_task_start(goal) first so steps stay grouped.',
         inputSchema: z.object({ url: z.string().describe('URL to navigate to') }),
         execute: async ({ url }) => browserNavigate(url),
       }),
 
       browser_snapshot: tool({
-        description: 'Get a text snapshot of the current page with interactive element references [e1], [e2], etc. Use this to see what is on the page and find elements to interact with. Always call this BEFORE clicking or typing.',
+        description: 'Get a text snapshot of the current page with interactive element references [e1], [e2], etc. Use this to see what is on the page and find elements to interact with. Always call this BEFORE clicking or typing. The snapshot will show a ⚠️ PAGE STATE: LOADING warning if the page is still processing — if you see this, call browser_wait_for_idle before interacting.',
         inputSchema: z.object({}),
         execute: async () => browserSnapshot(),
       }),
 
       browser_click: tool({
-        description: 'Click an element by its reference ID from browser_snapshot. Example: ref="e3" clicks the third interactive element.',
+        description: 'Click an element by its reference ID from browser_snapshot. Example: ref="e3" clicks the third interactive element. Auto-waits for page idle after click. If the result says [DISABLED], the element is not clickable yet — wait and retry.',
         inputSchema: z.object({ ref: z.string().describe('Element reference from snapshot, e.g. "e3"') }),
         execute: async ({ ref }) => browserClick(ref),
       }),
@@ -700,12 +703,12 @@ export class VercelAgent implements IAgent {
       }),
 
       browser_eval: tool({
-        description: 'Execute arbitrary JavaScript in the current page context. Use for complex interactions not covered by other browser tools. Script MUST return a string.',
+        description: 'Execute arbitrary JavaScript in the current page context. Use for complex interactions not covered by other browser tools. Script MUST return a string. IMPORTANT: If extracting images, do NOT return base64 data — it will be auto-saved to disk and a file path returned instead.',
         inputSchema: z.object({ script: z.string().describe('JavaScript to execute in page context') }),
         execute: async ({ script }) => {
-          const evalResult = await browserEval(script);
-          // Auto-save large results to file to avoid context truncation loops
-          if (evalResult.length > 50_000) {
+          const evalResult = await browserEval(script, cwd);
+          // Auto-save large text results to file to avoid context truncation loops
+          if (evalResult.length > 50_000 && !evalResult.startsWith('Image saved to')) {
             const filename = `scratch/browser_eval_${Date.now()}.txt`;
             const fp = path.resolve(cwd, filename);
             await fs.mkdir(path.dirname(fp), { recursive: true });
@@ -716,6 +719,22 @@ export class VercelAgent implements IAgent {
           }
           return evalResult;
         },
+      }),
+
+      browser_wait_for_idle: tool({
+        description: 'Explicitly wait for the page to become idle (no loading spinners, no DOM changes, no pending requests). Use after submitting forms, triggering AI generation, or any action that causes async processing. Default timeout: 15s, max: 120s.',
+        inputSchema: z.object({
+          timeout_ms: z.number().optional().describe('Maximum wait time in milliseconds. Default: 15000. For AI generation tasks, use 60000-120000.'),
+        }),
+        execute: async ({ timeout_ms }) => browserWaitForIdle(timeout_ms),
+      }),
+
+      browser_press_key: tool({
+        description: 'Press a special key (Enter, Tab, Escape, Backspace, Delete, Arrow keys, Space) using native keyboard simulation. Use this to submit forms (Enter), navigate tabs (Tab), or dismiss dialogs (Escape). This fires at the Chromium engine level — identical to a physical key press.',
+        inputSchema: z.object({
+          key: z.enum(['Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space']).describe('Key to press'),
+        }),
+        execute: async ({ key }) => browserPressKey(key),
       }),
 
       render_html: tool({

@@ -32,6 +32,8 @@ import {
   browserEval,
   browserTaskStart,
   browserTaskFinish,
+  browserWaitForIdle,
+  browserPressKey,
 } from './browser-use';
 import {
   formatWebSearchResult,
@@ -69,7 +71,9 @@ const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   { type: 'function', function: { name: 'browser_type', description: 'Type into input/textarea by ref from browser_snapshot.', parameters: { type: 'object', properties: { ref: { type: 'string' }, text: { type: 'string' } }, required: ['ref', 'text'] } } },
   { type: 'function', function: { name: 'browser_scroll', description: 'Scroll the page up or down.', parameters: { type: 'object', properties: { direction: { type: 'string', enum: ['up', 'down'] } }, required: ['direction'] } } },
   { type: 'function', function: { name: 'browser_back', description: 'Browser history back.', parameters: { type: 'object', properties: {} } } },
-  { type: 'function', function: { name: 'browser_eval', description: 'Run arbitrary JS in page context; must return a string.', parameters: { type: 'object', properties: { script: { type: 'string' } }, required: ['script'] } } },
+  { type: 'function', function: { name: 'browser_eval', description: 'Run arbitrary JS in page context; must return a string. Base64 image data is auto-saved to disk.', parameters: { type: 'object', properties: { script: { type: 'string' } }, required: ['script'] } } },
+  { type: 'function', function: { name: 'browser_wait_for_idle', description: 'Wait for page to become idle (no loading spinners, stable DOM). Use after triggering async operations like AI generation.', parameters: { type: 'object', properties: { timeout_ms: { type: 'number', description: 'Max wait ms. Default: 15000. For AI tasks use 60000-120000.' } } } } },
+  { type: 'function', function: { name: 'browser_press_key', description: 'Press a special key (Enter, Tab, Escape, Backspace, Delete, Arrow keys, Space) using native keyboard simulation. Use this to submit forms (Enter), navigate tabs (Tab), or dismiss dialogs (Escape). This fires at the Chromium engine level — identical to a physical key press.', parameters: { type: 'object', properties: { key: { type: 'string', enum: ['Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'], description: 'Key to press' } }, required: ['key'] } } },
   { type: 'function', function: { name: 'render_html', description: 'Render a beautiful, rich HTML document directly in the IDE browser panel. Use this for highly visual results like shopping items, social media posts, image galleries, or dashboards. You can use absolute local file paths (e.g. file:///Users/...) directly in src/href attributes.', parameters: { type: 'object', properties: { html: { type: 'string', description: 'The complete HTML document string to render (include <style> tags or Tailwind via CDN for styling).' } }, required: ['html'] } } },
 ];
 
@@ -556,9 +560,9 @@ export class BuiltinAgent implements IAgent {
         case 'browser_back': return await browserBack();
         case 'browser_eval': {
           this.send('chat-stream-token', `\n浏览器执行脚本…\n`);
-          const evalResult = await browserEval(args.script);
+          const evalResult = await browserEval(args.script, this.cwd);
           // Auto-save large results to file to avoid context truncation loops
-          if (evalResult.length > 50_000) {
+          if (evalResult.length > 50_000 && !evalResult.startsWith('Image saved to')) {
             const filename = `scratch/browser_eval_${Date.now()}.txt`;
             const fp = path.resolve(this.cwd, filename);
             await fs.mkdir(path.dirname(fp), { recursive: true });
@@ -568,6 +572,14 @@ export class BuiltinAgent implements IAgent {
             return `Data saved to ${filename} (${evalResult.length} chars, ${lineCount} lines).\n\nPreview (first 2000 chars):\n${preview}\n\n[Full data is in the file. Do NOT re-run this script — data collection is complete.]`;
           }
           return evalResult;
+        }
+        case 'browser_wait_for_idle': {
+          this.send('chat-stream-token', `\n等待页面空闲…\n`);
+          return await browserWaitForIdle(args.timeout_ms);
+        }
+        case 'browser_press_key': {
+          this.send('chat-stream-token', `\n按下按键 ${args.key}\n`);
+          return await browserPressKey(args.key);
         }
         case 'render_html': {
           const { browserViewManager } = require('../browser-view-manager');

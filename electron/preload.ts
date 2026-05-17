@@ -109,4 +109,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onBrowserPanelOpen: createMultiSubscriberChannel('browser-panel-open'),
   
   captureWindow: () => ipcRenderer.invoke('capture-window'),
+
+  syncChromeCookies: () => ipcRenderer.invoke('sync-chrome-cookies'),
 });

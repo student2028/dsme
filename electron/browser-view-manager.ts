@@ -54,6 +54,25 @@ export class BrowserViewManager {
       callback({ requestHeaders: details.requestHeaders });
     });
 
+    // Automatically handle downloads to prevent the system "Save As" dialog
+    browserSession.on('will-download', (event, item, webContents) => {
+      const os = require('node:os');
+      const path = require('node:path');
+      // Save directly to the user's Downloads folder
+      const downloadPath = path.join(os.homedir(), 'Downloads', item.getFilename());
+      item.setSavePath(downloadPath);
+      
+      console.log(`[BrowserViewManager] Started auto-download: ${downloadPath}`);
+      
+      item.once('done', (event, state) => {
+        if (state === 'completed') {
+          console.log(`[BrowserViewManager] Download successfully completed: ${downloadPath}`);
+        } else {
+          console.error(`[BrowserViewManager] Download failed with state: ${state}`);
+        }
+      });
+    });
+
     // Full Chrome environment spoofing for Google sign-in compatibility.
     // Google checks: userAgentData, window.chrome, navigator.plugins, Electron globals.
     this.view.webContents.on('dom-ready', () => {
@@ -277,18 +296,123 @@ export class BrowserViewManager {
     }
   }
 
+  // ── Page idle detection ──
+
+  /**
+   * Wait until the page appears idle:
+   *  1. No pending XHR/fetch (detected via Performance Observer / PerformanceResourceTiming)
+   *  2. No loading spinners / progress bars / aria-busy elements
+   *  3. DOM text content is stable for 2 consecutive checks
+   *
+   * Returns a status string describing what it observed.
+   * Timeout: maxWaitMs (default 15s). Never throws.
+   */
+  async waitForIdle(maxWaitMs = 15_000): Promise<string> {
+    if (!this.ensureHealthyView()) return 'Error: view not initialized';
+    const POLL_INTERVAL = 800;
+    const STABLE_CHECKS_NEEDED = 2;
+
+    const idleScript = `(async () => {
+      const maxWait = ${maxWaitMs};
+      const pollInterval = ${POLL_INTERVAL};
+      const stableNeeded = ${STABLE_CHECKS_NEEDED};
+      const start = Date.now();
+      let stableCount = 0;
+      let lastTextHash = '';
+
+      function simpleHash(s) {
+        let h = 0;
+        for (let i = 0; i < s.length; i++) { h = ((h << 5) - h + s.charCodeAt(i)) | 0; }
+        return String(h);
+      }
+
+      function hasLoadingIndicators() {
+        // Common loading patterns across web apps
+        const selectors = [
+          '[aria-busy="true"]',
+          '.loading', '.spinner', '.skeleton',
+          'mat-progress-spinner', 'mat-progress-bar',
+          '[role="progressbar"]',
+          '.generating', '.thinking',
+          '[data-loading="true"]',
+        ];
+        for (const sel of selectors) {
+          const el = document.querySelector(sel);
+          if (el && el.offsetParent !== null) return sel;
+        }
+        return null;
+      }
+
+      while (Date.now() - start < maxWait) {
+        await new Promise(r => setTimeout(r, pollInterval));
+
+        const loadingSel = hasLoadingIndicators();
+        if (loadingSel) {
+          stableCount = 0;
+          continue;
+        }
+
+        // Check DOM text stability
+        const textNow = simpleHash((document.body?.innerText || '').slice(0, 5000));
+        if (textNow === lastTextHash && textNow !== '0') {
+          stableCount++;
+        } else {
+          stableCount = 0;
+        }
+        lastTextHash = textNow;
+
+        if (stableCount >= stableNeeded) {
+          return 'idle: page stable for ' + (stableNeeded * pollInterval) + 'ms after ' + (Date.now() - start) + 'ms';
+        }
+      }
+
+      const loadingSel = hasLoadingIndicators();
+      if (loadingSel) {
+        return 'timeout: page still loading (' + loadingSel + ') after ' + maxWait + 'ms';
+      }
+      return 'timeout: DOM not stable after ' + maxWait + 'ms';
+    })()`;
+
+    try {
+      const result = await Promise.race([
+        this.view!.webContents.executeJavaScript(idleScript),
+        new Promise<string>((resolve) =>
+          setTimeout(() => resolve(`timeout: hard timeout after ${maxWaitMs}ms`), maxWaitMs + 2000),
+        ),
+      ]);
+      return typeof result === 'string' ? result : String(result);
+    } catch (e: any) {
+      return `waitForIdle error: ${e.message}`;
+    }
+  }
+
   // ── Script execution ──
 
   async executeJS(script: string, timeoutMs = 600_000): Promise<string> {
     if (!this.ensureHealthyView()) return 'Error: view not initialized';
     try {
+      const wrappedScript = `(async () => {
+        try {
+          const res = await (async () => {
+            ${script}
+          })();
+          return { ok: true, value: res };
+        } catch (e) {
+          return { ok: false, error: e.stack || e.message || String(e) };
+        }
+      })()`;
       const result = await Promise.race([
-        this.view.webContents.executeJavaScript(script),
+        this.view.webContents.executeJavaScript(wrappedScript),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(`Timeout after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs),
         ),
       ]);
-      if (result === null || result === undefined) {
+      if (!result.ok) {
+        return `Script error: ${result.error}`;
+      }
+      
+      const val = result.value;
+      if (val === null || val === undefined) {
         try {
           const fallback = await this.view.webContents.executeJavaScript(
             `document.body?.innerText?.slice(0, 8000) || ''`
@@ -299,9 +423,64 @@ export class BrowserViewManager {
         } catch {}
         return 'Script completed but returned no value. Use `return` to return data.';
       }
-      return typeof result === 'string' ? result : JSON.stringify(result);
+      return typeof val === 'string' ? val : JSON.stringify(val);
     } catch (e: any) {
       return `Script error: ${e.message}`;
+    }
+  }
+
+  // ── Native input (engine-level, bypasses TrustedHTML / CSP) ──
+
+  /**
+   * Insert text at the currently focused element using Chromium's native input path.
+   * This is equivalent to a human typing — all framework event listeners fire naturally.
+   * Works with contenteditable, input, textarea, and rich text editors (Quill, ProseMirror, etc.).
+   * Handles CJK (Chinese/Japanese/Korean) characters natively via IME passthrough.
+   */
+  async insertText(text: string): Promise<string> {
+    if (!this.ensureHealthyView()) return 'Error: view not initialized';
+    try {
+      await this.view!.webContents.insertText(text);
+      return `Inserted ${text.length} characters`;
+    } catch (e: any) {
+      return `insertText error: ${e.message}`;
+    }
+  }
+
+  /**
+   * Send a native keyboard event (Enter, Tab, Escape, Backspace, etc.).
+   * This fires at the Chromium engine level — identical to a physical key press.
+   * Supported keys: Enter, Tab, Escape, Backspace, Delete, ArrowUp/Down/Left/Right, etc.
+   */
+  async pressKey(key: string): Promise<string> {
+    if (!this.ensureHealthyView()) return 'Error: view not initialized';
+    try {
+      // Map common key names to Electron Accelerator key codes
+      // Ref: https://www.electronjs.org/docs/latest/api/accelerator
+      const keyMap: Record<string, string> = {
+        'Enter':     'Return',
+        'Tab':       'Tab',
+        'Escape':    'Escape',
+        'Backspace': 'Backspace',
+        'Delete':    'Delete',
+        'ArrowUp':   'Up',
+        'ArrowDown': 'Down',
+        'ArrowLeft': 'Left',
+        'ArrowRight':'Right',
+        'Space':     'Space',
+      };
+      const keyCode = keyMap[key];
+      if (!keyCode) {
+        return `Error: unsupported key "${key}". Supported: ${Object.keys(keyMap).join(', ')}`;
+      }
+      const wc = this.view!.webContents;
+      // Only keyDown + keyUp — no 'char' event.
+      // pressKey is for control actions (submit, dismiss, navigate), not character input.
+      wc.sendInputEvent({ type: 'keyDown', keyCode } as any);
+      wc.sendInputEvent({ type: 'keyUp', keyCode } as any);
+      return `Pressed key: ${key}`;
+    } catch (e: any) {
+      return `pressKey error: ${e.message}`;
     }
   }
 

@@ -714,6 +714,22 @@ ipcMain.handle('capture-window', async () => {
   }
 });
 
+ipcMain.handle('sync-chrome-cookies', async () => {
+  if (process.platform !== 'darwin') return { success: false, count: 0, error: 'Only macOS supported' };
+  try {
+    const browserSession = session.fromPartition('persist:browser-panel');
+    const [defaultCount, browserCount] = await Promise.all([
+      syncChromeCookies(session.defaultSession),
+      syncChromeCookies(browserSession),
+    ]);
+    const syncFlag = join(app.getPath('userData'), 'cookie-sync-ts');
+    require('fs').writeFileSync(syncFlag, String(Date.now()));
+    return { success: true, count: defaultCount + browserCount };
+  } catch (e: any) {
+    return { success: false, count: 0, error: e.message };
+  }
+});
+
 // File search
 let fileCache: { name: string; path: string }[] = [];
 let fileCacheTime = 0;

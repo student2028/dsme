@@ -200,6 +200,32 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
           </div>
         </div>
 
+        {/* Cookie Sync — macOS only */}
+        {navigator.platform.toLowerCase().includes('mac') && (
+          <>
+            <div className="settings-section-label">Browser</div>
+            <div className="settings-group">
+              <button
+                className="settings-save-btn"
+                style={{ width: '100%' }}
+                onClick={async () => {
+                  const res = await window.electronAPI?.syncChromeCookies?.();
+                  if (res?.success) {
+                    alert(`✅ Synced ${res.count} cookies from Chrome`);
+                  } else {
+                    alert(`❌ Sync failed: ${res?.error || 'Unknown error'}`);
+                  }
+                }}
+              >
+                🍪 Sync Chrome Cookies
+              </button>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
+                Pulls cookies from your local Chrome so the browser panel stays logged in.
+              </div>
+            </div>
+          </>
+        )}
+
         </div>
 
         <div className="settings-actions">
