@@ -75,9 +75,18 @@ export const BrowserPanel: React.FC<{
     setLastAction('');
   }, []);
 
-  const userHistoryBack = useCallback(() => {
-    // Not yet implemented for WebContentsView — would need an IPC call
-    setLastAction('后退功能正在迁移到 WebContentsView');
+  const userHistoryBack = useCallback(async () => {
+    try {
+      const result = await window.electronAPI?.browserGoBack?.();
+      if (result) setLastAction(result);
+    } catch { setLastAction('后退失败'); }
+  }, []);
+
+  const userHistoryForward = useCallback(async () => {
+    try {
+      const result = await window.electronAPI?.browserGoForward?.();
+      if (result) setLastAction(result);
+    } catch { setLastAction('前进失败'); }
   }, []);
 
   // ── Bounds sync: tell main process where our placeholder div is ──
@@ -251,8 +260,11 @@ export const BrowserPanel: React.FC<{
         <span className="browser-slot-label">🌐 {slot.label}</span>
         {slot.url && <span className="browser-slot-url">{slot.url}</span>}
         <StatusBadge status={slot.status} />
-        <button type="button" className="browser-slot-user-btn" onClick={userHistoryBack} title="在历史记录中后退（不影响 Agent）">
+        <button type="button" className="browser-slot-user-btn" onClick={userHistoryBack} title="后退">
           ← 后退
+        </button>
+        <button type="button" className="browser-slot-user-btn" onClick={userHistoryForward} title="前进">
+          前进 →
         </button>
         {navigator.platform.toLowerCase().includes('mac') && (
           <CookieSyncDropdown onOpenChange={setDropdownOpen} />

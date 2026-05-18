@@ -272,6 +272,7 @@ export class BrowserViewManager {
     // Notify renderer on navigation events & invalidate CDP refs
     this.view.webContents.on('did-navigate', (_e, url) => {
       this.currentUrl = url;
+      this.targetFrame = null;
       this.refMap.clear();   // Old backendDOMNodeIds are invalid after navigation
       this.refLabels.clear(); // Labels are stale too
       // Cross-origin navigation may destroy the old renderer process,
@@ -537,6 +538,7 @@ export class BrowserViewManager {
     if (!this.ensureHealthyView()) return 'Error: view not initialized';
     this.ensureAttached();
     try {
+      this.targetFrame = null; // Clear any previously focused iframe on top-level navigation
       await this.view!.webContents.loadURL(url);
       this.currentUrl = url;
       const title = this.view!.webContents.getTitle();
@@ -598,6 +600,34 @@ export class BrowserViewManager {
       return `Went back. Now at: ${url}`;
     } catch (e: any) {
       return `GoBack error: ${e.message}`;
+    }
+  }
+
+  async goForward(): Promise<string> {
+    if (!this.ensureHealthyView()) return 'Error: view not initialized';
+    try {
+      const nav = this.view!.webContents.navigationHistory;
+      if (!nav.canGoForward()) return 'Cannot go forward — no forward history.';
+
+      const navDone = new Promise<void>((resolve) => {
+        const cleanup = () => {
+          this.view?.webContents.removeListener('did-navigate', cleanup);
+          this.view?.webContents.removeListener('did-navigate-in-page', cleanup);
+          resolve();
+        };
+        this.view!.webContents.once('did-navigate', cleanup);
+        this.view!.webContents.once('did-navigate-in-page', cleanup);
+      });
+
+      nav.goForward();
+      await Promise.race([navDone, new Promise<void>(r => setTimeout(r, 5000))]);
+
+      const url = this.view!.webContents.getURL();
+      this.currentUrl = url;
+      this.notifyRenderer('browser-view-navigated', { url, title: this.view!.webContents.getTitle() });
+      return `Went forward. Now at: ${url}`;
+    } catch (e: any) {
+      return `GoForward error: ${e.message}`;
     }
   }
 
@@ -1854,7 +1884,7 @@ export class BrowserViewManager {
 
         let timer: NodeJS.Timeout;
         const timeoutPromise = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error('AXTree timeout')), 5000);
+          timer = setTimeout(() => reject(new Error('AXTree timeout')), 15000);
         });
 
         const { nodes } = await Promise.race([

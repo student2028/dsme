@@ -50,9 +50,11 @@ function buildSnapshotScript(startRef = 0, includeHeader = true): string {
   function isVisible(el) {
     const tag = el.tagName;
     if (tag === 'BODY' || tag === 'HTML') return true;
-    if (!el.offsetParent) return false;
     const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
+    if (r.width === 0 || r.height === 0) return false;
+    const style = window.getComputedStyle(el);
+    if (style.visibility === 'hidden' || style.opacity === '0') return false;
+    return true;
   }
 
   function getLabel(el) {
@@ -62,8 +64,10 @@ function buildSnapshotScript(startRef = 0, includeHeader = true): string {
 
     // Tier 2: <label for="id"> association
     if (el.id) {
-      var lab = document.querySelector('label[for="' + el.id + '"]');
-      if (lab) { var t = (lab.innerText || '').trim(); if (t && t.length < 30) return t; }
+      try {
+        var lab = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+        if (lab) { var t = (lab.innerText || '').trim(); if (t && t.length < 30) return t; }
+      } catch (e) {}
     }
 
     // Tier 3: parent's direct text (e.g. <div>主题 <input/></div>)
@@ -138,121 +142,127 @@ function buildSnapshotScript(startRef = 0, includeHeader = true): string {
   var TEXT_LINE_CAP = 60; // max text-only lines to avoid noise on content-heavy pages
 
   for (var i = 0; i < allEls.length; i++) {
-    var el = allEls[i];
-    if (!isVisible(el)) continue;
-    if (seen.has(el)) continue;
+    try {
+      var el = allEls[i];
+      if (!isVisible(el)) continue;
+      if (seen.has(el)) continue;
 
-    var tag = el.tagName.toLowerCase();
-    var role = el.getAttribute('role') || '';
-    var isDisabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
-    var disabledTag = isDisabled ? ' [DISABLED]' : '';
+      var tag = el.tagName.toLowerCase();
+      var role = el.getAttribute('role') || '';
+      var isDisabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+      var disabledTag = isDisabled ? ' [DISABLED]' : '';
 
-    var isInteractive = false;
+      var isInteractive = false;
 
-    // Buttons
-    if (tag === 'button' || role === 'button' || (tag === 'input' && (el.type === 'button' || el.type === 'submit'))) {
-      var ref = assignRef(el);
-      var text = getText(el) || getLabel(el) || el.value || 'button';
-      lines.push('[' + ref + '] button "' + text.slice(0, 60) + '"' + disabledTag);
-      seen.add(el);
-      isInteractive = true;
-    }
-    // Links
-    else if ((tag === 'a' && el.href) || role === 'link') {
-      var ref = assignRef(el);
-      var text = getText(el) || getLabel(el) || (el.href || '').slice(0, 40);
-      lines.push('[' + ref + '] link "' + text.slice(0, 60) + '"' + disabledTag);
-      seen.add(el);
-      isInteractive = true;
-    }
-    // Text inputs
-    else if (tag === 'input') {
-      var ref = assignRef(el);
-      var label = getLabel(el) || el.type;
-      var val = el.value ? ' value="' + el.value.slice(0, 40) + '"' : '';
-      lines.push('[' + ref + '] input[' + (el.type || 'text') + '] "' + label + '"' + val + disabledTag);
-      seen.add(el);
-      isInteractive = true;
-    }
-    // Textbox role
-    else if (role === 'textbox' || role === 'searchbox' || role === 'combobox') {
-      var ref = assignRef(el);
-      var label = getLabel(el) || role;
-      var val = (el.value || el.innerText || '').trim();
-      var valPart = val ? ' value="' + val.slice(0, 40) + '"' : '';
-      lines.push('[' + ref + '] ' + role + ' "' + label + '"' + valPart + disabledTag);
-      seen.add(el);
-      isInteractive = true;
-    }
-    // Textarea / contenteditable
-    else if (tag === 'textarea' || (el.getAttribute('contenteditable') === 'true' && tag !== 'body')) {
-      var ref = assignRef(el);
-      var label = getLabel(el) || el.className?.split(' ')[0] || 'editable';
-      var val = (el.value || el.innerText || '').trim();
-      var valPart = val ? ' value="' + val.slice(0, 40) + '"' : '';
-      lines.push('[' + ref + '] ' + (tag === 'textarea' ? 'textarea' : 'editable') + ' "' + label + '"' + valPart + disabledTag);
-      seen.add(el);
-      isInteractive = true;
-    }
-    // Select
-    else if (tag === 'select') {
-      var ref = assignRef(el);
-      var label = getLabel(el) || 'select';
-      var selected = el.selectedOptions?.[0]?.text || '';
-      lines.push('[' + ref + '] select "' + label + '" selected="' + selected.slice(0, 30) + '"' + disabledTag);
-      seen.add(el);
-      isInteractive = true;
-    }
-    // Tab / menuitem / etc.
-    else if (['tab','menuitem','option','switch','slider','checkbox','radio'].indexOf(role) >= 0) {
-      var ref = assignRef(el);
-      var text = getText(el) || getLabel(el) || role;
-      lines.push('[' + ref + '] ' + role + ' "' + text.slice(0, 60) + '"' + disabledTag);
-      seen.add(el);
-      isInteractive = true;
-    }
-    // Images
-    else if (tag === 'img' && el.alt) {
-      var ref = assignRef(el);
-      lines.push('[' + ref + '] img "' + el.alt.slice(0, 60) + '"');
-      seen.add(el);
-      isInteractive = true;
-    }
-    // Tabindex focusables (fallback)
-    else if (el.hasAttribute('tabindex')) {
-      var text = getText(el) || getLabel(el);
-      if (text && text.length > 1) {
+      // Buttons
+      if (tag === 'button' || role === 'button' || (tag === 'input' && (el.type === 'button' || el.type === 'submit'))) {
         var ref = assignRef(el);
-        lines.push('[' + ref + '] interactive "' + text.slice(0, 60) + '"' + disabledTag);
+        var text = getText(el) || getLabel(el) || el.value || 'button';
+        lines.push('[' + ref + '] button "' + text.slice(0, 60) + '"' + disabledTag);
         seen.add(el);
         isInteractive = true;
       }
-    }
-
-    // Static text / Headings (only process if we didn't just mark it interactive)
-    if (!isInteractive) {
-      var isHeading = ['h1','h2','h3','h4','h5','h6'].indexOf(tag) >= 0;
-      var hasInteractiveChild = el.querySelector('input, button, select, textarea, a[href], [role="button"]');
-      if (hasInteractiveChild && tag !== 'label') continue;
-
-      var bt = '';
-      for (var cn = 0; cn < el.childNodes.length; cn++) {
-        if (el.childNodes[cn].nodeType === 3) bt += el.childNodes[cn].textContent;
+      // Links
+      else if ((tag === 'a' && el.hasAttribute('href')) || role === 'link') {
+        var ref = assignRef(el);
+        var hrefStr = typeof el.href === 'string' ? el.href : (el.href?.baseVal || el.getAttribute('href') || '');
+        var text = getText(el) || getLabel(el) || hrefStr.slice(0, 40);
+        lines.push('[' + ref + '] link "' + text.slice(0, 60) + '"' + disabledTag);
+        seen.add(el);
+        isInteractive = true;
       }
-      bt = bt.trim().replace(/\s+/g, ' ');
-      
-      // Headings always emitted; text lines capped to avoid noise
-      if (isHeading && bt) {
-        if (!textSeen.has(bt)) {
-          lines.push(tag + ': ' + bt);
-          textSeen.add(bt);
+      // Text inputs
+      else if (tag === 'input') {
+        var ref = assignRef(el);
+        var label = getLabel(el) || el.type;
+        var val = el.value ? ' value="' + el.value.slice(0, 40) + '"' : '';
+        lines.push('[' + ref + '] input[' + (el.type || 'text') + '] "' + label + '"' + val + disabledTag);
+        seen.add(el);
+        isInteractive = true;
+      }
+      // Textbox role
+      else if (role === 'textbox' || role === 'searchbox' || role === 'combobox') {
+        var ref = assignRef(el);
+        var label = getLabel(el) || role;
+        var val = (el.value || el.innerText || '').trim();
+        var valPart = val ? ' value="' + val.slice(0, 40) + '"' : '';
+        lines.push('[' + ref + '] ' + role + ' "' + label + '"' + valPart + disabledTag);
+        seen.add(el);
+        isInteractive = true;
+      }
+      // Textarea / contenteditable
+      else if (tag === 'textarea' || (el.getAttribute('contenteditable') === 'true' && tag !== 'body')) {
+        var ref = assignRef(el);
+        var classNameStr = typeof el.className === 'string' ? el.className : (el.className?.baseVal || '');
+        var label = getLabel(el) || classNameStr.split(' ')[0] || 'editable';
+        var val = (el.value || el.innerText || '').trim();
+        var valPart = val ? ' value="' + val.slice(0, 40) + '"' : '';
+        lines.push('[' + ref + '] ' + (tag === 'textarea' ? 'textarea' : 'editable') + ' "' + label + '"' + valPart + disabledTag);
+        seen.add(el);
+        isInteractive = true;
+      }
+      // Select
+      else if (tag === 'select') {
+        var ref = assignRef(el);
+        var label = getLabel(el) || 'select';
+        var selected = el.selectedOptions?.[0]?.text || '';
+        lines.push('[' + ref + '] select "' + label + '" selected="' + selected.slice(0, 30) + '"' + disabledTag);
+        seen.add(el);
+        isInteractive = true;
+      }
+      // Tab / menuitem / etc.
+      else if (['tab','menuitem','option','switch','slider','checkbox','radio'].indexOf(role) >= 0) {
+        var ref = assignRef(el);
+        var text = getText(el) || getLabel(el) || role;
+        lines.push('[' + ref + '] ' + role + ' "' + text.slice(0, 60) + '"' + disabledTag);
+        seen.add(el);
+        isInteractive = true;
+      }
+      // Images
+      else if (tag === 'img' && el.alt) {
+        var ref = assignRef(el);
+        lines.push('[' + ref + '] img "' + el.alt.slice(0, 60) + '"');
+        seen.add(el);
+        isInteractive = true;
+      }
+      // Tabindex focusables (fallback)
+      else if (el.hasAttribute('tabindex')) {
+        var text = getText(el) || getLabel(el);
+        if (text && text.length > 1) {
+          var ref = assignRef(el);
+          lines.push('[' + ref + '] interactive "' + text.slice(0, 60) + '"' + disabledTag);
+          seen.add(el);
+          isInteractive = true;
         }
-      } else if (textLineCount < TEXT_LINE_CAP && bt.length >= 2 && bt.length <= 120 && !textSeen.has(bt)) {
-        lines.push('text: ' + bt);
-        textSeen.add(bt);
-        textSeen.add(el);
-        textLineCount++;
       }
+
+      // Static text / Headings (only process if we didn't just mark it interactive)
+      if (!isInteractive) {
+        var isHeading = ['h1','h2','h3','h4','h5','h6'].indexOf(tag) >= 0;
+        var hasInteractiveChild = el.querySelector('input, button, select, textarea, a[href], [role="button"]');
+        if (hasInteractiveChild && tag !== 'label') continue;
+
+        var bt = '';
+        for (var cn = 0; cn < el.childNodes.length; cn++) {
+          if (el.childNodes[cn].nodeType === 3) bt += el.childNodes[cn].textContent;
+        }
+        bt = bt.trim().replace(/\\s+/g, ' ');
+        
+        // Headings always emitted; text lines capped to avoid noise
+        if (isHeading && bt) {
+          if (!textSeen.has(bt)) {
+            lines.push(tag + ': ' + bt);
+            textSeen.add(bt);
+          }
+        } else if (textLineCount < TEXT_LINE_CAP && bt.length >= 2 && bt.length <= 120 && !textSeen.has(bt)) {
+          lines.push('text: ' + bt);
+          textSeen.add(bt);
+          textSeen.add(el);
+          textLineCount++;
+        }
+      }
+    } catch (err) {
+      // Ignore errors on individual elements so the snapshot doesn't crash completely
     }
   }
 

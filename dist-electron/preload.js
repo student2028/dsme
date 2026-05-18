@@ -94,6 +94,8 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
 	onBrowserPanelOpen: createMultiSubscriberChannel("browser-panel-open"),
 	captureWindow: () => electron.ipcRenderer.invoke("capture-window"),
 	getChromeProfiles: () => electron.ipcRenderer.invoke("get-chrome-profiles"),
-	syncChromeCookies: (profileDirName) => electron.ipcRenderer.invoke("sync-chrome-cookies", profileDirName)
+	syncChromeCookies: (profileDirName) => electron.ipcRenderer.invoke("sync-chrome-cookies", profileDirName),
+	browserGoBack: () => electron.ipcRenderer.invoke("browser-go-back"),
+	browserGoForward: () => electron.ipcRenderer.invoke("browser-go-forward")
 });
 //#endregion

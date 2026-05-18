@@ -17,6 +17,7 @@ export interface AgentConfig {
   cwd: string;
   maxOutputTokens: number;
   maxContextTokens: number;
+  maxToolSteps: number;
 }
 
 // ── Callback contract (IDE ← Agent) ─────────────────────────────────

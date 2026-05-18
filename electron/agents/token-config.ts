@@ -1,5 +1,6 @@
 export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 export const DEFAULT_MAX_CONTEXT_TOKENS = 128_000;
+export const DEFAULT_MAX_TOOL_STEPS = 200;
 
 export interface TokenLimits {
   maxOutputTokens: number;

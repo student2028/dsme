@@ -346,12 +346,28 @@ export class BuiltinAgent implements IAgent {
         let finishReason = '';
         let insideThink = false;
         let thinkBuffer = '';
+        let reasoningContent = '';
+        let insideNativeReasoning = false;
 
         try {
         for await (const chunk of stream) {
           const delta = chunk.choices[0]?.delta;
           if (chunk.choices[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
           if (!delta) continue;
+
+          // Native reasoning_content (DeepSeek API format)
+          if ((delta as any).reasoning_content) {
+            const raw = (delta as any).reasoning_content;
+            if (!insideNativeReasoning) {
+              insideNativeReasoning = true;
+              this.send('chat-stream-token', '\n<details>\n<summary>💭 思考过程</summary>\n\n');
+            }
+            reasoningContent += raw;
+            this.send('chat-stream-token', raw);
+          } else if (insideNativeReasoning && (delta.content !== undefined || delta.tool_calls !== undefined)) {
+            insideNativeReasoning = false;
+            this.send('chat-stream-token', '\n\n</details>\n');
+          }
 
           // Text content — with <think> tag collapsible rendering
           if (delta.content) {
@@ -412,6 +428,10 @@ export class BuiltinAgent implements IAgent {
             }
           }
         }
+        if (insideNativeReasoning) {
+          insideNativeReasoning = false;
+          this.send('chat-stream-token', '\n\n</details>\n');
+        }
         } catch (streamErr: any) {
           // Graceful degradation (ported from tools1 _handle_streaming lines 985-989):
           // If stream interrupted AFTER producing content, keep partial output
@@ -441,8 +461,11 @@ export class BuiltinAgent implements IAgent {
         }
 
         // Save assistant message
-        if (fullText || toolCalls.length > 0) {
+        if (fullText || toolCalls.length > 0 || reasoningContent) {
           const assistantMsg: any = { role: 'assistant', content: fullText || null };
+          if (reasoningContent) {
+            assistantMsg.reasoning_content = reasoningContent;
+          }
           if (toolCalls.length > 0) {
             assistantMsg.tool_calls = toolCalls.map(tc => ({
               id: tc.id, type: 'function' as const,

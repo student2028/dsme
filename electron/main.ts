@@ -7,7 +7,7 @@ import { VercelAgent } from './agents/vercel'
 import { BuiltinAgent } from './agents/builtin'
 import type { IAgent } from './agents/base'
 import { browserViewManager } from './browser-view-manager'
-import { DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS, getTokenLimitsFromEnv } from './agents/token-config'
+import { DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_TOOL_STEPS, getTokenLimitsFromEnv } from './agents/token-config'
 import * as os from 'node:os'
 import * as cp from 'node:child_process'
 import { promisify } from 'node:util'
@@ -71,6 +71,7 @@ interface AppConfig {
   baseUrl: string;      // Resolved from active provider
   maxOutputTokens: number;
   maxContextTokens: number;
+  maxToolSteps: number;
   providers: ProviderConfig[];
   activeProvider: string;
 }
@@ -161,11 +162,22 @@ const GOOGLE_PROVIDER: ProviderConfig = {
   ],
 };
 
+const DEEPSEEK_PROVIDER: ProviderConfig = {
+  name: 'DeepSeek',
+  apiKey: process.env.DEEPSEEK_API_KEY || '',
+  baseUrl: 'https://api.deepseek.com',
+  models: [
+    'deepseek-v4-flash',
+    'deepseek-v4-pro',
+  ],
+};
+
 /** Volcengine first — default provider for new installs (see loadConfig catch block). */
 const DEFAULT_PROVIDERS: ProviderConfig[] = [
   buildVolcengineProvider(),
   SILICONFLOW_PROVIDER,
   GOOGLE_PROVIDER,
+  DEEPSEEK_PROVIDER,
 ];
 
 function resolveActiveConfig(full: AppConfig): AppConfig {
@@ -179,6 +191,7 @@ function resolveActiveConfig(full: AppConfig): AppConfig {
     apiKey: provider.apiKey,
     baseUrl: provider.baseUrl,
     model: full.model || provider.models[0],
+    maxToolSteps: full.maxToolSteps || DEFAULT_MAX_TOOL_STEPS,
     ...tokenLimits,
   };
 }
@@ -207,6 +220,11 @@ async function loadConfig(): Promise<AppConfig> {
     // Ensure Volcengine row exists (upgrade from older installs) without overwriting user keys
     if (!parsed.providers.some((p: ProviderConfig) => p.name === VOLCENGINE_PROVIDER_NAME)) {
       parsed.providers = [buildVolcengineProvider(), ...parsed.providers];
+      await fs.writeFile(CONFIG_PATH, JSON.stringify(resolveActiveConfig(parsed), null, 2), 'utf8');
+    }
+    // Ensure DeepSeek row exists
+    if (!parsed.providers.some((p: ProviderConfig) => p.name === 'DeepSeek')) {
+      parsed.providers.push(DEEPSEEK_PROVIDER);
       await fs.writeFile(CONFIG_PATH, JSON.stringify(resolveActiveConfig(parsed), null, 2), 'utf8');
     }
     const volcIdx = parsed.providers.findIndex((p: ProviderConfig) => p.name === VOLCENGINE_PROVIDER_NAME);
@@ -249,6 +267,7 @@ async function loadConfig(): Promise<AppConfig> {
       baseUrl: volc.baseUrl,
       maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
       maxContextTokens: DEFAULT_MAX_CONTEXT_TOKENS,
+      maxToolSteps: DEFAULT_MAX_TOOL_STEPS,
       providers: DEFAULT_PROVIDERS,
       activeProvider: VOLCENGINE_PROVIDER_NAME,
     };
@@ -741,6 +760,14 @@ ipcMain.handle('sync-chrome-cookies', async (_, profileDirName?: string) => {
   } catch (e: any) {
     return { success: false, count: 0, error: e.message };
   }
+});
+
+ipcMain.handle('browser-go-back', async () => {
+  return browserViewManager.goBack();
+});
+
+ipcMain.handle('browser-go-forward', async () => {
+  return browserViewManager.goForward();
 });
 
 // File search

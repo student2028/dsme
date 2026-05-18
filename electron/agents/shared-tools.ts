@@ -33,7 +33,10 @@ function getReadabilitySource(): string {
  */
 export async function extractWithReadability(browserViewManager: any): Promise<{ title: string; textContent: string; excerpt: string } | null> {
   const src = getReadabilitySource();
-  if (!src) return null;
+  if (!src) {
+    console.warn('[SharedTools] Readability source is empty, skipping');
+    return null;
+  }
   try {
     const script = `(function(){
       ${src}
@@ -47,8 +50,12 @@ export async function extractWithReadability(browserViewManager: any): Promise<{
         excerpt: article.excerpt || ''
       });
     })()`;
-    const raw = await browserViewManager.executeJS(script, 15000);
-    if (!raw || raw === 'null' || raw.startsWith('Script error:')) return null;
+    const raw = await browserViewManager.executeJS(script, 15000, false); // Main world for maximum compatibility
+    console.log(`[SharedTools] Readability executeJS returned (${raw?.length || 0} chars): "${String(raw).slice(0, 80)}"`);
+    if (!raw || raw === 'null' || raw.startsWith('Script error:')) {
+      console.warn(`[SharedTools] Readability returned unusable: "${String(raw).slice(0, 120)}"`);
+      return null;
+    }
     return JSON.parse(raw);
   } catch (e: any) {
     console.warn('[SharedTools] Readability extraction failed:', e.message);
@@ -260,6 +267,19 @@ export async function webSearch(query: string, engine?: string): Promise<string>
   const mainWindow = allWindows.find((w: any) => w.getTitle()?.includes('DSME')) || allWindows[0];
   if (mainWindow) mainWindow.webContents.send('browser-panel-open');
 
+  // ── Timeline helper: push step events to the browser panel UI ──
+  const emitStep = (command: string, params: Record<string, any>, result: string, status: 'running' | 'done' | 'error' = 'done') => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send('browser-step', {
+      sessionTitle: `搜索: ${query.slice(0, 60)}`,
+      command,
+      params,
+      result,
+      status,
+      timestamp: Date.now(),
+    });
+  };
+
   const allEngines: Record<string, { label: string; url: string; extractJS: string }> = {
     google: { label: 'Google', url: `https://www.google.com/search?q=${q}&hl=zh-CN`, extractJS: UNIVERSAL_EXTRACT },
     sogou:  { label: 'Sogou',  url: `https://www.sogou.com/web?query=${q}`,          extractJS: UNIVERSAL_EXTRACT },
@@ -278,18 +298,34 @@ export async function webSearch(query: string, engine?: string): Promise<string>
 
   for (const eng of engineList) {
     try {
+      // ── Step: Navigate ──
+      console.log(`[webSearch] ▶ Navigating to ${eng.label}: ${eng.url.slice(0, 100)}`);
+      emitStep('navigate', { url: eng.url }, `Navigating to ${eng.label}...`, 'running');
       const navResult = await browserViewManager.navigate(eng.url);
+      console.log(`[webSearch] Nav result: ${navResult.slice(0, 150)}`);
       if (navResult.startsWith('Navigation error:') && !navResult.includes('ERR_ABORTED')) {
+        emitStep('navigate', { url: eng.url }, `${eng.label} navigation failed: ${navResult.slice(0, 100)}`, 'error');
+        console.warn(`[webSearch] ${eng.label} nav failed, trying next engine`);
         continue;
       }
+      emitStep('navigate', { url: eng.url }, navResult.slice(0, 150));
 
-      // Wait for dynamic content to load
-      await new Promise(r => setTimeout(r, 2000));
+      // Wait for dynamic content to render
+      await new Promise(r => setTimeout(r, 2500));
 
-      // Primary extraction: our multi-layer universal extractor
-      const text = await browserViewManager.executeJS(eng.extractJS, 10000);
+      // ── Step: Extract ──
+      emitStep('eval', { script: `Extract results from ${eng.label}` }, `Extracting search results...`, 'running');
+
+      // === Layer 1: Custom multi-engine extractor (main world for max compatibility) ===
+      let text: string = '';
+      try {
+        text = await browserViewManager.executeJS(eng.extractJS, 10000, false);
+      } catch (e1: any) {
+        console.warn(`[webSearch] ${eng.label} extractJS threw:`, e1.message);
+      }
+      console.log(`[webSearch] ${eng.label} L1 extractJS (${text?.length || 0} chars): "${String(text).slice(0, 150)}"`);
+
       if (text && text.length > 20 && !text.startsWith('Script error:') && !text.startsWith('[evaluate:')) {
-        // Bonus: if results seem thin, supplement with Readability deep extraction
         let result = `Results from ${eng.label}:\n${text}`;
         if (countSearchResultLines(text) < 3) {
           const article = await extractWithReadability(browserViewManager);
@@ -297,16 +333,47 @@ export async function webSearch(query: string, engine?: string): Promise<string>
             result += `\n\n[深度提取 by Readability]\n${article.textContent.slice(0, 3000)}`;
           }
         }
+        const lines = countSearchResultLines(text);
+        emitStep('eval', { script: `Extract results from ${eng.label}` }, `✓ Extracted ${lines} results (${text.length} chars)`);
         return result;
       }
 
-      // Fallback: if universal extractor got nothing, try Readability alone
-      const article = await extractWithReadability(browserViewManager);
-      if (article && article.textContent.length > 50) {
-        return `Results from ${eng.label} (Readability):\n${article.title}\n${article.textContent.slice(0, 5000)}`;
+      // === Layer 2: Readability.js deep extraction ===
+      console.log(`[webSearch] ${eng.label} L1 failed → trying L2 Readability...`);
+      try {
+        const article = await extractWithReadability(browserViewManager);
+        console.log(`[webSearch] ${eng.label} L2 Readability: ${article ? `${article.textContent.length} chars` : 'null'}`);
+        if (article && article.textContent.length > 50) {
+          emitStep('eval', { script: `Extract results from ${eng.label}` }, `✓ Readability extracted ${article.textContent.length} chars`);
+          return `Results from ${eng.label} (Readability):\n${article.title}\n${article.textContent.slice(0, 5000)}`;
+        }
+      } catch (e2: any) {
+        console.warn(`[webSearch] ${eng.label} Readability threw:`, e2.message);
       }
+
+      // === Layer 3: Raw body text — absolute last resort, use MAIN WORLD ===
+      console.log(`[webSearch] ${eng.label} L2 failed → trying L3 raw body text (main world)...`);
+      let rawBody: string = '';
+      try {
+        rawBody = await browserViewManager.executeJS(
+          `(function(){ try { return document.body ? document.body.innerText.slice(0, 6000) : 'EMPTY_BODY'; } catch(e) { return 'JS_ERROR: ' + e.message; } })()`,
+          5000,
+          false // Main world — absolutely nothing should block this
+        );
+      } catch (e3: any) {
+        console.warn(`[webSearch] ${eng.label} raw body threw:`, e3.message);
+      }
+      console.log(`[webSearch] ${eng.label} L3 raw body (${rawBody?.length || 0} chars): "${String(rawBody).slice(0, 200)}"`);
+
+      if (rawBody && rawBody.length > 30 && !rawBody.startsWith('Script error:') && !rawBody.startsWith('EMPTY_BODY') && !rawBody.startsWith('JS_ERROR')) {
+        emitStep('eval', { script: `Extract results from ${eng.label}` }, `✓ Raw text fallback: ${rawBody.length} chars`);
+        return `Results from ${eng.label} (raw page text):\n${rawBody}`;
+      }
+
+      emitStep('eval', { script: `Extract results from ${eng.label}` }, `✗ All extraction layers failed`, 'error');
+      console.error(`[webSearch] ✗ ${eng.label} ALL 3 LAYERS FAILED. extractJS="${String(text).slice(0,80)}", rawBody="${String(rawBody).slice(0,80)}"`);
     } catch (e: any) {
-      console.warn(`[webSearch] ${eng.label} failed:`, e.message);
+      console.error(`[webSearch] ${eng.label} outer catch:`, e.message);
     }
   }
 

@@ -154,6 +154,7 @@ export class VercelAgent implements IAgent {
   private model!: string;
   private maxOutputTokens!: number;
   private maxContextTokens!: number;
+  private maxToolSteps!: number;
   private apiKey = '';
   private provider!: ReturnType<typeof createOpenAI>;
   private messages: Array<{ role: string; content: string }> = [];
@@ -167,6 +168,7 @@ export class VercelAgent implements IAgent {
   private busy = false;
   private rag = new RAGEngine();
   private currentTurnSearchResult: { query: string; result: string } | null = null;
+  private assistantReasonings: string[] = [];
 
   init(window: BrowserWindow, config: AgentConfig): void {
     this.window = window;
@@ -174,6 +176,7 @@ export class VercelAgent implements IAgent {
     this.model = config.model;
     this.maxOutputTokens = config.maxOutputTokens;
     this.maxContextTokens = config.maxContextTokens;
+    this.maxToolSteps = config.maxToolSteps || 200;
     this.apiKey = config.apiKey || '';
 
     // Create OpenAI-compatible provider via Vercel AI SDK
@@ -213,24 +216,69 @@ export class VercelAgent implements IAgent {
       apiKey: config.apiKey || 'sk-placeholder',
       compatibility: 'compatible',
       fetch: async (url, init) => {
+        let numAssistants = 0;
+        if (init?.body && typeof init.body === 'string') {
+          try {
+            const bodyObj = JSON.parse(init.body);
+            if (Array.isArray(bodyObj.messages)) {
+              for (const msg of bodyObj.messages) {
+                if (msg.role === 'assistant') {
+                  const rc = this.assistantReasonings[numAssistants];
+                  if (rc) msg.reasoning_content = rc;
+                  numAssistants++;
+                }
+              }
+              init.body = JSON.stringify(bodyObj);
+              // Also update content-length if present, though fetch usually recalculates it
+              if (init.headers) {
+                const headers = new Headers(init.headers);
+                headers.delete('content-length');
+                init.headers = Object.fromEntries(headers.entries());
+              }
+            }
+          } catch {}
+        }
+
         const response = await globalThis.fetch(url, init);
         if (!response.body) return response;
         const originalBody = response.body;
+        
+        // Capture context for the TransformStream
+        const self = this;
         const transform = new TransformStream({
           _buffer: '',
+          _reasoning: '',
           transform(chunk, controller) {
             const text = new TextDecoder().decode(chunk);
             (this as any)._buffer += text;
             const lines = (this as any)._buffer.split('\n');
             (this as any)._buffer = lines.pop()!;
             for (const line of lines) {
+              if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+                try {
+                  const data = JSON.parse(line.slice(6));
+                  if (data?.choices?.[0]?.delta?.reasoning_content) {
+                    (this as any)._reasoning += data.choices[0].delta.reasoning_content;
+                  }
+                } catch {}
+              }
               controller.enqueue(new TextEncoder().encode(patchSSELine(line) + '\n'));
             }
           },
           flush(controller) {
             if ((this as any)._buffer?.trim()) {
-              controller.enqueue(new TextEncoder().encode(patchSSELine((this as any)._buffer) + '\n'));
+              const line = (this as any)._buffer;
+              if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+                try {
+                  const data = JSON.parse(line.slice(6));
+                  if (data?.choices?.[0]?.delta?.reasoning_content) {
+                    (this as any)._reasoning += data.choices[0].delta.reasoning_content;
+                  }
+                } catch {}
+              }
+              controller.enqueue(new TextEncoder().encode(patchSSELine(line) + '\n'));
             }
+            self.assistantReasonings[numAssistants] = (this as any)._reasoning || '';
           },
         });
         return new Response(originalBody.pipeThrough(transform), {
@@ -1049,7 +1097,7 @@ export class VercelAgent implements IAgent {
         messages: this.messages as any,
         tools: forceNoTools ? undefined : this.getTools(),
         maxOutputTokens: this.maxOutputTokens,
-        stopWhen: stepCountIs(100),
+        stopWhen: stepCountIs(this.maxToolSteps),
         abortSignal: this.abortController.signal,
 
         // Lifecycle callbacks for UI updates
@@ -1279,20 +1327,33 @@ export class VercelAgent implements IAgent {
           }
           // Nudge model based on failure mode
           if (isEmptyResponse) {
-            // When model was doing tool calls but produced no text, force next run to be text-only.
-            // This handles step-limit exhaustion (stepCountIs triggered mid-tool-loop) and
-            // spontaneous empty stops after tool rounds.
             if (hadToolCalls) {
-              forceNoTools = true;
-              console.warn(`[VercelAgent] Empty response after tool calls (lastStep=${lastStepNumber}). Next run: no tools.`);
-              this.send('chat-stream-token', `\n\n⚠️ 工具调用已达步数上限（${lastStepNumber + 1} 步），正在生成最终总结…\n`);
+              if (lastStepNumber >= 99) {
+                forceNoTools = true;
+                console.warn(`[VercelAgent] Empty response after tool calls (lastStep=${lastStepNumber} >= 99). Next run: no tools.`);
+                this.send('chat-stream-token', `\n\n⚠️ 工具调用已达步数上限（${lastStepNumber + 1} 步），正在强制生成最终总结…\n`);
+                this.messages.push({
+                  role: 'user',
+                  content:
+                    '工具调用已达最大步数限制（100步）。上一轮没有输出任何正文。请基于已有的工具结果直接给出最终中文回答，' +
+                    '不要再调用工具，不要任何客套或元说明。',
+                });
+              } else {
+                console.warn(`[VercelAgent] Spontaneous empty stop after tool calls (lastStep=${lastStepNumber} < 99). Nudging to continue.`);
+                this.send('chat-stream-token', `\n\n⚠️ 模型遭遇异常中断（第 ${lastStepNumber + 1} 步），正在自动唤醒继续执行…\n`);
+                this.messages.push({
+                  role: 'user',
+                  content:
+                    '上一轮回复意外中断（返回了空结果）。如果任务还未完成，请继续你的进度，调用所需工具完成任务；如果任务确已彻底完成，请直接输出最终总结。',
+                });
+              }
+            } else {
+              this.messages.push({
+                role: 'user',
+                content:
+                  '上一轮没有输出任何正文。请直接给出最终中文回答，不要任何客套或元说明。',
+              });
             }
-            this.messages.push({
-              role: 'user',
-              content:
-                '上一轮没有输出任何正文。请基于已有的工具结果（如果有）直接给出最终中文回答，' +
-                '不要再调用工具，不要任何客套或元说明。',
-            });
           } else if (isSoftTrunc || isAmbiguousTrunc) {
             this.messages.push({
               role: 'user',

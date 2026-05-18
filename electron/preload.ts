@@ -112,4 +112,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   getChromeProfiles: () => ipcRenderer.invoke('get-chrome-profiles'),
   syncChromeCookies: (profileDirName?: string) => ipcRenderer.invoke('sync-chrome-cookies', profileDirName),
+
+  browserGoBack: () => ipcRenderer.invoke('browser-go-back'),
+  browserGoForward: () => ipcRenderer.invoke('browser-go-forward'),
 });

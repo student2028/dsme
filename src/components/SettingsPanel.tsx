@@ -14,6 +14,7 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
   const [model, setModel] = useState('');
   const [maxOutputTokens, setMaxOutputTokens] = useState(16384);
   const [maxContextTokens, setMaxContextTokens] = useState(128000);
+  const [maxToolSteps, setMaxToolSteps] = useState(200);
   const [saved, setSaved] = useState(false);
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
   const { theme, toggleTheme } = useTheme();
@@ -26,6 +27,7 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
         setModel(config.model || '');
         setMaxOutputTokens(config.maxOutputTokens || 16384);
         setMaxContextTokens(config.maxContextTokens || 128000);
+        setMaxToolSteps(config.maxToolSteps || 200);
         setShowKeys({});
       }).catch(() => {});
     }
@@ -50,11 +52,11 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
 
   const handleSave = useCallback(async () => {
     if (window.electronAPI) {
-      await window.electronAPI.saveConfig({ providers, activeProvider, model, maxOutputTokens, maxContextTokens });
+      await window.electronAPI.saveConfig({ providers, activeProvider, model, maxOutputTokens, maxContextTokens, maxToolSteps });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     }
-  }, [providers, activeProvider, model, maxOutputTokens, maxContextTokens]);
+  }, [providers, activeProvider, model, maxOutputTokens, maxContextTokens, maxToolSteps]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -117,7 +119,8 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
                 {p.name === 'SiliconFlow' && '🚀'}
                 {p.name === 'Google' && '🔮'}
                 {p.name === 'Volcengine' && '🌋'}
-                {!['SiliconFlow', 'Google', 'Volcengine'].includes(p.name) && '⚡'}
+                {p.name === 'DeepSeek' && '🐳'}
+                {!['SiliconFlow', 'Google', 'Volcengine', 'DeepSeek'].includes(p.name) && '⚡'}
                 {' '}{p.name}
               </button>
             ))}
@@ -189,6 +192,18 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
             step="1"
             value={maxContextTokens}
             onChange={e => setMaxContextTokens(Math.max(1, Number(e.target.value) || 1))}
+          />
+        </div>
+        <div className="settings-group">
+          <label className="settings-label">Max Tool Steps <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>(每轮对话最大工具调用次数)</span></label>
+          <input
+            className="settings-input"
+            type="number"
+            min="10"
+            max="500"
+            step="10"
+            value={maxToolSteps}
+            onChange={e => setMaxToolSteps(Math.max(10, Math.min(500, Number(e.target.value) || 200)))}
           />
         </div>
 

@@ -24830,6 +24830,8 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			this.refLabels = /* @__PURE__ */ new Map();
 			this.recentNetworkRequests = /* @__PURE__ */ new Map();
 			this.networkListenerAttached = false;
+			this.recentDownloads = [];
+			this.sessionSnapshots = /* @__PURE__ */ new Map();
 		}
 		static {
 			this.INTERACTIVE_ROLES = new Set([
@@ -24884,8 +24886,19 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				const os = require("node:os");
 				const downloadPath = require("node:path").join(os.homedir(), "Downloads", item.getFilename());
 				item.setSavePath(downloadPath);
+				const downloadRecord = {
+					filename: item.getFilename(),
+					path: downloadPath,
+					state: "progressing",
+					time: Date.now(),
+					size: item.getTotalBytes()
+				};
+				this.recentDownloads.push(downloadRecord);
+				if (this.recentDownloads.length > 10) this.recentDownloads.shift();
 				console.log(`[BrowserViewManager] Started auto-download: ${downloadPath}`);
 				item.once("done", (event, state) => {
+					downloadRecord.state = state;
+					downloadRecord.time = Date.now();
 					if (state === "completed") console.log(`[BrowserViewManager] Download successfully completed: ${downloadPath}`);
 					else console.error(`[BrowserViewManager] Download failed with state: ${state}`);
 				});
@@ -24989,6 +25002,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			this.attached = false;
 			this.view.webContents.on("did-navigate", (_e, url) => {
 				this.currentUrl = url;
+				this.targetFrame = null;
 				this.refMap.clear();
 				this.refLabels.clear();
 				this.cdpAttached = false;
@@ -25141,6 +25155,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			this.cdpAttached = false;
 			this.networkListenerAttached = false;
 			this.recentNetworkRequests.clear();
+			this.recentDownloads = [];
 			this.refMap.clear();
 			this.refLabels.clear();
 			this.currentTitle = "";
@@ -25188,6 +25203,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			if (!this.ensureHealthyView()) return "Error: view not initialized";
 			this.ensureAttached();
 			try {
+				this.targetFrame = null;
 				await this.view.webContents.loadURL(url);
 				this.currentUrl = url;
 				const title = this.view.webContents.getTitle();
@@ -25245,6 +25261,33 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				return `GoBack error: ${e.message}`;
 			}
 		}
+		async goForward() {
+			if (!this.ensureHealthyView()) return "Error: view not initialized";
+			try {
+				const nav = this.view.webContents.navigationHistory;
+				if (!nav.canGoForward()) return "Cannot go forward — no forward history.";
+				const navDone = new Promise((resolve) => {
+					const cleanup = () => {
+						this.view?.webContents.removeListener("did-navigate", cleanup);
+						this.view?.webContents.removeListener("did-navigate-in-page", cleanup);
+						resolve();
+					};
+					this.view.webContents.once("did-navigate", cleanup);
+					this.view.webContents.once("did-navigate-in-page", cleanup);
+				});
+				nav.goForward();
+				await Promise.race([navDone, new Promise((r) => setTimeout(r, 5e3))]);
+				const url = this.view.webContents.getURL();
+				this.currentUrl = url;
+				this.notifyRenderer("browser-view-navigated", {
+					url,
+					title: this.view.webContents.getTitle()
+				});
+				return `Went forward. Now at: ${url}`;
+			} catch (e) {
+				return `GoForward error: ${e.message}`;
+			}
+		}
 		/**
 		* Wait until the page is truly idle.
 		*
@@ -25269,15 +25312,31 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		*/
 		async waitForIdle(maxWaitMs = 15e3) {
 			if (!this.ensureHealthyView()) return "Error: view not initialized";
-			const POLL = 500;
-			const STABLE_NEEDED = 2;
+			const POLL = 50;
+			const VISUAL_QUIET_MS = 300;
 			const NETWORK_QUIET_MS = 800;
 			const SPINNER_PERMANENT_MS = 3e3;
 			const start = Date.now();
-			let stableCount = 0;
-			let lastText = "";
 			let spinnerStableMs = 0;
-			const TEXT_EXTRACT_JS = `(document.body?.innerText||'').slice(0,500)`;
+			let lastFrameTime = Date.now();
+			let frameSubscriptionActive = false;
+			let lastSpinnerCheck = 0;
+			let lastSpinnerResult = "";
+			try {
+				if (!this.view.webContents.isDestroyed()) {
+					this.view.webContents.beginFrameSubscription(true, (_image, _dirtyRect) => {
+						lastFrameTime = Date.now();
+					});
+					frameSubscriptionActive = true;
+				}
+			} catch (e) {
+				console.warn("[BrowserViewManager] beginFrameSubscription failed:", e);
+			}
+			const cleanup = () => {
+				try {
+					if (frameSubscriptionActive && this.view?.webContents && !this.view.webContents.isDestroyed()) this.view.webContents.endFrameSubscription();
+				} catch {}
+			};
 			const SPINNER_JS = `(()=>{
       const v=e=>{if(!e)return false;const r=e.getBoundingClientRect();return r.width>0&&r.height>0;};
       for(const s of['.thinking','.generating','[data-state="streaming"]','.response-loading']){const e=document.querySelector(s);if(e&&v(e))return 'D:'+s;}
@@ -25287,52 +25346,46 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			while (Date.now() - start < maxWaitMs) {
 				await new Promise((r) => setTimeout(r, POLL));
 				if (this.view?.webContents && !this.view.webContents.isDestroyed() && this.view.webContents.isLoading()) {
-					stableCount = 0;
 					spinnerStableMs = 0;
 					continue;
 				}
 				const networkAge = Date.now() - this.lastNetworkActivity;
 				if (this.lastNetworkActivity > 0 && networkAge < NETWORK_QUIET_MS) {
-					stableCount = 0;
 					spinnerStableMs = 0;
 					continue;
 				}
-				let textNow = "";
-				try {
-					const frame = this.getExecutionFrame();
-					if (frame) textNow = await frame.executeJavaScript(TEXT_EXTRACT_JS);
-				} catch {
-					textNow = "error";
+				const visualAge = Date.now() - lastFrameTime;
+				if (frameSubscriptionActive && visualAge >= VISUAL_QUIET_MS) {
+					cleanup();
+					return `idle: frame sync visually stable after ${Date.now() - start}ms`;
 				}
-				const textChanged = textNow !== lastText || lastText === "";
-				lastText = textNow;
-				if (textChanged) {
-					stableCount = 0;
-					spinnerStableMs = 0;
-				} else stableCount++;
-				if (stableCount >= STABLE_NEEDED) {
-					let spinnerResult = "";
+				if (Date.now() - lastSpinnerCheck > 250) {
+					lastSpinnerCheck = Date.now();
 					try {
 						const frame = this.getExecutionFrame();
-						if (frame) spinnerResult = await frame.executeJavaScript(SPINNER_JS);
-					} catch {}
-					if (spinnerResult.startsWith("D:")) {
-						stableCount = STABLE_NEEDED - 1;
-						continue;
+						if (frame) lastSpinnerResult = await frame.executeJavaScriptInIsolatedWorld(999, [{ code: SPINNER_JS }]);
+					} catch {
+						lastSpinnerResult = "";
 					}
-					if (!spinnerResult) {
-						const elapsed = Date.now() - start;
-						return `idle: network quiet ${networkAge}ms, DOM stable ${STABLE_NEEDED * POLL}ms after ${elapsed}ms`;
-					}
-					const indicator = spinnerResult.slice(2);
+				}
+				if (lastSpinnerResult.startsWith("D:")) continue;
+				if (lastSpinnerResult.startsWith("A:")) {
 					spinnerStableMs += POLL;
-					if (spinnerStableMs >= SPINNER_PERMANENT_MS) return `idle: network quiet, DOM stable after ${Date.now() - start}ms (${indicator} appears permanent)`;
-					stableCount = STABLE_NEEDED - 1;
+					if (spinnerStableMs >= SPINNER_PERMANENT_MS) {
+						cleanup();
+						return `idle: network quiet after ${Date.now() - start}ms (${lastSpinnerResult.slice(2)} appears permanent)`;
+					}
+					continue;
+				}
+				if (networkAge >= NETWORK_QUIET_MS * 2) {
+					cleanup();
+					return `idle: network deeply quiet (animations present) after ${Date.now() - start}ms`;
 				}
 			}
+			cleanup();
 			const networkAge = Date.now() - this.lastNetworkActivity;
 			if (this.lastNetworkActivity > 0 && networkAge < NETWORK_QUIET_MS) return `timeout: network still active after ${maxWaitMs}ms`;
-			return `timeout: DOM not stable after ${maxWaitMs}ms`;
+			return `timeout: visual frames still changing after ${maxWaitMs}ms`;
 		}
 		/** Get the frame to run scripts on (respects targetFrame if set). */
 		getExecutionFrame() {
@@ -25403,7 +25456,10 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			const walkFrames = async (frame) => {
 				const currentIdx = idx++;
 				try {
-					const result = await Promise.race([isolatedWorld ? frame.executeJavaScriptInIsolatedWorld(999, [{ code: script }]) : frame.executeJavaScript(script), new Promise((_, reject) => setTimeout(() => reject(/* @__PURE__ */ new Error("timeout")), timeoutMs))]);
+					let timer;
+					const result = await Promise.race([isolatedWorld ? frame.executeJavaScriptInIsolatedWorld(999, [{ code: script }]) : frame.executeJavaScript(script), new Promise((_, reject) => {
+						timer = setTimeout(() => reject(/* @__PURE__ */ new Error("timeout")), timeoutMs);
+					})]).finally(() => clearTimeout(timer));
 					const str = result === null || result === void 0 ? "" : typeof result === "string" ? result : JSON.stringify(result);
 					if (str) results.push({
 						frameIndex: currentIdx,
@@ -25515,6 +25571,41 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			} catch (e) {
 				return `Native click error: ${e.message}`;
 			}
+		}
+		/**
+		* Hover over an element using Electron's native `sendInputEvent`.
+		* This is crucial for triggering CSS `:hover` states and JS `mouseenter` events
+		* to reveal dropdown menus or tooltips.
+		*/
+		async hover(ref) {
+			if (!this.ensureHealthyView()) return "Error: view not initialized";
+			if (this.bounds.width < 10 || this.bounds.height < 10) return "Error: view bounds too small — is the browser panel visible?";
+			const center = await this.getElementCenterByCDP(ref);
+			if (!center) return `Error: Cannot find element [${ref}] on screen.`;
+			const wc = this.view.webContents;
+			const cx = Math.max(1, Math.min(Math.round(center.x), this.bounds.width - 1));
+			const cy = Math.max(1, Math.min(Math.round(center.y), this.bounds.height - 1));
+			const currentX = this.lastMouseX >= 0 ? this.lastMouseX : cx;
+			const currentY = this.lastMouseY >= 0 ? this.lastMouseY : cy;
+			if (this.lastMouseX >= 0 && this.lastMouseY >= 0) for (let i = 1; i <= 3; i++) {
+				const ptX = currentX + (cx - currentX) * (i / 3);
+				const ptY = currentY + (cy - currentY) * (i / 3);
+				wc.sendInputEvent({
+					type: "mouseMove",
+					x: ptX,
+					y: ptY
+				});
+				await new Promise((r) => setTimeout(r, 16));
+			}
+			wc.sendInputEvent({
+				type: "mouseMove",
+				x: cx,
+				y: cy
+			});
+			this.lastMouseX = cx;
+			this.lastMouseY = cy;
+			await new Promise((r) => setTimeout(r, 100));
+			return `Hovered over element [${ref}]. Wait a moment for any dropdowns/tooltips to appear before taking snapshot.`;
 		}
 		/**
 		* Scroll the page using engine-level mouse wheel input events.
@@ -25656,6 +25747,72 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		*/
 		isPageLoading() {
 			return this.view?.webContents?.isLoading() ?? false;
+		}
+		/**
+		* Create a memory snapshot of the current browser state (URL, Cookies, LocalStorage, SessionStorage).
+		* This enables Tree-of-Thoughts (ToT) exploration: if an action fails, AI can instantly rollback.
+		*/
+		async snapshotState() {
+			if (!this.ensureHealthyView()) return "Error: view not initialized";
+			const id = `snap_${Date.now()}`;
+			try {
+				const url = this.view.webContents.getURL();
+				const cookies = await this.exportCookies();
+				const storageResult = await (this.getExecutionFrame() || this.view.webContents.mainFrame).executeJavaScriptInIsolatedWorld(999, [{ code: `
+        JSON.stringify({
+          local: Object.entries(localStorage),
+          session: Object.entries(sessionStorage)
+        })
+      ` }]);
+				const parsed = JSON.parse(storageResult);
+				this.sessionSnapshots.set(id, {
+					url,
+					cookies,
+					localStorage: JSON.stringify(parsed.local),
+					sessionStorage: JSON.stringify(parsed.session)
+				});
+				return id;
+			} catch (e) {
+				return `Error creating snapshot: ${e.message}`;
+			}
+		}
+		/**
+		* Restore a previously created snapshot.
+		* Clears current state, restores cookies & storage, and navigates back to the exact URL.
+		*/
+		async restoreState(id) {
+			if (!this.sessionSnapshots.has(id)) return `Error: Snapshot ${id} not found`;
+			if (!this.ensureHealthyView()) return "Error: view not initialized";
+			try {
+				const snap = this.sessionSnapshots.get(id);
+				await electron.session.fromPartition("persist:browser-panel").clearStorageData();
+				await this.importCookies(snap.cookies);
+				const navDone = new Promise((resolve) => {
+					const onNav = () => {
+						this.view?.webContents.removeListener("did-navigate", onNav);
+						this.view?.webContents.removeListener("did-navigate-in-page", onNav);
+						resolve();
+					};
+					this.view.webContents.once("did-navigate", onNav);
+					this.view.webContents.once("did-navigate-in-page", onNav);
+				});
+				await this.view.webContents.loadURL(snap.url);
+				await Promise.race([navDone, new Promise((r) => setTimeout(r, 5e3))]);
+				await this.view.webContents.mainFrame.executeJavaScriptInIsolatedWorld(999, [{ code: `
+        try {
+          const local = ${snap.localStorage};
+          const session = ${snap.sessionStorage};
+          localStorage.clear();
+          sessionStorage.clear();
+          for (const [k, v] of local) localStorage.setItem(k, v);
+          for (const [k, v] of session) sessionStorage.setItem(k, v);
+        } catch(e) {}
+      ` }]);
+				this.view.webContents.reload();
+				return `Successfully rolled back to state ${id} and navigated to ${snap.url}`;
+			} catch (e) {
+				return `Error restoring snapshot: ${e.message}`;
+			}
 		}
 		/**
 		* Export all cookies for the browser session.
@@ -25921,9 +26078,9 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			try {
 				this.view.webContents.debugger.attach("1.3");
 				this.cdpAttached = true;
+				this.cdpCommand("Network.enable").catch(() => {});
 				if (!this.networkListenerAttached) {
 					this.networkListenerAttached = true;
-					this.cdpCommand("Network.enable").catch(() => {});
 					this.view.webContents.debugger.on("message", (_event, method, params) => {
 						if (method === "Network.responseReceived") {
 							const url = params.response?.url || "";
@@ -25984,7 +26141,107 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				this.view.webContents.debugger.detach();
 			} catch {}
 			this.cdpAttached = false;
-			this.networkListenerAttached = false;
+		}
+		async showIntentOverlay(text) {
+			if (!this.ensureHealthyView()) return;
+			const HUD_JS = `
+      try {
+        let root = document.getElementById('dsme-intent-root');
+        if (!root) {
+          root = document.createElement('div');
+          root.id = 'dsme-intent-root';
+          root.style.cssText = 'position:fixed;bottom:30px;left:50%;transform:translateX(-50%);z-index:2147483647;pointer-events:none;';
+          document.documentElement.appendChild(root);
+          
+          const shadow = root.attachShadow({ mode: 'open' });
+          const style = document.createElement('style');
+          style.textContent = \`
+            @keyframes pulse-glow {
+              0% { box-shadow: 0 0 15px rgba(0,255,204,0.1), inset 0 0 10px rgba(0,255,204,0.05); }
+              50% { box-shadow: 0 0 25px rgba(0,255,204,0.3), inset 0 0 20px rgba(0,255,204,0.1); }
+              100% { box-shadow: 0 0 15px rgba(0,255,204,0.1), inset 0 0 10px rgba(0,255,204,0.05); }
+            }
+            @keyframes slide-up {
+              from { transform: translateY(20px) scale(0.95); opacity: 0; }
+              to { transform: translateY(0) scale(1); opacity: 1; }
+            }
+            .hud-container {
+              background: linear-gradient(135deg, rgba(12, 16, 24, 0.85) 0%, rgba(5, 8, 12, 0.95) 100%);
+              border: 1px solid rgba(0, 255, 204, 0.4);
+              border-top: 1px solid rgba(0, 255, 204, 0.8);
+              border-radius: 16px;
+              padding: 16px 32px;
+              color: #00ffcc;
+              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+              font-size: 15px;
+              font-weight: 500;
+              letter-spacing: 0.5px;
+              backdrop-filter: blur(12px) saturate(150%);
+              -webkit-backdrop-filter: blur(12px) saturate(150%);
+              text-align: center;
+              max-width: 90vw;
+              min-width: 320px;
+              word-wrap: break-word;
+              animation: slide-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards, pulse-glow 3s infinite ease-in-out;
+              position: relative;
+              overflow: hidden;
+            }
+            .hud-container::before {
+              content: '';
+              position: absolute;
+              top: 0; left: 0; right: 0; height: 1px;
+              background: linear-gradient(90deg, transparent, rgba(0, 255, 204, 1), transparent);
+            }
+            .hud-title {
+              color: #a0aec0;
+              font-size: 11px;
+              text-transform: uppercase;
+              letter-spacing: 2px;
+              margin-bottom: 8px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              gap: 8px;
+            }
+            .hud-title::before {
+              content: '';
+              display: inline-block;
+              width: 8px;
+              height: 8px;
+              border-radius: 50%;
+              background: #00ffcc;
+              box-shadow: 0 0 8px #00ffcc;
+            }
+            .hud-content {
+              text-shadow: 0 0 10px rgba(0, 255, 204, 0.5);
+              line-height: 1.5;
+            }
+          \`;
+          shadow.appendChild(style);
+          
+          const container = document.createElement('div');
+          container.className = 'hud-container';
+          container.id = 'hud-content-box';
+          shadow.appendChild(container);
+        }
+        
+        const shadow = root.shadowRoot;
+        const container = shadow.getElementById('hud-content-box');
+        
+        // Re-trigger animation
+        container.style.animation = 'none';
+        container.offsetHeight; /* trigger reflow */
+        container.style.animation = 'slide-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards, pulse-glow 3s infinite ease-in-out';
+        
+        container.innerHTML = \`
+          <div class="hud-title">DSME Cognitive Engine</div>
+          <div class="hud-content">\${ \`${text.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$/g, "\\$")}\` }</div>
+        \`;
+      } catch(e) {}
+    `;
+			try {
+				await (this.getExecutionFrame() || this.view.webContents.mainFrame).executeJavaScriptInIsolatedWorld(999, [{ code: HUD_JS }]);
+			} catch {}
 		}
 		listRecentNetworkRequests() {
 			const list = Array.from(this.recentNetworkRequests.entries()).map(([id, req]) => {
@@ -26003,6 +26260,10 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				if (e.message?.includes("No resource with given identifier")) return `Error: Response body for ${requestId} has been garbage collected by Chromium. Try capturing it earlier.`;
 				return `Error retrieving response body: ${e.message}`;
 			}
+		}
+		listRecentDownloads() {
+			if (this.recentDownloads.length === 0) return "No recent downloads found in this session.";
+			return this.recentDownloads.map((d, i) => `[${i}] ${d.filename} (State: ${d.state}, Size: ${d.size ? Math.round(d.size / 1024) + " KB" : "Unknown"}) -> ${d.path}`).join("\n");
 		}
 		/**
 		* Get a text snapshot of the page using CDP's Accessibility Tree.
@@ -26047,7 +26308,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 					if (frame.id) params.frameId = frame.id;
 					let timer;
 					const timeoutPromise = new Promise((_, reject) => {
-						timer = setTimeout(() => reject(/* @__PURE__ */ new Error("AXTree timeout")), 5e3);
+						timer = setTimeout(() => reject(/* @__PURE__ */ new Error("AXTree timeout")), 15e3);
 					});
 					const { nodes } = await Promise.race([this.cdpCommand("Accessibility.getFullAXTree", params), timeoutPromise]).finally(() => clearTimeout(timer));
 					for (const node of nodes) {
@@ -26233,21 +26494,21 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 						showRulers: false,
 						showAccessibilityInfo: false,
 						contentColor: {
-							r: 255,
-							g: 140,
-							b: 0,
-							a: .25
+							r: 0,
+							g: 255,
+							b: 204,
+							a: .15
 						},
 						borderColor: {
-							r: 255,
-							g: 140,
-							b: 0,
+							r: 0,
+							g: 255,
+							b: 204,
 							a: .9
 						},
 						marginColor: {
-							r: 255,
-							g: 140,
-							b: 0,
+							r: 0,
+							g: 255,
+							b: 204,
 							a: .05
 						}
 					},
@@ -26332,43 +26593,86 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 
           const shadow = host.attachShadow({ mode: 'open' });
 
-          // Inject styles into shadow DOM
+          // Inject styles into shadow DOM — Cyberpunk Targeting Aesthetic
           const style = document.createElement('style');
           style.textContent = \`
             :host { all: initial; }
+            @keyframes target-lock {
+              0% { transform: scale(1.1); opacity: 0; box-shadow: inset 0 0 0px rgba(0, 255, 204, 0); }
+              100% { transform: scale(1); opacity: 1; box-shadow: inset 0 0 15px rgba(0, 255, 204, 0.15); }
+            }
             .dsme-box {
               position: fixed;
-              border: 2px solid rgba(59, 130, 246, 0.85);
-              background: rgba(59, 130, 246, 0.08);
-              border-radius: 3px;
+              border: 1px solid rgba(0, 255, 204, 0.3);
+              background: rgba(0, 255, 204, 0.03);
               pointer-events: none;
               box-sizing: border-box;
-              transition: opacity 0.2s;
+              opacity: 0; /* Start hidden for animation */
+              animation: target-lock 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            }
+            /* Sci-fi corner brackets */
+            .dsme-box::before, .dsme-box::after {
+              content: ''; position: absolute; width: 8px; height: 8px; pointer-events: none;
+            }
+            .dsme-box::before {
+              top: -1px; left: -1px;
+              border-top: 2px solid #00ffcc; border-left: 2px solid #00ffcc;
+            }
+            .dsme-box::after {
+              bottom: -1px; right: -1px;
+              border-bottom: 2px solid #00ffcc; border-right: 2px solid #00ffcc;
+            }
+            .dsme-box-inner {
+              position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none;
+            }
+            .dsme-box-inner::before, .dsme-box-inner::after {
+              content: ''; position: absolute; width: 8px; height: 8px; pointer-events: none;
+            }
+            .dsme-box-inner::before {
+              top: -1px; right: -1px;
+              border-top: 2px solid #00ffcc; border-right: 2px solid #00ffcc;
+            }
+            .dsme-box-inner::after {
+              bottom: -1px; left: -1px;
+              border-bottom: 2px solid #00ffcc; border-left: 2px solid #00ffcc;
             }
             .dsme-label {
               position: absolute;
               top: -1px;
               left: -1px;
-              background: rgba(59, 130, 246, 0.9);
-              color: #fff;
-              font: bold 9px/1 -apple-system, sans-serif;
-              padding: 1px 4px;
-              border-radius: 0 0 3px 0;
+              background: rgba(0, 255, 204, 0.9);
+              color: #05080c;
+              font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+              font-weight: 800;
+              font-size: 10px;
+              line-height: 1;
+              padding: 2px 5px;
+              letter-spacing: 0.5px;
+              box-shadow: 0 2px 8px rgba(0, 255, 204, 0.4);
               white-space: nowrap;
               pointer-events: none;
+              backdrop-filter: blur(4px);
+              z-index: 2;
             }
           \`;
           shadow.appendChild(style);
 
-          // Render boxes
+          // Render boxes with staggered animation
           const boxes = ${boxesJSON};
-          for (const b of boxes) {
+          for (let i = 0; i < boxes.length; i++) {
+            const b = boxes[i];
             const div = document.createElement('div');
             div.className = 'dsme-box';
             div.style.left = b.x + 'px';
             div.style.top = b.y + 'px';
-            div.style.width = Math.max(b.w, 4) + 'px';
-            div.style.height = Math.max(b.h, 4) + 'px';
+            div.style.width = Math.max(b.w, 10) + 'px';
+            div.style.height = Math.max(b.h, 10) + 'px';
+            // Stagger animation based on element index
+            div.style.animationDelay = (i * 0.005) + 's';
+
+            const inner = document.createElement('div');
+            inner.className = 'dsme-box-inner';
+            div.appendChild(inner);
 
             const lbl = document.createElement('span');
             lbl.className = 'dsme-label';
@@ -26432,9 +26736,11 @@ function buildSnapshotScript(startRef = 0, includeHeader = true) {
   function isVisible(el) {
     const tag = el.tagName;
     if (tag === 'BODY' || tag === 'HTML') return true;
-    if (!el.offsetParent) return false;
     const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
+    if (r.width === 0 || r.height === 0) return false;
+    const style = window.getComputedStyle(el);
+    if (style.visibility === 'hidden' || style.opacity === '0') return false;
+    return true;
   }
 
   function getLabel(el) {
@@ -26444,8 +26750,10 @@ function buildSnapshotScript(startRef = 0, includeHeader = true) {
 
     // Tier 2: <label for="id"> association
     if (el.id) {
-      var lab = document.querySelector('label[for="' + el.id + '"]');
-      if (lab) { var t = (lab.innerText || '').trim(); if (t && t.length < 30) return t; }
+      try {
+        var lab = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+        if (lab) { var t = (lab.innerText || '').trim(); if (t && t.length < 30) return t; }
+      } catch (e) {}
     }
 
     // Tier 3: parent's direct text (e.g. <div>主题 <input/></div>)
@@ -26520,121 +26828,127 @@ function buildSnapshotScript(startRef = 0, includeHeader = true) {
   var TEXT_LINE_CAP = 60; // max text-only lines to avoid noise on content-heavy pages
 
   for (var i = 0; i < allEls.length; i++) {
-    var el = allEls[i];
-    if (!isVisible(el)) continue;
-    if (seen.has(el)) continue;
+    try {
+      var el = allEls[i];
+      if (!isVisible(el)) continue;
+      if (seen.has(el)) continue;
 
-    var tag = el.tagName.toLowerCase();
-    var role = el.getAttribute('role') || '';
-    var isDisabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
-    var disabledTag = isDisabled ? ' [DISABLED]' : '';
+      var tag = el.tagName.toLowerCase();
+      var role = el.getAttribute('role') || '';
+      var isDisabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+      var disabledTag = isDisabled ? ' [DISABLED]' : '';
 
-    var isInteractive = false;
+      var isInteractive = false;
 
-    // Buttons
-    if (tag === 'button' || role === 'button' || (tag === 'input' && (el.type === 'button' || el.type === 'submit'))) {
-      var ref = assignRef(el);
-      var text = getText(el) || getLabel(el) || el.value || 'button';
-      lines.push('[' + ref + '] button "' + text.slice(0, 60) + '"' + disabledTag);
-      seen.add(el);
-      isInteractive = true;
-    }
-    // Links
-    else if ((tag === 'a' && el.href) || role === 'link') {
-      var ref = assignRef(el);
-      var text = getText(el) || getLabel(el) || (el.href || '').slice(0, 40);
-      lines.push('[' + ref + '] link "' + text.slice(0, 60) + '"' + disabledTag);
-      seen.add(el);
-      isInteractive = true;
-    }
-    // Text inputs
-    else if (tag === 'input') {
-      var ref = assignRef(el);
-      var label = getLabel(el) || el.type;
-      var val = el.value ? ' value="' + el.value.slice(0, 40) + '"' : '';
-      lines.push('[' + ref + '] input[' + (el.type || 'text') + '] "' + label + '"' + val + disabledTag);
-      seen.add(el);
-      isInteractive = true;
-    }
-    // Textbox role
-    else if (role === 'textbox' || role === 'searchbox' || role === 'combobox') {
-      var ref = assignRef(el);
-      var label = getLabel(el) || role;
-      var val = (el.value || el.innerText || '').trim();
-      var valPart = val ? ' value="' + val.slice(0, 40) + '"' : '';
-      lines.push('[' + ref + '] ' + role + ' "' + label + '"' + valPart + disabledTag);
-      seen.add(el);
-      isInteractive = true;
-    }
-    // Textarea / contenteditable
-    else if (tag === 'textarea' || (el.getAttribute('contenteditable') === 'true' && tag !== 'body')) {
-      var ref = assignRef(el);
-      var label = getLabel(el) || el.className?.split(' ')[0] || 'editable';
-      var val = (el.value || el.innerText || '').trim();
-      var valPart = val ? ' value="' + val.slice(0, 40) + '"' : '';
-      lines.push('[' + ref + '] ' + (tag === 'textarea' ? 'textarea' : 'editable') + ' "' + label + '"' + valPart + disabledTag);
-      seen.add(el);
-      isInteractive = true;
-    }
-    // Select
-    else if (tag === 'select') {
-      var ref = assignRef(el);
-      var label = getLabel(el) || 'select';
-      var selected = el.selectedOptions?.[0]?.text || '';
-      lines.push('[' + ref + '] select "' + label + '" selected="' + selected.slice(0, 30) + '"' + disabledTag);
-      seen.add(el);
-      isInteractive = true;
-    }
-    // Tab / menuitem / etc.
-    else if (['tab','menuitem','option','switch','slider','checkbox','radio'].indexOf(role) >= 0) {
-      var ref = assignRef(el);
-      var text = getText(el) || getLabel(el) || role;
-      lines.push('[' + ref + '] ' + role + ' "' + text.slice(0, 60) + '"' + disabledTag);
-      seen.add(el);
-      isInteractive = true;
-    }
-    // Images
-    else if (tag === 'img' && el.alt) {
-      var ref = assignRef(el);
-      lines.push('[' + ref + '] img "' + el.alt.slice(0, 60) + '"');
-      seen.add(el);
-      isInteractive = true;
-    }
-    // Tabindex focusables (fallback)
-    else if (el.hasAttribute('tabindex')) {
-      var text = getText(el) || getLabel(el);
-      if (text && text.length > 1) {
+      // Buttons
+      if (tag === 'button' || role === 'button' || (tag === 'input' && (el.type === 'button' || el.type === 'submit'))) {
         var ref = assignRef(el);
-        lines.push('[' + ref + '] interactive "' + text.slice(0, 60) + '"' + disabledTag);
+        var text = getText(el) || getLabel(el) || el.value || 'button';
+        lines.push('[' + ref + '] button "' + text.slice(0, 60) + '"' + disabledTag);
         seen.add(el);
         isInteractive = true;
       }
-    }
-
-    // Static text / Headings (only process if we didn't just mark it interactive)
-    if (!isInteractive) {
-      var isHeading = ['h1','h2','h3','h4','h5','h6'].indexOf(tag) >= 0;
-      var hasInteractiveChild = el.querySelector('input, button, select, textarea, a[href], [role="button"]');
-      if (hasInteractiveChild && tag !== 'label') continue;
-
-      var bt = '';
-      for (var cn = 0; cn < el.childNodes.length; cn++) {
-        if (el.childNodes[cn].nodeType === 3) bt += el.childNodes[cn].textContent;
+      // Links
+      else if ((tag === 'a' && el.hasAttribute('href')) || role === 'link') {
+        var ref = assignRef(el);
+        var hrefStr = typeof el.href === 'string' ? el.href : (el.href?.baseVal || el.getAttribute('href') || '');
+        var text = getText(el) || getLabel(el) || hrefStr.slice(0, 40);
+        lines.push('[' + ref + '] link "' + text.slice(0, 60) + '"' + disabledTag);
+        seen.add(el);
+        isInteractive = true;
       }
-      bt = bt.trim().replace(/\s+/g, ' ');
-      
-      // Headings always emitted; text lines capped to avoid noise
-      if (isHeading && bt) {
-        if (!textSeen.has(bt)) {
-          lines.push(tag + ': ' + bt);
-          textSeen.add(bt);
+      // Text inputs
+      else if (tag === 'input') {
+        var ref = assignRef(el);
+        var label = getLabel(el) || el.type;
+        var val = el.value ? ' value="' + el.value.slice(0, 40) + '"' : '';
+        lines.push('[' + ref + '] input[' + (el.type || 'text') + '] "' + label + '"' + val + disabledTag);
+        seen.add(el);
+        isInteractive = true;
+      }
+      // Textbox role
+      else if (role === 'textbox' || role === 'searchbox' || role === 'combobox') {
+        var ref = assignRef(el);
+        var label = getLabel(el) || role;
+        var val = (el.value || el.innerText || '').trim();
+        var valPart = val ? ' value="' + val.slice(0, 40) + '"' : '';
+        lines.push('[' + ref + '] ' + role + ' "' + label + '"' + valPart + disabledTag);
+        seen.add(el);
+        isInteractive = true;
+      }
+      // Textarea / contenteditable
+      else if (tag === 'textarea' || (el.getAttribute('contenteditable') === 'true' && tag !== 'body')) {
+        var ref = assignRef(el);
+        var classNameStr = typeof el.className === 'string' ? el.className : (el.className?.baseVal || '');
+        var label = getLabel(el) || classNameStr.split(' ')[0] || 'editable';
+        var val = (el.value || el.innerText || '').trim();
+        var valPart = val ? ' value="' + val.slice(0, 40) + '"' : '';
+        lines.push('[' + ref + '] ' + (tag === 'textarea' ? 'textarea' : 'editable') + ' "' + label + '"' + valPart + disabledTag);
+        seen.add(el);
+        isInteractive = true;
+      }
+      // Select
+      else if (tag === 'select') {
+        var ref = assignRef(el);
+        var label = getLabel(el) || 'select';
+        var selected = el.selectedOptions?.[0]?.text || '';
+        lines.push('[' + ref + '] select "' + label + '" selected="' + selected.slice(0, 30) + '"' + disabledTag);
+        seen.add(el);
+        isInteractive = true;
+      }
+      // Tab / menuitem / etc.
+      else if (['tab','menuitem','option','switch','slider','checkbox','radio'].indexOf(role) >= 0) {
+        var ref = assignRef(el);
+        var text = getText(el) || getLabel(el) || role;
+        lines.push('[' + ref + '] ' + role + ' "' + text.slice(0, 60) + '"' + disabledTag);
+        seen.add(el);
+        isInteractive = true;
+      }
+      // Images
+      else if (tag === 'img' && el.alt) {
+        var ref = assignRef(el);
+        lines.push('[' + ref + '] img "' + el.alt.slice(0, 60) + '"');
+        seen.add(el);
+        isInteractive = true;
+      }
+      // Tabindex focusables (fallback)
+      else if (el.hasAttribute('tabindex')) {
+        var text = getText(el) || getLabel(el);
+        if (text && text.length > 1) {
+          var ref = assignRef(el);
+          lines.push('[' + ref + '] interactive "' + text.slice(0, 60) + '"' + disabledTag);
+          seen.add(el);
+          isInteractive = true;
         }
-      } else if (textLineCount < TEXT_LINE_CAP && bt.length >= 2 && bt.length <= 120 && !textSeen.has(bt)) {
-        lines.push('text: ' + bt);
-        textSeen.add(bt);
-        textSeen.add(el);
-        textLineCount++;
       }
+
+      // Static text / Headings (only process if we didn't just mark it interactive)
+      if (!isInteractive) {
+        var isHeading = ['h1','h2','h3','h4','h5','h6'].indexOf(tag) >= 0;
+        var hasInteractiveChild = el.querySelector('input, button, select, textarea, a[href], [role="button"]');
+        if (hasInteractiveChild && tag !== 'label') continue;
+
+        var bt = '';
+        for (var cn = 0; cn < el.childNodes.length; cn++) {
+          if (el.childNodes[cn].nodeType === 3) bt += el.childNodes[cn].textContent;
+        }
+        bt = bt.trim().replace(/\\s+/g, ' ');
+        
+        // Headings always emitted; text lines capped to avoid noise
+        if (isHeading && bt) {
+          if (!textSeen.has(bt)) {
+            lines.push(tag + ': ' + bt);
+            textSeen.add(bt);
+          }
+        } else if (textLineCount < TEXT_LINE_CAP && bt.length >= 2 && bt.length <= 120 && !textSeen.has(bt)) {
+          lines.push('text: ' + bt);
+          textSeen.add(bt);
+          textSeen.add(el);
+          textLineCount++;
+        }
+      }
+    } catch (err) {
+      // Ignore errors on individual elements so the snapshot doesn't crash completely
     }
   }
 
@@ -26649,9 +26963,22 @@ function getMainWindow() {
 	return browserViewManager.mainWindow;
 }
 /** Notify renderer about browser-use steps (for UI timeline). */
+function notifyBrowserStepStart(command, params) {
+	if (global.mainWindow) global.mainWindow.webContents.send("browser-step", {
+		sessionTitle: currentSessionTitle,
+		command,
+		params,
+		status: "running"
+	});
+}
 function notifyBrowserStep(command, params, result, screenshotUrl) {
 	const win = getMainWindow();
 	if (!win || win.isDestroyed()) return;
+	let intentText = `[${command.toUpperCase()}]`;
+	if (params.ref) intentText += ` Target: ${params.ref}`;
+	if (params.text) intentText += ` Input: "${params.text}"`;
+	if (params.urlPattern) intentText += ` Network: ${params.urlPattern}`;
+	browserViewManager.showIntentOverlay(intentText).catch(() => {});
 	win.webContents.send("browser-step", {
 		command,
 		sessionTitle: activeSessionTitle,
@@ -26811,6 +27138,14 @@ async function browserClick(ref, _retry = false) {
 	const errorResult = `Error: ref ${ref} not found on page. It may have been removed or the page navigated. Run browser_snapshot again.`;
 	notifyBrowserStep("click", { ref }, errorResult);
 	return errorResult;
+}
+/**
+* Hover over an element by ref (triggers CSS :hover and JS mouseenter).
+*/
+async function browserHover(ref) {
+	const result = await browserViewManager.hover(ref);
+	notifyBrowserStep("hover", { ref }, result);
+	return result;
 }
 /**
 * Type into element by ref.
@@ -27128,6 +27463,47 @@ async function browserCaptureNetwork(urlPattern, timeoutMs) {
 	notifyBrowserStep("capture_network", { urlPattern }, `Waiting for response matching "${urlPattern}"...`);
 	return await browserViewManager.captureNetworkResponse(urlPattern, timeoutMs);
 }
+/**
+* List recently intercepted API/JSON network requests (background MITM).
+* This relies on the background network listener automatically tracking requests.
+*/
+async function browserListNetworkRequests() {
+	const result = browserViewManager.listRecentNetworkRequests();
+	notifyBrowserStep("list_network", {}, result ? "Listed recent requests" : "No requests found");
+	return result;
+}
+/**
+* Get the JSON response body of a previously intercepted network request by ID.
+* Use browser_list_network_requests first to get the Request ID.
+*/
+async function browserGetNetworkResponse(requestId) {
+	const result = await browserViewManager.getNetworkResponseBody(requestId);
+	notifyBrowserStep("get_network_response", { requestId }, result.slice(0, 100) + "...");
+	return result;
+}
+/**
+* Create a memory snapshot of the current browser state (URL, Cookies, LocalStorage, SessionStorage).
+*/
+async function browserSnapshotState() {
+	const result = await browserViewManager.snapshotState();
+	notifyBrowserStep("snapshot_state", {}, `Created state snapshot: ${result}`);
+	return result;
+}
+/**
+* Restore a previously created snapshot, clearing current state and rolling back.
+*/
+async function browserRestoreState(stateId) {
+	notifyBrowserStep("restore_state", { stateId }, `Rolling back to snapshot ${stateId}...`);
+	return await browserViewManager.restoreState(stateId);
+}
+/**
+* List recently completed downloads and their file paths.
+*/
+async function browserListDownloads() {
+	const result = browserViewManager.listRecentDownloads();
+	notifyBrowserStep("list_downloads", {}, result ? "Listed recent downloads" : "No downloads found");
+	return result;
+}
 //#endregion
 //#region electron/agents/browser.ts
 /**
@@ -27253,7 +27629,10 @@ function getReadabilitySource() {
 */
 async function extractWithReadability(browserViewManager) {
 	const src = getReadabilitySource();
-	if (!src) return null;
+	if (!src) {
+		console.warn("[SharedTools] Readability source is empty, skipping");
+		return null;
+	}
 	try {
 		const script = `(function(){
       ${src}
@@ -27267,8 +27646,12 @@ async function extractWithReadability(browserViewManager) {
         excerpt: article.excerpt || ''
       });
     })()`;
-		const raw = await browserViewManager.executeJS(script, 15e3);
-		if (!raw || raw === "null" || raw.startsWith("Script error:")) return null;
+		const raw = await browserViewManager.executeJS(script, 15e3, false);
+		console.log(`[SharedTools] Readability executeJS returned (${raw?.length || 0} chars): "${String(raw).slice(0, 80)}"`);
+		if (!raw || raw === "null" || raw.startsWith("Script error:")) {
+			console.warn(`[SharedTools] Readability returned unusable: "${String(raw).slice(0, 120)}"`);
+			return null;
+		}
 		return JSON.parse(raw);
 	} catch (e) {
 		console.warn("[SharedTools] Readability extraction failed:", e.message);
@@ -27425,6 +27808,17 @@ async function webSearch(query, engine) {
 	const allWindows = BW.getAllWindows();
 	const mainWindow = allWindows.find((w) => w.getTitle()?.includes("DSME")) || allWindows[0];
 	if (mainWindow) mainWindow.webContents.send("browser-panel-open");
+	const emitStep = (command, params, result, status = "done") => {
+		if (!mainWindow || mainWindow.isDestroyed()) return;
+		mainWindow.webContents.send("browser-step", {
+			sessionTitle: `搜索: ${query.slice(0, 60)}`,
+			command,
+			params,
+			result,
+			status,
+			timestamp: Date.now()
+		});
+	};
 	const allEngines = {
 		google: {
 			label: "Google",
@@ -27452,22 +27846,62 @@ async function webSearch(query, engine) {
 	if (requestedEngine && allEngines[requestedEngine]) engineList = [allEngines[requestedEngine]];
 	else engineList = [allEngines.google, allEngines.sogou];
 	for (const eng of engineList) try {
+		console.log(`[webSearch] ▶ Navigating to ${eng.label}: ${eng.url.slice(0, 100)}`);
+		emitStep("navigate", { url: eng.url }, `Navigating to ${eng.label}...`, "running");
 		const navResult = await browserViewManager.navigate(eng.url);
-		if (navResult.startsWith("Navigation error:") && !navResult.includes("ERR_ABORTED")) continue;
-		await new Promise((r) => setTimeout(r, 2e3));
-		const text = await browserViewManager.executeJS(eng.extractJS, 1e4);
+		console.log(`[webSearch] Nav result: ${navResult.slice(0, 150)}`);
+		if (navResult.startsWith("Navigation error:") && !navResult.includes("ERR_ABORTED")) {
+			emitStep("navigate", { url: eng.url }, `${eng.label} navigation failed: ${navResult.slice(0, 100)}`, "error");
+			console.warn(`[webSearch] ${eng.label} nav failed, trying next engine`);
+			continue;
+		}
+		emitStep("navigate", { url: eng.url }, navResult.slice(0, 150));
+		await new Promise((r) => setTimeout(r, 2500));
+		emitStep("eval", { script: `Extract results from ${eng.label}` }, `Extracting search results...`, "running");
+		let text = "";
+		try {
+			text = await browserViewManager.executeJS(eng.extractJS, 1e4, false);
+		} catch (e1) {
+			console.warn(`[webSearch] ${eng.label} extractJS threw:`, e1.message);
+		}
+		console.log(`[webSearch] ${eng.label} L1 extractJS (${text?.length || 0} chars): "${String(text).slice(0, 150)}"`);
 		if (text && text.length > 20 && !text.startsWith("Script error:") && !text.startsWith("[evaluate:")) {
 			let result = `Results from ${eng.label}:\n${text}`;
 			if (countSearchResultLines(text) < 3) {
 				const article = await extractWithReadability(browserViewManager);
 				if (article && article.textContent.length > 100) result += `\n\n[深度提取 by Readability]\n${article.textContent.slice(0, 3e3)}`;
 			}
+			const lines = countSearchResultLines(text);
+			emitStep("eval", { script: `Extract results from ${eng.label}` }, `✓ Extracted ${lines} results (${text.length} chars)`);
 			return result;
 		}
-		const article = await extractWithReadability(browserViewManager);
-		if (article && article.textContent.length > 50) return `Results from ${eng.label} (Readability):\n${article.title}\n${article.textContent.slice(0, 5e3)}`;
+		console.log(`[webSearch] ${eng.label} L1 failed → trying L2 Readability...`);
+		try {
+			const article = await extractWithReadability(browserViewManager);
+			console.log(`[webSearch] ${eng.label} L2 Readability: ${article ? `${article.textContent.length} chars` : "null"}`);
+			if (article && article.textContent.length > 50) {
+				emitStep("eval", { script: `Extract results from ${eng.label}` }, `✓ Readability extracted ${article.textContent.length} chars`);
+				return `Results from ${eng.label} (Readability):\n${article.title}\n${article.textContent.slice(0, 5e3)}`;
+			}
+		} catch (e2) {
+			console.warn(`[webSearch] ${eng.label} Readability threw:`, e2.message);
+		}
+		console.log(`[webSearch] ${eng.label} L2 failed → trying L3 raw body text (main world)...`);
+		let rawBody = "";
+		try {
+			rawBody = await browserViewManager.executeJS(`(function(){ try { return document.body ? document.body.innerText.slice(0, 6000) : 'EMPTY_BODY'; } catch(e) { return 'JS_ERROR: ' + e.message; } })()`, 5e3, false);
+		} catch (e3) {
+			console.warn(`[webSearch] ${eng.label} raw body threw:`, e3.message);
+		}
+		console.log(`[webSearch] ${eng.label} L3 raw body (${rawBody?.length || 0} chars): "${String(rawBody).slice(0, 200)}"`);
+		if (rawBody && rawBody.length > 30 && !rawBody.startsWith("Script error:") && !rawBody.startsWith("EMPTY_BODY") && !rawBody.startsWith("JS_ERROR")) {
+			emitStep("eval", { script: `Extract results from ${eng.label}` }, `✓ Raw text fallback: ${rawBody.length} chars`);
+			return `Results from ${eng.label} (raw page text):\n${rawBody}`;
+		}
+		emitStep("eval", { script: `Extract results from ${eng.label}` }, `✗ All extraction layers failed`, "error");
+		console.error(`[webSearch] ✗ ${eng.label} ALL 3 LAYERS FAILED. extractJS="${String(text).slice(0, 80)}", rawBody="${String(rawBody).slice(0, 80)}"`);
 	} catch (e) {
-		console.warn(`[webSearch] ${eng.label} failed:`, e.message);
+		console.error(`[webSearch] ${eng.label} outer catch:`, e.message);
 	}
 	return `No results found for "${query}".`;
 }
@@ -27725,6 +28159,7 @@ function formatToolArgs(name, args) {
 			case "browser_navigate": return args.url ? ` → \`${args.url.slice(0, 60)}\`` : "";
 			case "browser_snapshot": return " 📸";
 			case "browser_click": return args.ref ? ` [${args.ref}]` : "";
+			case "browser_hover": return args.ref ? ` 👆 [${args.ref}]` : "";
 			case "browser_type": return args.ref ? ` [${args.ref}] "${(args.text || "").slice(0, 20)}"` : "";
 			case "browser_scroll": return args.direction ? ` ${args.direction}` : "";
 			case "browser_back": return " ←";
@@ -27749,6 +28184,11 @@ function formatToolArgs(name, args) {
 			case "browser_highlight_ref": return args.ref ? ` 🟠 [${args.ref}]` : "";
 			case "browser_upload_file": return args.ref ? ` 📁 [${args.ref}]` : "";
 			case "browser_capture_network": return args.url_pattern ? ` 🌐 "${args.url_pattern}"` : "";
+			case "browser_list_network_requests": return " 🌐 list API calls";
+			case "browser_get_network_response": return args.request_id ? ` 🌐 API res: ${args.request_id}` : "";
+			case "browser_snapshot_state": return " 📸 Snapshot State";
+			case "browser_restore_state": return args.state_id ? ` ⏪ Restore: ${args.state_id}` : "";
+			case "browser_list_downloads": return " ⬇️ List Downloads";
 			default: return "";
 		}
 	} catch {
@@ -27769,6 +28209,7 @@ var VercelAgent = class {
 		this.busy = false;
 		this.rag = new RAGEngine();
 		this.currentTurnSearchResult = null;
+		this.assistantReasonings = [];
 		this.reindexTimer = null;
 		this.fsWatcher = null;
 	}
@@ -27778,6 +28219,7 @@ var VercelAgent = class {
 		this.model = config.model;
 		this.maxOutputTokens = config.maxOutputTokens;
 		this.maxContextTokens = config.maxContextTokens;
+		this.maxToolSteps = config.maxToolSteps || 200;
 		this.apiKey = config.apiKey || "";
 		const patchSSELine = (line) => {
 			if (!line.startsWith("data: ") || line === "data: [DONE]") return line;
@@ -27810,20 +28252,53 @@ var VercelAgent = class {
 			apiKey: config.apiKey || "sk-placeholder",
 			compatibility: "compatible",
 			fetch: async (url, init) => {
+				let numAssistants = 0;
+				if (init?.body && typeof init.body === "string") try {
+					const bodyObj = JSON.parse(init.body);
+					if (Array.isArray(bodyObj.messages)) {
+						for (const msg of bodyObj.messages) if (msg.role === "assistant") {
+							const rc = this.assistantReasonings[numAssistants];
+							if (rc) msg.reasoning_content = rc;
+							numAssistants++;
+						}
+						init.body = JSON.stringify(bodyObj);
+						if (init.headers) {
+							const headers = new Headers(init.headers);
+							headers.delete("content-length");
+							init.headers = Object.fromEntries(headers.entries());
+						}
+					}
+				} catch {}
 				const response = await globalThis.fetch(url, init);
 				if (!response.body) return response;
 				const originalBody = response.body;
+				const self = this;
 				const transform = new TransformStream({
 					_buffer: "",
+					_reasoning: "",
 					transform(chunk, controller) {
 						const text = new TextDecoder().decode(chunk);
 						this._buffer += text;
 						const lines = this._buffer.split("\n");
 						this._buffer = lines.pop();
-						for (const line of lines) controller.enqueue(new TextEncoder().encode(patchSSELine(line) + "\n"));
+						for (const line of lines) {
+							if (line.startsWith("data: ") && line !== "data: [DONE]") try {
+								const data = JSON.parse(line.slice(6));
+								if (data?.choices?.[0]?.delta?.reasoning_content) this._reasoning += data.choices[0].delta.reasoning_content;
+							} catch {}
+							controller.enqueue(new TextEncoder().encode(patchSSELine(line) + "\n"));
+						}
 					},
 					flush(controller) {
-						if (this._buffer?.trim()) controller.enqueue(new TextEncoder().encode(patchSSELine(this._buffer) + "\n"));
+						if (this._buffer?.trim()) {
+							const line = this._buffer;
+							if (line.startsWith("data: ") && line !== "data: [DONE]") try {
+								const data = JSON.parse(line.slice(6));
+								if (data?.choices?.[0]?.delta?.reasoning_content) this._reasoning += data.choices[0].delta.reasoning_content;
+							} catch {}
+							controller.enqueue(new TextEncoder().encode(patchSSELine(line) + "\n"));
+						}
+						self.assistantReasonings[numAssistants] = this._reasoning || "";
 					}
 				});
 				return new Response(originalBody.pipeThrough(transform), {
@@ -28245,17 +28720,34 @@ var VercelAgent = class {
 			browser_navigate: tool({
 				description: "Navigate the built-in browser to a URL. The browser tab opens automatically. Auto-waits for page idle after navigation. For multi-step flows, call browser_task_start(goal) first so steps stay grouped.",
 				inputSchema: object$1({ url: string().describe("URL to navigate to") }),
-				execute: async ({ url }) => browserNavigate(url)
+				execute: async ({ url }) => {
+					notifyBrowserStepStart("navigate", { url });
+					return await browserNavigate(url);
+				}
 			}),
 			browser_snapshot: tool({
 				description: "Get a text snapshot of the current page with interactive element references [e1], [e2], etc. Use this to see what is on the page and find elements to interact with. Always call this BEFORE clicking or typing. The snapshot will show a ⚠️ PAGE STATE: LOADING warning if the page is still processing — if you see this, call browser_wait_for_idle before interacting.",
 				inputSchema: object$1({}),
-				execute: async () => browserSnapshot()
+				execute: async () => {
+					notifyBrowserStepStart("snapshot", {});
+					return await browserSnapshot();
+				}
 			}),
 			browser_click: tool({
 				description: "Click an element by its reference ID from browser_snapshot. Example: ref=\"e3\" clicks the third interactive element. Auto-waits for page idle after click. If the result says [DISABLED], the element is not clickable yet — wait and retry.",
 				inputSchema: object$1({ ref: string().describe("Element reference from snapshot, e.g. \"e3\"") }),
-				execute: async ({ ref }) => browserClick(ref)
+				execute: async ({ ref }) => {
+					notifyBrowserStepStart("click", { ref });
+					return await browserClick(ref);
+				}
+			}),
+			browser_hover: tool({
+				description: "Hover over an element by its reference ID from browser_snapshot. Use this to reveal CSS dropdown menus or tooltips before taking another snapshot.",
+				inputSchema: object$1({ ref: string().describe("Element reference from snapshot, e.g. \"e3\"") }),
+				execute: async ({ ref }) => {
+					notifyBrowserStepStart("hover", { ref });
+					return await browserHover(ref);
+				}
 			}),
 			browser_type: tool({
 				description: "Type text into an input/textarea element by its reference ID. Clears existing content first.",
@@ -28263,7 +28755,13 @@ var VercelAgent = class {
 					ref: string().describe("Element reference from snapshot"),
 					text: string().describe("Text to type")
 				}),
-				execute: async ({ ref, text }) => browserType(ref, text)
+				execute: async ({ ref, text }) => {
+					notifyBrowserStepStart("type", {
+						ref,
+						text
+					});
+					return await browserType(ref, text);
+				}
 			}),
 			browser_scroll: tool({
 				description: "Scroll the page up or down to see more content.",
@@ -28279,6 +28777,7 @@ var VercelAgent = class {
 				description: "Execute arbitrary JavaScript in the current page context. Use for complex interactions not covered by other browser tools. Script MUST return a string. IMPORTANT: If extracting images, do NOT return base64 data — it will be auto-saved to disk and a file path returned instead.",
 				inputSchema: object$1({ script: string().describe("JavaScript to execute in page context") }),
 				execute: async ({ script }) => {
+					notifyBrowserStepStart("eval", { script });
 					const evalResult = await browserEval(script, cwd);
 					if (evalResult.length > 5e4 && !evalResult.startsWith("Image saved to")) {
 						const filename = `scratch/browser_eval_${Date.now()}.txt`;
@@ -28295,7 +28794,10 @@ var VercelAgent = class {
 			browser_wait_for_idle: tool({
 				description: "Explicitly wait for the page to become idle (no loading spinners, no DOM changes, no pending requests). Use after submitting forms, triggering AI generation, or any action that causes async processing. Default timeout: 15s, max: 120s.",
 				inputSchema: object$1({ timeout_ms: number$1().optional().describe("Maximum wait time in milliseconds. Default: 15000. For AI generation tasks, use 60000-120000.") }),
-				execute: async ({ timeout_ms }) => browserWaitForIdle(timeout_ms)
+				execute: async ({ timeout_ms }) => {
+					notifyBrowserStepStart("wait_idle", { timeout_ms });
+					return await browserWaitForIdle(timeout_ms);
+				}
 			}),
 			browser_press_key: tool({
 				description: "Press a special key (Enter, Tab, Escape, Backspace, Delete, Arrow keys, Space) using native keyboard simulation. Use this to submit forms (Enter), navigate tabs (Tab), or dismiss dialogs (Escape). This fires at the Chromium engine level — identical to a physical key press.",
@@ -28321,7 +28823,10 @@ var VercelAgent = class {
 			browser_switch_frame: tool({
 				description: "Switch browser tool execution context to a specific iframe by index. After switching, browser_snapshot/click/type/eval will operate inside that frame. Use browser_list_frames first to see available frames. Pass frameIndex=-1 to switch back to the main frame.",
 				inputSchema: object$1({ frameIndex: number$1().describe("Frame index from browser_list_frames. Use -1 to return to main frame.") }),
-				execute: async ({ frameIndex }) => browserSwitchFrame(frameIndex)
+				execute: async ({ frameIndex }) => {
+					notifyBrowserStepStart("switch_frame", { frameIndex });
+					return await browserSwitchFrame(frameIndex);
+				}
 			}),
 			browser_find: tool({
 				description: "Search for text on the current page using Chromium native find-in-page. Works across Shadow DOM and iframes. Returns match count and scrolls to first match.",
@@ -28404,6 +28909,31 @@ var VercelAgent = class {
 				}),
 				execute: async ({ url_pattern, timeout_ms }) => browserCaptureNetwork(url_pattern, timeout_ms)
 			}),
+			browser_list_network_requests: tool({
+				description: "List recently intercepted background API/JSON network requests. Returns Request IDs and URLs. Use this if the data you want was loaded dynamically via XHR/Fetch, saving you from parsing complex DOM.",
+				inputSchema: object$1({}),
+				execute: async () => browserListNetworkRequests()
+			}),
+			browser_get_network_response: tool({
+				description: "Get the JSON response body of a previously intercepted network request by its Request ID. Use browser_list_network_requests first to find the ID.",
+				inputSchema: object$1({ request_id: string().describe("The Request ID obtained from browser_list_network_requests") }),
+				execute: async ({ request_id }) => browserGetNetworkResponse(request_id)
+			}),
+			browser_snapshot_state: tool({
+				description: "Take a memory snapshot of the current page state (URL, Cookies, LocalStorage, SessionStorage). Use this before attempting a complex or risky sequence of actions (like filling out a long form or clicking uncertain links). Returns a state_id.",
+				inputSchema: object$1({}),
+				execute: async () => browserSnapshotState()
+			}),
+			browser_restore_state: tool({
+				description: "Instantly rollback the browser to a previously snapshotted state (Cookies, LocalStorage, URL). Use this if you made a mistake, clicked the wrong button, or got stuck on an error page.",
+				inputSchema: object$1({ state_id: string().describe("The state_id returned by browser_snapshot_state") }),
+				execute: async ({ state_id }) => browserRestoreState(state_id)
+			}),
+			browser_list_downloads: tool({
+				description: "List recent file downloads triggered by the browser. Returns file paths (like ~/Downloads/file.csv) and their status. You can use read_file on these paths to process the downloaded data.",
+				inputSchema: object$1({}),
+				execute: async () => browserListDownloads()
+			}),
 			render_html: tool({
 				description: "Render a beautiful, rich HTML document directly in the IDE browser panel. Use this for highly visual results like shopping items, social media posts, image galleries, or dashboards. You can use absolute local file paths (e.g. file:///Users/...) directly in src/href attributes.",
 				inputSchema: object$1({ html: string().describe("The complete HTML document string to render (include <style> tags or Tailwind via CDN for styling).") }),
@@ -28466,7 +28996,7 @@ var VercelAgent = class {
 					messages: this.messages,
 					tools: forceNoTools ? void 0 : this.getTools(),
 					maxOutputTokens: this.maxOutputTokens,
-					stopWhen: stepCountIs(100),
+					stopWhen: stepCountIs(this.maxToolSteps),
 					abortSignal: this.abortController.signal,
 					onStepFinish: ({ stepNumber, text, toolCalls, toolResults }) => {
 						lastStepNumber = stepNumber;
@@ -28637,17 +29167,27 @@ var VercelAgent = class {
 							role: "assistant",
 							content: fullText.trim()
 						});
-						if (isEmptyResponse) {
-							if (hadToolCalls) {
-								forceNoTools = true;
-								console.warn(`[VercelAgent] Empty response after tool calls (lastStep=${lastStepNumber}). Next run: no tools.`);
-								this.send("chat-stream-token", `\n\n⚠️ 工具调用已达步数上限（${lastStepNumber + 1} 步），正在生成最终总结…\n`);
-							}
+						if (isEmptyResponse) if (hadToolCalls) if (lastStepNumber >= 99) {
+							forceNoTools = true;
+							console.warn(`[VercelAgent] Empty response after tool calls (lastStep=${lastStepNumber} >= 99). Next run: no tools.`);
+							this.send("chat-stream-token", `\n\n⚠️ 工具调用已达步数上限（${lastStepNumber + 1} 步），正在强制生成最终总结…\n`);
 							this.messages.push({
 								role: "user",
-								content: "上一轮没有输出任何正文。请基于已有的工具结果（如果有）直接给出最终中文回答，不要再调用工具，不要任何客套或元说明。"
+								content: "工具调用已达最大步数限制（100步）。上一轮没有输出任何正文。请基于已有的工具结果直接给出最终中文回答，不要再调用工具，不要任何客套或元说明。"
 							});
-						} else if (isSoftTrunc || isAmbiguousTrunc) this.messages.push({
+						} else {
+							console.warn(`[VercelAgent] Spontaneous empty stop after tool calls (lastStep=${lastStepNumber} < 99). Nudging to continue.`);
+							this.send("chat-stream-token", `\n\n⚠️ 模型遭遇异常中断（第 ${lastStepNumber + 1} 步），正在自动唤醒继续执行…\n`);
+							this.messages.push({
+								role: "user",
+								content: "上一轮回复意外中断（返回了空结果）。如果任务还未完成，请继续你的进度，调用所需工具完成任务；如果任务确已彻底完成，请直接输出最终总结。"
+							});
+						}
+						else this.messages.push({
+							role: "user",
+							content: "上一轮没有输出任何正文。请直接给出最终中文回答，不要任何客套或元说明。"
+						});
+						else if (isSoftTrunc || isAmbiguousTrunc) this.messages.push({
 							role: "user",
 							content: "继续，从上次中断处无缝接着写到完整句号结尾。不要重复已经说过的内容，不要任何客套或元说明。"
 						});
@@ -29202,6 +29742,18 @@ var TOOLS = [
 	{
 		type: "function",
 		function: {
+			name: "browser_hover",
+			description: "Hover over an element by ref. Use this to reveal CSS dropdown menus or tooltips before taking another snapshot.",
+			parameters: {
+				type: "object",
+				properties: { ref: { type: "string" } },
+				required: ["ref"]
+			}
+		}
+	},
+	{
+		type: "function",
+		function: {
 			name: "browser_type",
 			description: "Type into input/textarea by ref from browser_snapshot.",
 			parameters: {
@@ -29542,6 +30094,69 @@ var TOOLS = [
 				required: ["url_pattern"]
 			}
 		}
+	},
+	{
+		type: "function",
+		function: {
+			name: "browser_list_network_requests",
+			description: "List recently intercepted background API/JSON network requests. Returns Request IDs and URLs. Use this if the data you want was loaded dynamically via XHR/Fetch, saving you from parsing complex DOM.",
+			parameters: {
+				type: "object",
+				properties: {}
+			}
+		}
+	},
+	{
+		type: "function",
+		function: {
+			name: "browser_get_network_response",
+			description: "Get the JSON response body of a previously intercepted network request by its Request ID. Use browser_list_network_requests first to find the ID.",
+			parameters: {
+				type: "object",
+				properties: { request_id: {
+					type: "string",
+					description: "The Request ID obtained from browser_list_network_requests"
+				} },
+				required: ["request_id"]
+			}
+		}
+	},
+	{
+		type: "function",
+		function: {
+			name: "browser_snapshot_state",
+			description: "Take a memory snapshot of the current page state (URL, Cookies, LocalStorage, SessionStorage). Use this before attempting a complex or risky sequence of actions (like filling out a long form or clicking uncertain links). Returns a state_id.",
+			parameters: {
+				type: "object",
+				properties: {}
+			}
+		}
+	},
+	{
+		type: "function",
+		function: {
+			name: "browser_restore_state",
+			description: "Instantly rollback the browser to a previously snapshotted state (Cookies, LocalStorage, URL). Use this if you made a mistake, clicked the wrong button, or got stuck on an error page.",
+			parameters: {
+				type: "object",
+				properties: { state_id: {
+					type: "string",
+					description: "The state_id returned by browser_snapshot_state"
+				} },
+				required: ["state_id"]
+			}
+		}
+	},
+	{
+		type: "function",
+		function: {
+			name: "browser_list_downloads",
+			description: "List recent file downloads triggered by the browser. Returns file paths (like ~/Downloads/file.csv) and their status. You can use read_file on these paths to process the downloaded data.",
+			parameters: {
+				type: "object",
+				properties: {}
+			}
+		}
 	}
 ];
 var BuiltinAgent = class {
@@ -29714,11 +30329,25 @@ var BuiltinAgent = class {
 				let finishReason = "";
 				let insideThink = false;
 				let thinkBuffer = "";
+				let reasoningContent = "";
+				let insideNativeReasoning = false;
 				try {
 					for await (const chunk of stream) {
 						const delta = chunk.choices[0]?.delta;
 						if (chunk.choices[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
 						if (!delta) continue;
+						if (delta.reasoning_content) {
+							const raw = delta.reasoning_content;
+							if (!insideNativeReasoning) {
+								insideNativeReasoning = true;
+								this.send("chat-stream-token", "\n<details>\n<summary>💭 思考过程</summary>\n\n");
+							}
+							reasoningContent += raw;
+							this.send("chat-stream-token", raw);
+						} else if (insideNativeReasoning && (delta.content !== void 0 || delta.tool_calls !== void 0)) {
+							insideNativeReasoning = false;
+							this.send("chat-stream-token", "\n\n</details>\n");
+						}
 						if (delta.content) {
 							const raw = delta.content;
 							if (insideThink) {
@@ -29786,6 +30415,10 @@ var BuiltinAgent = class {
 							}
 						}
 					}
+					if (insideNativeReasoning) {
+						insideNativeReasoning = false;
+						this.send("chat-stream-token", "\n\n</details>\n");
+					}
 				} catch (streamErr) {
 					if (!fullText && toolCalls.length === 0) throw streamErr;
 					console.warn(`[BuiltinAgent] Streaming interrupted (${streamErr.message}), keeping partial output (${fullText.length} chars, ${toolCalls.length} tool calls)`);
@@ -29804,11 +30437,12 @@ var BuiltinAgent = class {
 						fullText = "";
 					}
 				}
-				if (fullText || toolCalls.length > 0) {
+				if (fullText || toolCalls.length > 0 || reasoningContent) {
 					const assistantMsg = {
 						role: "assistant",
 						content: fullText || null
 					};
+					if (reasoningContent) assistantMsg.reasoning_content = reasoningContent;
 					if (toolCalls.length > 0) assistantMsg.tool_calls = toolCalls.map((tc) => ({
 						id: tc.id,
 						type: "function",
@@ -30007,18 +30641,31 @@ var BuiltinAgent = class {
 				case "browser_navigate":
 					if (!args.url) return "Error: url is required for browser_navigate. Please provide the URL to navigate to.";
 					this.send("chat-stream-token", `\n浏览器导航 → ${args.url}\n`);
+					notifyBrowserStepStart("navigate", { url: args.url });
 					return await browserNavigate(args.url);
-				case "browser_snapshot": return await browserSnapshot();
+				case "browser_snapshot":
+					notifyBrowserStepStart("snapshot", {});
+					return await browserSnapshot();
 				case "browser_click":
 					this.send("chat-stream-token", `\n浏览器点击 ${args.ref}\n`);
+					notifyBrowserStepStart("click", { ref: args.ref });
 					return await browserClick(args.ref);
+				case "browser_hover":
+					this.send("chat-stream-token", `\n浏览器悬停 ${args.ref}\n`);
+					notifyBrowserStepStart("hover", { ref: args.ref });
+					return await browserHover(args.ref);
 				case "browser_type":
 					this.send("chat-stream-token", `\n浏览器输入 ${args.ref}\n`);
+					notifyBrowserStepStart("type", {
+						ref: args.ref,
+						text: args.text
+					});
 					return await browserType(args.ref, args.text);
 				case "browser_scroll": return await browserScroll(args.direction);
 				case "browser_back": return await browserBack();
 				case "browser_eval": {
 					this.send("chat-stream-token", `\n浏览器执行脚本…\n`);
+					notifyBrowserStepStart("eval", { script: args.script });
 					const evalResult = await browserEval(args.script, this.cwd);
 					if (evalResult.length > 5e4 && !evalResult.startsWith("Image saved to")) {
 						const filename = `scratch/browser_eval_${Date.now()}.txt`;
@@ -30033,6 +30680,7 @@ var BuiltinAgent = class {
 				}
 				case "browser_wait_for_idle":
 					this.send("chat-stream-token", `\n等待页面空闲…\n`);
+					notifyBrowserStepStart("wait_idle", { timeout_ms: args.timeout_ms });
 					return await browserWaitForIdle(args.timeout_ms);
 				case "browser_press_key":
 					this.send("chat-stream-token", `\n按下按键 ${args.key}\n`);
@@ -30043,6 +30691,7 @@ var BuiltinAgent = class {
 				case "browser_switch_frame": {
 					const idx = args.frameIndex ?? args.frame_index ?? args.index ?? 0;
 					this.send("chat-stream-token", `\n切换到 frame ${idx}…\n`);
+					notifyBrowserStepStart("switch_frame", { frameIndex: idx });
 					return await browserSwitchFrame(idx);
 				}
 				case "render_html": {
@@ -30070,6 +30719,11 @@ var BuiltinAgent = class {
 				case "browser_highlight_ref": return await browserHighlightRef(args.ref);
 				case "browser_upload_file": return await browserUploadFile(args.ref, args.file_paths || args.filePaths);
 				case "browser_capture_network": return await browserCaptureNetwork(args.url_pattern || args.urlPattern, args.timeout_ms || args.timeoutMs);
+				case "browser_list_network_requests": return await browserListNetworkRequests();
+				case "browser_get_network_response": return await browserGetNetworkResponse(args.request_id || args.requestId);
+				case "browser_snapshot_state": return await browserSnapshotState();
+				case "browser_restore_state": return await browserRestoreState(args.state_id || args.stateId);
+				case "browser_list_downloads": return await browserListDownloads();
 				default: return `Unknown tool: ${name}`;
 			}
 		} catch (e) {
@@ -30385,11 +31039,18 @@ var GOOGLE_PROVIDER = {
 		"gemini-2.5-flash"
 	]
 };
+var DEEPSEEK_PROVIDER = {
+	name: "DeepSeek",
+	apiKey: process.env.DEEPSEEK_API_KEY || "",
+	baseUrl: "https://api.deepseek.com",
+	models: ["deepseek-v4-flash", "deepseek-v4-pro"]
+};
 /** Volcengine first — default provider for new installs (see loadConfig catch block). */
 var DEFAULT_PROVIDERS = [
 	buildVolcengineProvider(),
 	SILICONFLOW_PROVIDER,
-	GOOGLE_PROVIDER
+	GOOGLE_PROVIDER,
+	DEEPSEEK_PROVIDER
 ];
 function resolveActiveConfig(full) {
 	const provider = full.providers.find((p) => p.name === full.activeProvider) || full.providers[0];
@@ -30402,6 +31063,7 @@ function resolveActiveConfig(full) {
 		apiKey: provider.apiKey,
 		baseUrl: provider.baseUrl,
 		model: full.model || provider.models[0],
+		maxToolSteps: full.maxToolSteps || 200,
 		...tokenLimits
 	};
 }
@@ -30427,6 +31089,10 @@ async function loadConfig() {
 		}
 		if (!parsed.providers.some((p) => p.name === VOLCENGINE_PROVIDER_NAME)) {
 			parsed.providers = [buildVolcengineProvider(), ...parsed.providers];
+			await node_fs_promises.writeFile(CONFIG_PATH, JSON.stringify(resolveActiveConfig(parsed), null, 2), "utf8");
+		}
+		if (!parsed.providers.some((p) => p.name === "DeepSeek")) {
+			parsed.providers.push(DEEPSEEK_PROVIDER);
 			await node_fs_promises.writeFile(CONFIG_PATH, JSON.stringify(resolveActiveConfig(parsed), null, 2), "utf8");
 		}
 		const volcIdx = parsed.providers.findIndex((p) => p.name === VOLCENGINE_PROVIDER_NAME);
@@ -30466,6 +31132,7 @@ async function loadConfig() {
 			baseUrl: volc.baseUrl,
 			maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
 			maxContextTokens: DEFAULT_MAX_CONTEXT_TOKENS,
+			maxToolSteps: 200,
 			providers: DEFAULT_PROVIDERS,
 			activeProvider: VOLCENGINE_PROVIDER_NAME
 		});
@@ -31013,6 +31680,12 @@ electron.ipcMain.handle("sync-chrome-cookies", async (_, profileDirName) => {
 			error: e.message
 		};
 	}
+});
+electron.ipcMain.handle("browser-go-back", async () => {
+	return browserViewManager.goBack();
+});
+electron.ipcMain.handle("browser-go-forward", async () => {
+	return browserViewManager.goForward();
 });
 var fileCache = [];
 var fileCacheTime = 0;
