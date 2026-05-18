@@ -329,6 +329,17 @@ function getMainWindow(): any {
 }
 
 /** Notify renderer about browser-use steps (for UI timeline). */
+export function notifyBrowserStepStart(command: string, params: Record<string, any>) {
+  if (global.mainWindow) {
+    global.mainWindow.webContents.send('browser-step', {
+      sessionTitle: currentSessionTitle,
+      command,
+      params,
+      status: 'running'
+    });
+  }
+}
+
 function notifyBrowserStep(command: string, params: Record<string, any>, result: string, screenshotUrl?: string) {
   const win = getMainWindow();
   if (!win || win.isDestroyed()) return;

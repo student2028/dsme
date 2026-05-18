@@ -73,6 +73,7 @@ import {
   browserRestoreState,
   browserHover,
   browserListDownloads,
+  notifyBrowserStepStart,
 } from './browser-use';
 
 const execAsync = promisify(exec);
@@ -720,25 +721,37 @@ export class VercelAgent implements IAgent {
         description:
           'Navigate the built-in browser to a URL. The browser tab opens automatically. Auto-waits for page idle after navigation. For multi-step flows, call browser_task_start(goal) first so steps stay grouped.',
         inputSchema: z.object({ url: z.string().describe('URL to navigate to') }),
-        execute: async ({ url }) => browserNavigate(url),
+        execute: async ({ url }) => {
+          notifyBrowserStepStart('navigate', { url });
+          return await browserNavigate(url);
+        },
       }),
 
       browser_snapshot: tool({
         description: 'Get a text snapshot of the current page with interactive element references [e1], [e2], etc. Use this to see what is on the page and find elements to interact with. Always call this BEFORE clicking or typing. The snapshot will show a ⚠️ PAGE STATE: LOADING warning if the page is still processing — if you see this, call browser_wait_for_idle before interacting.',
         inputSchema: z.object({}),
-        execute: async () => browserSnapshot(),
+        execute: async () => {
+          notifyBrowserStepStart('snapshot', {});
+          return await browserSnapshot();
+        },
       }),
 
       browser_click: tool({
         description: 'Click an element by its reference ID from browser_snapshot. Example: ref="e3" clicks the third interactive element. Auto-waits for page idle after click. If the result says [DISABLED], the element is not clickable yet — wait and retry.',
         inputSchema: z.object({ ref: z.string().describe('Element reference from snapshot, e.g. "e3"') }),
-        execute: async ({ ref }) => browserClick(ref),
+        execute: async ({ ref }) => {
+          notifyBrowserStepStart('click', { ref });
+          return await browserClick(ref);
+        },
       }),
 
       browser_hover: tool({
         description: 'Hover over an element by its reference ID from browser_snapshot. Use this to reveal CSS dropdown menus or tooltips before taking another snapshot.',
         inputSchema: z.object({ ref: z.string().describe('Element reference from snapshot, e.g. "e3"') }),
-        execute: async ({ ref }) => browserHover(ref),
+        execute: async ({ ref }) => {
+          notifyBrowserStepStart('hover', { ref });
+          return await browserHover(ref);
+        },
       }),
 
       browser_type: tool({
@@ -747,7 +760,10 @@ export class VercelAgent implements IAgent {
           ref: z.string().describe('Element reference from snapshot'),
           text: z.string().describe('Text to type'),
         }),
-        execute: async ({ ref, text }) => browserType(ref, text),
+        execute: async ({ ref, text }) => {
+          notifyBrowserStepStart('type', { ref, text });
+          return await browserType(ref, text);
+        },
       }),
 
       browser_scroll: tool({
@@ -766,6 +782,7 @@ export class VercelAgent implements IAgent {
         description: 'Execute arbitrary JavaScript in the current page context. Use for complex interactions not covered by other browser tools. Script MUST return a string. IMPORTANT: If extracting images, do NOT return base64 data — it will be auto-saved to disk and a file path returned instead.',
         inputSchema: z.object({ script: z.string().describe('JavaScript to execute in page context') }),
         execute: async ({ script }) => {
+          notifyBrowserStepStart('eval', { script });
           const evalResult = await browserEval(script, cwd);
           // Auto-save large text results to file to avoid context truncation loops
           if (evalResult.length > 50_000 && !evalResult.startsWith('Image saved to')) {
@@ -786,7 +803,10 @@ export class VercelAgent implements IAgent {
         inputSchema: z.object({
           timeout_ms: z.number().optional().describe('Maximum wait time in milliseconds. Default: 15000. For AI generation tasks, use 60000-120000.'),
         }),
-        execute: async ({ timeout_ms }) => browserWaitForIdle(timeout_ms),
+        execute: async ({ timeout_ms }) => {
+          notifyBrowserStepStart('wait_idle', { timeout_ms });
+          return await browserWaitForIdle(timeout_ms);
+        },
       }),
 
       browser_press_key: tool({
@@ -808,7 +828,10 @@ export class VercelAgent implements IAgent {
         inputSchema: z.object({
           frameIndex: z.number().describe('Frame index from browser_list_frames. Use -1 to return to main frame.'),
         }),
-        execute: async ({ frameIndex }) => browserSwitchFrame(frameIndex),
+        execute: async ({ frameIndex }) => {
+          notifyBrowserStepStart('switch_frame', { frameIndex });
+          return await browserSwitchFrame(frameIndex);
+        },
       }),
 
       // ── Electron Native tools (shared with builtin.ts) ──

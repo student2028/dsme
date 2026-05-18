@@ -170,7 +170,7 @@ export const BrowserPanel: React.FC<{
   useEffect(() => {
     if (!window.electronAPI?.onBrowserStep) return;
     const unsub = window.electronAPI.onBrowserStep((data: any) => {
-      const { command, sessionTitle, params, result } = data;
+      const { command, sessionTitle, params, result, status } = data;
 
       if (command === 'task_start') {
         const goal = params?.goal || 'Browser task';
@@ -191,25 +191,42 @@ export const BrowserPanel: React.FC<{
         return;
       }
 
-      // Ensure a task exists for grouping
-      if (!taskRef.current || (sessionTitle && taskRef.current.title !== sessionTitle)) {
-        beginTask(sessionTitle || '浏览器自动化');
+      if (status === 'running') {
+        // Ensure a task exists for grouping
+        if (!taskRef.current || (sessionTitle && taskRef.current.title !== sessionTitle)) {
+          beginTask(sessionTitle || '浏览器自动化');
+        }
+
+        beginStep(
+          commandToStepKind(command, params?.script),
+          commandToStepLabel(command, params),
+          commandToStepInput(command, params),
+        );
+
+        // Update slot status on navigate
+        if (command === 'navigate' && params?.url) {
+          setSlot(prev => ({
+            ...prev,
+            url: params.url,
+            label: (() => { try { return new URL(params.url).hostname; } catch { return prev.label; } })(),
+            status: 'navigating',
+          }));
+        }
+        return;
       }
 
-      const stepId = beginStep(
-        commandToStepKind(command, params?.script),
-        commandToStepLabel(command, params),
-        commandToStepInput(command, params),
-      );
-
-      // Update slot status on navigate
-      if (command === 'navigate' && params?.url) {
-        setSlot(prev => ({
-          ...prev,
-          url: params.url,
-          label: (() => { try { return new URL(params.url).hostname; } catch { return prev.label; } })(),
-          status: 'navigating',
-        }));
+      // Finish logic
+      let stepId = taskRef.current?.summary.activeStepId;
+      if (!stepId) {
+        // Fallback: if we didn't get a 'running' event, create the step now.
+        if (!taskRef.current || (sessionTitle && taskRef.current.title !== sessionTitle)) {
+          beginTask(sessionTitle || '浏览器自动化');
+        }
+        stepId = beginStep(
+          commandToStepKind(command, params?.script),
+          commandToStepLabel(command, params),
+          commandToStepInput(command, params),
+        );
       }
 
       const isError = result?.startsWith('Error:') || result?.startsWith('Navigation error:');

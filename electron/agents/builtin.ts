@@ -61,6 +61,7 @@ import {
   browserSnapshotState,
   browserRestoreState,
   browserListDownloads,
+  notifyBrowserStepStart,
 } from './browser-use';
 import {
   formatWebSearchResult,
@@ -694,25 +695,33 @@ export class BuiltinAgent implements IAgent {
         case 'browser_navigate': {
           if (!args.url) return 'Error: url is required for browser_navigate. Please provide the URL to navigate to.';
           this.send('chat-stream-token', `\n浏览器导航 → ${args.url}\n`);
+          notifyBrowserStepStart('navigate', { url: args.url });
           return await browserNavigate(args.url);
         }
-        case 'browser_snapshot': return await browserSnapshot();
+        case 'browser_snapshot': {
+          notifyBrowserStepStart('snapshot', {});
+          return await browserSnapshot();
+        }
         case 'browser_click': {
           this.send('chat-stream-token', `\n浏览器点击 ${args.ref}\n`);
+          notifyBrowserStepStart('click', { ref: args.ref });
           return await browserClick(args.ref);
         }
         case 'browser_hover': {
           this.send('chat-stream-token', `\n浏览器悬停 ${args.ref}\n`);
+          notifyBrowserStepStart('hover', { ref: args.ref });
           return await browserHover(args.ref);
         }
         case 'browser_type': {
           this.send('chat-stream-token', `\n浏览器输入 ${args.ref}\n`);
+          notifyBrowserStepStart('type', { ref: args.ref, text: args.text });
           return await browserType(args.ref, args.text);
         }
         case 'browser_scroll': return await browserScroll(args.direction);
         case 'browser_back': return await browserBack();
         case 'browser_eval': {
           this.send('chat-stream-token', `\n浏览器执行脚本…\n`);
+          notifyBrowserStepStart('eval', { script: args.script });
           const evalResult = await browserEval(args.script, this.cwd);
           // Auto-save large results to file to avoid context truncation loops
           if (evalResult.length > 50_000 && !evalResult.startsWith('Image saved to')) {
@@ -728,6 +737,7 @@ export class BuiltinAgent implements IAgent {
         }
         case 'browser_wait_for_idle': {
           this.send('chat-stream-token', `\n等待页面空闲…\n`);
+          notifyBrowserStepStart('wait_idle', { timeout_ms: args.timeout_ms });
           return await browserWaitForIdle(args.timeout_ms);
         }
         case 'browser_press_key': {
@@ -741,6 +751,7 @@ export class BuiltinAgent implements IAgent {
         case 'browser_switch_frame': {
           const idx = args.frameIndex ?? args.frame_index ?? args.index ?? 0;
           this.send('chat-stream-token', `\n切换到 frame ${idx}…\n`);
+          notifyBrowserStepStart('switch_frame', { frameIndex: idx });
           return await browserSwitchFrame(idx);
         }
         case 'render_html': {
