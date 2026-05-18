@@ -62,10 +62,10 @@ export const BrowserPanel: React.FC<{
     return next.steps[next.steps.length - 1].id;
   }, [setCurrentTask]);
 
-  const completeStep = useCallback((stepId: string, status: 'done' | 'error', output?: string) => {
+  const completeStep = useCallback((stepId: string, status: 'done' | 'error', output?: string, screenshotUrl?: string) => {
     const current = taskRef.current;
     if (!current) return;
-    setCurrentTask(finishBrowserStep(current, stepId, { status, output }));
+    setCurrentTask(finishBrowserStep(current, stepId, { status, output, screenshotUrl }));
   }, [setCurrentTask]);
 
   const clearTaskTimeline = useCallback(() => {
@@ -132,16 +132,24 @@ export const BrowserPanel: React.FC<{
     }
   }, [visible, overlayOpen]);
 
-  // ── Auto-clear timeline when a new chat round begins ──
+  // ── Auto-clear timeline when a new chat round begins, or conversation switches ──
   useEffect(() => {
-    if (!window.electronAPI?.onChatStreamStart) return;
-    const unsub = window.electronAPI.onChatStreamStart(() => {
+    const handleClear = () => {
       taskRef.current = null;
       setTask(null);
       setSummary(null);
       setLastAction('');
-    });
-    return () => { unsub(); };
+    };
+
+    window.addEventListener('dsme-conversation-switched', handleClear);
+
+    if (!window.electronAPI?.onChatStreamStart) return;
+    const unsub = window.electronAPI.onChatStreamStart(handleClear);
+    
+    return () => { 
+      unsub(); 
+      window.removeEventListener('dsme-conversation-switched', handleClear);
+    };
   }, []);
 
   // ── Listen for navigation events from main process ──
@@ -204,7 +212,7 @@ export const BrowserPanel: React.FC<{
       }
 
       const isError = result?.startsWith('Error:') || result?.startsWith('Navigation error:');
-      completeStep(stepId, isError ? 'error' : 'done', result);
+      completeStep(stepId, isError ? 'error' : 'done', result, data.screenshotUrl);
       setLastAction(result?.slice(0, 200) || command);
     });
     return () => { unsub(); };
@@ -228,6 +236,9 @@ export const BrowserPanel: React.FC<{
         <button type="button" className="browser-slot-user-btn" onClick={userHistoryBack} title="在历史记录中后退（不影响 Agent）">
           ← 后退
         </button>
+        {navigator.platform.toLowerCase().includes('mac') && (
+          <CookieSyncDropdown />
+        )}
         {lastAction && <span className="browser-slot-action">{lastAction}</span>}
       </div>
       {summary && (
@@ -399,6 +410,32 @@ const BrowserTaskStepRow: React.FC<{
         </div>
         {step.input && <div className="browser-task-step-input">{step.input}</div>}
         {step.outputPreview && <div className="browser-task-step-output">{step.outputPreview}</div>}
+        {step.screenshotUrl && (
+          <div className="browser-task-step-screenshot">
+            <img
+              src={step.screenshotUrl}
+              alt={`Screenshot at step: ${step.label}`}
+              loading="lazy"
+              style={{
+                width: '100%',
+                maxHeight: '260px',
+                objectFit: 'contain',
+                borderRadius: '6px',
+                marginTop: '6px',
+                border: '1px solid rgba(255,255,255,0.08)',
+                cursor: 'pointer',
+              }}
+              onClick={() => {
+                // Open screenshot in a new window for full-size viewing
+                const w = window.open('', '_blank', 'width=1200,height=800');
+                if (w) {
+                  w.document.write(`<html><body style="margin:0;background:#111;display:flex;align-items:center;justify-content:center;height:100vh"><img src="${step.screenshotUrl}" style="max-width:100%;max-height:100vh"/></body></html>`);
+                }
+              }}
+              title="点击放大查看"
+            />
+          </div>
+        )}
         {expandable && expanded && (
           <pre className="browser-task-step-detail">{raw}</pre>
         )}
@@ -422,4 +459,117 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
   };
   const info = map[status] || { text: status, cls: '' };
   return <span className={`browser-slot-badge ${info.cls}`}>{info.text}</span>;
+};
+
+/** Compact cookie sync button with Chrome Profile dropdown. */
+const CookieSyncDropdown: React.FC = () => {
+  const [open, setOpen] = useState(false);
+  const [profiles, setProfiles] = useState<{ dirName: string; name: string; email: string }[]>([]);
+  const [syncing, setSyncing] = useState<string | null>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Load profiles when dropdown opens
+  useEffect(() => {
+    if (!open) return;
+    window.electronAPI?.getChromeProfiles?.().then(p => {
+      if (p && p.length > 0) setProfiles(p);
+    }).catch(() => {});
+  }, [open]);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const handleSync = async (profileDir: string) => {
+    setSyncing(profileDir);
+    try {
+      const res = await window.electronAPI?.syncChromeCookies?.(profileDir);
+      const label = profiles.find(p => p.dirName === profileDir)?.name || profileDir;
+      if (res?.success) {
+        alert(`✅ 从 "${label}" 同步了 ${res.count} 个 Cookie`);
+      } else {
+        alert(`❌ 同步失败: ${res?.error || 'Unknown error'}`);
+      }
+    } catch (e: any) {
+      alert(`❌ ${e.message}`);
+    }
+    setSyncing(null);
+    setOpen(false);
+  };
+
+  return (
+    <div ref={dropdownRef} style={{ position: 'relative', display: 'inline-block' }}>
+      <button
+        type="button"
+        className="browser-slot-user-btn"
+        onClick={() => setOpen(v => !v)}
+        title="从本地 Chrome 同步登录状态 (Cookie) — 点击选择 Profile"
+      >
+        🍪 同步 Cookie ▾
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute',
+          top: '100%',
+          left: 0,
+          marginTop: '4px',
+          background: 'var(--bg-secondary, #1e1e2e)',
+          border: '1px solid var(--border-color, rgba(255,255,255,0.1))',
+          borderRadius: '8px',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+          zIndex: 100,
+          minWidth: '280px',
+          maxHeight: '320px',
+          overflowY: 'auto',
+          padding: '4px 0',
+        }}>
+          <div style={{ padding: '6px 12px', fontSize: '11px', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+            选择 Chrome Profile
+          </div>
+          {profiles.length === 0 && (
+            <div style={{ padding: '8px 12px', fontSize: '12px', color: 'var(--text-muted)' }}>加载中...</div>
+          )}
+          {profiles.map(p => (
+            <button
+              key={p.dirName}
+              type="button"
+              disabled={syncing !== null}
+              onClick={() => handleSync(p.dirName)}
+              style={{
+                display: 'block',
+                width: '100%',
+                textAlign: 'left',
+                padding: '8px 12px',
+                background: syncing === p.dirName ? 'rgba(99,102,241,0.15)' : 'transparent',
+                border: 'none',
+                cursor: syncing !== null ? 'wait' : 'pointer',
+                color: 'var(--text-primary, #e2e8f0)',
+                fontSize: '13px',
+                borderRadius: 0,
+                transition: 'background 0.15s',
+              }}
+              onMouseEnter={e => { if (!syncing) (e.target as HTMLElement).style.background = 'rgba(99,102,241,0.1)'; }}
+              onMouseLeave={e => { if (syncing !== p.dirName) (e.target as HTMLElement).style.background = 'transparent'; }}
+            >
+              <div style={{ fontWeight: 500 }}>
+                {syncing === p.dirName ? '⏳ ' : ''}{p.name}
+                {p.dirName === 'Default' && <span style={{ color: 'var(--accent-color)', marginLeft: '4px', fontSize: '11px' }}>★ 默认</span>}
+              </div>
+              {p.email && (
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{p.email}</div>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 };

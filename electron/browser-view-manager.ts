@@ -1383,12 +1383,28 @@ export class BrowserViewManager {
     }
   }
 
-  /** Send a CDP command. Throws if CDP is not attached. */
-  async cdpCommand(method: string, params?: Record<string, any>): Promise<any> {
-    if (!this.cdpAttached || !this.view || this.view.webContents.isDestroyed()) {
-      throw new Error('CDP not attached');
+  /** Send a CDP command. Auto-retries once if the target detached asynchronously (process swap). */
+  async cdpCommand(method: string, params?: Record<string, any>, retries = 1): Promise<any> {
+    if (!this.view || this.view.webContents.isDestroyed()) {
+      throw new Error('CDP not attached: view destroyed');
     }
-    return this.view.webContents.debugger.sendCommand(method, params);
+    
+    // Ensure we are attached before attempting
+    await this.ensureCDP();
+
+    try {
+      return await this.view.webContents.debugger.sendCommand(method, params);
+    } catch (e: any) {
+      if (retries > 0 && e.message?.includes('not attached')) {
+        // Race condition: target detached asynchronously after ensureCDP (e.g. process swap).
+        // Force state reset, wait a bit for Electron to settle, and retry.
+        this.cdpAttached = false;
+        try { this.view.webContents.debugger.detach(); } catch {}
+        await new Promise(r => setTimeout(r, 100));
+        return this.cdpCommand(method, params, retries - 1);
+      }
+      throw e;
+    }
   }
 
   /** Detach CDP debugger (cleanup). */
@@ -1419,6 +1435,9 @@ export class BrowserViewManager {
     // Step 1: Discover ALL frames via Page.getFrameTree (includes cross-origin)
     const allFrameIds: { id: string; url: string }[] = [];
     try {
+      // Ensure DOM is enabled so backendDOMNodeId is populated in the AX tree
+      await this.cdpCommand('DOM.enable').catch(() => {});
+      
       const { frameTree } = await this.cdpCommand('Page.getFrameTree');
       const collectFrames = (tree: any) => {
         allFrameIds.push({ id: tree.frame.id, url: tree.frame.url || '' });
@@ -1441,19 +1460,23 @@ export class BrowserViewManager {
         const params: any = { depth: -1 };
         if (frame.id) params.frameId = frame.id;
 
+        let timer: NodeJS.Timeout;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('AXTree timeout')), 5000);
+        });
+
         const { nodes } = await Promise.race([
           this.cdpCommand('Accessibility.getFullAXTree', params),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('AXTree timeout')), 5000)
-          ),
-        ]);
+          timeoutPromise
+        ]).finally(() => clearTimeout(timer));
         // Tag each node with its frame URL for output annotation
         for (const node of nodes) {
           node._frameUrl = frame.url;
           node._frameId = frame.id;
         }
         return { frame, nodes };
-      } catch {
+      } catch (e: any) {
+        console.warn(`[BrowserViewManager] AXTree failed for frame ${frame.id || 'main'}:`, e.message);
         // Frame might have been destroyed or is truly empty — skip silently
         return { frame, nodes: [] };
       }
@@ -1481,8 +1504,16 @@ export class BrowserViewManager {
 
     const INTERACTIVE_ROLES = BrowserViewManager.INTERACTIVE_ROLES; // use static constant
 
+    // Diagnostic counters for understanding CDP quality
+    let totalNodes = 0;
+    let ignoredNodes = 0;
+    let interactiveWithBackendId = 0;
+    let interactiveWithoutBackendId = 0;
+    const roleCounts = new Map<string, number>();
+
     for (const node of allNodes) {
-      if (node.ignored) continue;
+      totalNodes++;
+      if (node.ignored) { ignoredNodes++; continue; }
 
       const role: string = node.role?.value || '';
       const name: string = (node.name?.value || '').trim();
@@ -1490,6 +1521,9 @@ export class BrowserViewManager {
       const backendId: number | undefined = node.backendDOMNodeId;
       const nodeFrameUrl: string = node._frameUrl || '';
       if (node._frameId) frameIds.add(node._frameId);
+
+      // Track role distribution for diagnostics
+      if (role) roleCounts.set(role, (roleCounts.get(role) || 0) + 1);
 
       // Annotate when we enter a new frame's content (helps agent understand page structure)
       if (nodeFrameUrl && nodeFrameUrl !== currentFrameUrl && nodeFrameUrl !== 'about:blank') {
@@ -1506,17 +1540,22 @@ export class BrowserViewManager {
       const isEditable = props.some((p: any) => p.name === 'editable' && p.value?.value);
 
       // Interactive elements get refs
-      if ((INTERACTIVE_ROLES.has(role) || isEditable) && backendId) {
-        refCounter++;
-        const ref = `e${refCounter}`;
-        newRefMap.set(ref, backendId);
-        // Cache the label so getElementCenterByCDP doesn't need a DOM.describeNode round-trip
-        const displayName = name || role;
-        newRefLabels.set(ref, displayName);
+      if (INTERACTIVE_ROLES.has(role) || isEditable) {
+        if (backendId) {
+          interactiveWithBackendId++;
+          refCounter++;
+          const ref = `e${refCounter}`;
+          newRefMap.set(ref, backendId);
+          // Cache the label so getElementCenterByCDP doesn't need a DOM.describeNode round-trip
+          const displayName = name || role;
+          newRefLabels.set(ref, displayName);
 
-        const disabledTag = isDisabled ? ' [DISABLED]' : '';
-        const valueDisplay = value ? ` value="${value.slice(0, 40)}"` : '';
-        lines.push(`[${ref}] ${role} "${displayName.slice(0, 60)}"${valueDisplay}${disabledTag}`);
+          const disabledTag = isDisabled ? ' [DISABLED]' : '';
+          const valueDisplay = value ? ` value="${value.slice(0, 40)}"` : '';
+          lines.push(`[${ref}] ${role} "${displayName.slice(0, 60)}"${valueDisplay}${disabledTag}`);
+        } else {
+          interactiveWithoutBackendId++;
+        }
       }
       // Headings
       else if (role === 'heading' && name) {
@@ -1535,6 +1574,10 @@ export class BrowserViewManager {
         lines.push(`[${ref}] img "${name.slice(0, 60)}"`);
       }
     }
+
+    // Log CDP AXTree diagnostics
+    const topRoles = [...roleCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([r, c]) => `${r}:${c}`).join(', ');
+    console.log(`[BrowserViewManager] CDP AXTree: ${totalNodes} nodes (${ignoredNodes} ignored), ${interactiveWithBackendId} interactive+backendId, ${interactiveWithoutBackendId} interactive-NO-backendId, refs=${refCounter}. Top roles: ${topRoles}`);
 
     this.refMap = newRefMap;
     this.refLabels = newRefLabels;

@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu, session, shell, clipboard } from 'electron'
-import { syncChromeCookies } from './agents/chrome-cookies'
+import { syncChromeCookies, getChromeProfiles } from './agents/chrome-cookies'
 import { join } from 'node:path'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
@@ -96,9 +96,14 @@ function volcengineModelsNeedRefresh(savedModels: string[]): boolean {
 }
 
 /** Ensure these Ark IDs appear in Settings even if an older saved config omitted them. */
-const VOLCENGINE_ALWAYS_ENSURE_MODEL_IDS = ['MiniMax-M2.7', 'Kimi-K2.6'] as const;
+const VOLCENGINE_ALWAYS_ENSURE_MODEL_IDS = [
+  'MiniMax-M2.7',
+  'Kimi-K2.6',
+  'DeepSeek-V4-Flash-Beta',
+  'DeepSeek-V4-Pro-Beta',
+  'ark-code-latest',
+] as const;
 
-/** Matches Volcengine Ark «Coding» endpoint model IDs (console order). Override with VOLCENGINE_MODELS. */
 const VOLCENGINE_MODELS_FALLBACK = [
   'Doubao-Seed-2.0-Code',
   'Doubao-Seed-2.0-pro',
@@ -107,6 +112,9 @@ const VOLCENGINE_MODELS_FALLBACK = [
   'GLM-5.1',
   'MiniMax-M2.7',
   'Kimi-K2.6',
+  'DeepSeek-V4-Flash-Beta',
+  'DeepSeek-V4-Pro-Beta',
+  'ark-code-latest',
 ] as const;
 
 function parseCommaSeparatedModels(raw: string | undefined, fallback: readonly string[]): string[] {
@@ -714,17 +722,22 @@ ipcMain.handle('capture-window', async () => {
   }
 });
 
-ipcMain.handle('sync-chrome-cookies', async () => {
+ipcMain.handle('get-chrome-profiles', () => {
+  return getChromeProfiles();
+});
+
+ipcMain.handle('sync-chrome-cookies', async (_, profileDirName?: string) => {
   if (process.platform !== 'darwin') return { success: false, count: 0, error: 'Only macOS supported' };
   try {
+    const profile = profileDirName || 'Default';
     const browserSession = session.fromPartition('persist:browser-panel');
     const [defaultCount, browserCount] = await Promise.all([
-      syncChromeCookies(session.defaultSession),
-      syncChromeCookies(browserSession),
+      syncChromeCookies(session.defaultSession, profile),
+      syncChromeCookies(browserSession, profile),
     ]);
     const syncFlag = join(app.getPath('userData'), 'cookie-sync-ts');
     require('fs').writeFileSync(syncFlag, String(Date.now()));
-    return { success: true, count: defaultCount + browserCount };
+    return { success: true, count: defaultCount + browserCount, profile };
   } catch (e: any) {
     return { success: false, count: 0, error: e.message };
   }

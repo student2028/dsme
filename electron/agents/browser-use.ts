@@ -30,11 +30,13 @@ import * as fsP from 'node:fs/promises';
 // ── Snapshot JS — runs inside the page context ──
 // Builds an accessibility-tree-like text representation.
 // Each interactive element gets a ref (e1, e2, ...) stored as a data attribute.
-const SNAPSHOT_SCRIPT = `(function() {
+// Parameterized: accepts startRef to avoid collisions when scanning multiple frames.
+function buildSnapshotScript(startRef = 0, includeHeader = true): string {
+  return `(function(startRef) {
   // Clear previous refs
   document.querySelectorAll('[data-dsme-ref]').forEach(el => el.removeAttribute('data-dsme-ref'));
 
-  let refCounter = 0;
+  let refCounter = startRef;
   const lines = [];
   const seen = new Set();
 
@@ -46,104 +48,220 @@ const SNAPSHOT_SCRIPT = `(function() {
   }
 
   function isVisible(el) {
-    if (!el.offsetParent && el.tagName !== 'BODY' && el.tagName !== 'HTML') return false;
+    const tag = el.tagName;
+    if (tag === 'BODY' || tag === 'HTML') return true;
+    if (!el.offsetParent) return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   }
 
   function getLabel(el) {
-    return (el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('placeholder') || el.getAttribute('alt') || '').trim();
+    // Tier 1: standard HTML attributes (fast path)
+    var attr = el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('placeholder') || el.getAttribute('alt') || el.getAttribute('name') || '';
+    if (attr.trim()) return attr.trim();
+
+    // Tier 2: <label for="id"> association
+    if (el.id) {
+      var lab = document.querySelector('label[for="' + el.id + '"]');
+      if (lab) { var t = (lab.innerText || '').trim(); if (t && t.length < 30) return t; }
+    }
+
+    // Tier 3: parent's direct text (e.g. <div>主题 <input/></div>)
+    var parent = el.parentElement;
+    if (parent) {
+      // Get only the parent's own text nodes (not children's text)
+      var ownText = '';
+      for (var i = 0; i < parent.childNodes.length; i++) {
+        if (parent.childNodes[i].nodeType === 3) ownText += parent.childNodes[i].textContent;
+      }
+      ownText = ownText.trim();
+      if (ownText && ownText.length > 0 && ownText.length < 20) return ownText;
+    }
+
+    // Tier 4: previous sibling text (e.g. <span>主题</span><input/>)
+    var prev = el.previousElementSibling;
+    if (prev) {
+      var pt = (prev.innerText || prev.textContent || '').trim();
+      if (pt && pt.length > 0 && pt.length < 20) return pt;
+    }
+
+    // Tier 5: parent's previous sibling (e.g. <td>主题</td><td><input/></td>)
+    if (parent && parent.previousElementSibling) {
+      var pp = (parent.previousElementSibling.innerText || '').trim();
+      if (pp && pp.length > 0 && pp.length < 20) return pp;
+    }
+
+    return '';
   }
 
   function getText(el) {
     const t = el.innerText || el.textContent || '';
-    return t.trim().replace(/\\\\s+/g, ' ').slice(0, 80);
+    return t.trim().replace(/\s+/g, ' ').slice(0, 80);
   }
 
-  // Page metadata
+  ${includeHeader ? `
   lines.push('Page: ' + document.title);
   lines.push('URL: ' + location.href);
   lines.push('');
 
-  // Page state indicators (help model understand if page is still loading)
-  const loadingEls = document.querySelectorAll('[aria-busy="true"], .loading, .spinner, [role="progressbar"], mat-progress-spinner, .generating, .thinking');
-  const visibleLoading = Array.from(loadingEls).filter(el => el.offsetParent !== null);
+  var loadingEls = document.querySelectorAll('[aria-busy="true"], .loading, .spinner, [role="progressbar"], mat-progress-spinner, .generating, .thinking');
+  var visibleLoading = Array.from(loadingEls).filter(function(el) { return el.offsetParent !== null; });
   if (visibleLoading.length > 0) {
-    lines.push('⚠️ PAGE STATE: LOADING (found ' + visibleLoading.length + ' loading indicators — wait before interacting!)');
+    lines.push('⚠️ PAGE STATE: LOADING (' + visibleLoading.length + ' indicators — wait!)');
     lines.push('');
+  }` : ''}
+
+  // Check if body itself is contenteditable (rich text editor iframes)
+  if (document.body && document.body.getAttribute('contenteditable') === 'true') {
+    var ref = assignRef(document.body);
+    var bodyText = (document.body.innerText || '').trim().slice(0, 60);
+    var valPart = bodyText ? ' value="' + bodyText + '"' : '';
+    lines.push('[' + ref + '] editable "rich-text-body"' + valPart);
   }
 
-  // Walk interactive elements
-  const interactives = document.querySelectorAll('a, button, input, textarea, select, [role="button"], [contenteditable="true"], img, h1, h2, h3, h4, h5, h6, p, li');
-  for (const el of interactives) {
+  // Single pass combined selector: preserves document flow for high visibility.
+  // Text elements (label, legend, th, p, li) are included so they appear
+  // in correct visual order relative to interactive elements.
+  var allEls = document.querySelectorAll(
+    'a[href], button, input:not([type=hidden]), textarea, select, ' +
+    '[role="button"], [role="link"], [role="textbox"], [role="searchbox"], ' +
+    '[role="combobox"], [role="tab"], [role="menuitem"], [role="option"], ' +
+    '[role="switch"], [role="slider"], [role="checkbox"], [role="radio"], ' +
+    '[contenteditable="true"], ' +
+    '[tabindex]:not([tabindex="-1"]):not(body), ' +
+    'img[alt], h1, h2, h3, h4, h5, h6, ' +
+    'label, legend, caption, th, dt, p, li'
+  );
+
+  var textSeen = new Set();
+  var textLineCount = 0;
+  var TEXT_LINE_CAP = 60; // max text-only lines to avoid noise on content-heavy pages
+
+  for (var i = 0; i < allEls.length; i++) {
+    var el = allEls[i];
     if (!isVisible(el)) continue;
     if (seen.has(el)) continue;
 
-    const tag = el.tagName.toLowerCase();
-    const role = el.getAttribute('role') || '';
-    const isDisabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
-    const disabledTag = isDisabled ? ' [DISABLED]' : '';
+    var tag = el.tagName.toLowerCase();
+    var role = el.getAttribute('role') || '';
+    var isDisabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+    var disabledTag = isDisabled ? ' [DISABLED]' : '';
 
-    // Interactive elements
-    if (tag === 'a' && el.href) {
-      const ref = assignRef(el);
-      const text = getText(el) || getLabel(el) || el.href;
-      lines.push('[' + ref + '] link "' + text.slice(0, 60) + '"' + disabledTag);
-      seen.add(el);
-    }
-    else if (tag === 'button' || role === 'button' || (tag === 'input' && (el.type === 'button' || el.type === 'submit'))) {
-      const ref = assignRef(el);
-      const text = getText(el) || getLabel(el) || el.value || 'button';
+    var isInteractive = false;
+
+    // Buttons
+    if (tag === 'button' || role === 'button' || (tag === 'input' && (el.type === 'button' || el.type === 'submit'))) {
+      var ref = assignRef(el);
+      var text = getText(el) || getLabel(el) || el.value || 'button';
       lines.push('[' + ref + '] button "' + text.slice(0, 60) + '"' + disabledTag);
       seen.add(el);
+      isInteractive = true;
     }
-    else if (tag === 'input' && el.type !== 'hidden') {
-      const ref = assignRef(el);
-      const label = getLabel(el) || el.name || el.type;
-      const val = el.value ? ' value="' + el.value.slice(0, 40) + '"' : '';
+    // Links
+    else if ((tag === 'a' && el.href) || role === 'link') {
+      var ref = assignRef(el);
+      var text = getText(el) || getLabel(el) || (el.href || '').slice(0, 40);
+      lines.push('[' + ref + '] link "' + text.slice(0, 60) + '"' + disabledTag);
+      seen.add(el);
+      isInteractive = true;
+    }
+    // Text inputs
+    else if (tag === 'input') {
+      var ref = assignRef(el);
+      var label = getLabel(el) || el.type;
+      var val = el.value ? ' value="' + el.value.slice(0, 40) + '"' : '';
       lines.push('[' + ref + '] input[' + (el.type || 'text') + '] "' + label + '"' + val + disabledTag);
       seen.add(el);
+      isInteractive = true;
     }
-    else if (tag === 'textarea' || (el.getAttribute('contenteditable') === 'true')) {
-      const ref = assignRef(el);
-      const label = getLabel(el) || el.name || el.className?.split(' ')[0] || 'editable';
-      const val = (el.value || el.innerText || '').trim();
-      const valDisplay = val ? ' value="' + val.slice(0, 40) + '"' : '';
-      lines.push('[' + ref + '] ' + (tag === 'textarea' ? 'textarea' : 'editable') + ' "' + label + '"' + valDisplay + disabledTag);
+    // Textbox role
+    else if (role === 'textbox' || role === 'searchbox' || role === 'combobox') {
+      var ref = assignRef(el);
+      var label = getLabel(el) || role;
+      var val = (el.value || el.innerText || '').trim();
+      var valPart = val ? ' value="' + val.slice(0, 40) + '"' : '';
+      lines.push('[' + ref + '] ' + role + ' "' + label + '"' + valPart + disabledTag);
       seen.add(el);
+      isInteractive = true;
     }
+    // Textarea / contenteditable
+    else if (tag === 'textarea' || (el.getAttribute('contenteditable') === 'true' && tag !== 'body')) {
+      var ref = assignRef(el);
+      var label = getLabel(el) || el.className?.split(' ')[0] || 'editable';
+      var val = (el.value || el.innerText || '').trim();
+      var valPart = val ? ' value="' + val.slice(0, 40) + '"' : '';
+      lines.push('[' + ref + '] ' + (tag === 'textarea' ? 'textarea' : 'editable') + ' "' + label + '"' + valPart + disabledTag);
+      seen.add(el);
+      isInteractive = true;
+    }
+    // Select
     else if (tag === 'select') {
-      const ref = assignRef(el);
-      const label = getLabel(el) || el.name || 'select';
-      const selected = el.selectedOptions?.[0]?.text || '';
+      var ref = assignRef(el);
+      var label = getLabel(el) || 'select';
+      var selected = el.selectedOptions?.[0]?.text || '';
       lines.push('[' + ref + '] select "' + label + '" selected="' + selected.slice(0, 30) + '"' + disabledTag);
       seen.add(el);
+      isInteractive = true;
     }
-    // Content elements
-    else if (['h1','h2','h3','h4','h5','h6'].includes(tag)) {
-      const text = getText(el);
-      if (text) lines.push(tag + ': ' + text);
+    // Tab / menuitem / etc.
+    else if (['tab','menuitem','option','switch','slider','checkbox','radio'].indexOf(role) >= 0) {
+      var ref = assignRef(el);
+      var text = getText(el) || getLabel(el) || role;
+      lines.push('[' + ref + '] ' + role + ' "' + text.slice(0, 60) + '"' + disabledTag);
+      seen.add(el);
+      isInteractive = true;
     }
-    else if (tag === 'img' && (el.alt || el.src)) {
-      const ref = assignRef(el);
-      lines.push('[' + ref + '] img "' + (el.alt || el.src.slice(-40)) + '"');
+    // Images
+    else if (tag === 'img' && el.alt) {
+      var ref = assignRef(el);
+      lines.push('[' + ref + '] img "' + el.alt.slice(0, 60) + '"');
+      seen.add(el);
+      isInteractive = true;
     }
-    else if (tag === 'p' || tag === 'li') {
-      // Only include if it has direct text (not child elements' text)
-      const directText = Array.from(el.childNodes)
-        .filter(n => n.nodeType === 3)
-        .map(n => n.textContent.trim())
-        .join(' ')
-        .trim();
-      if (directText.length > 10 && directText.length < 200) {
-        lines.push('text: ' + directText.slice(0, 120));
+    // Tabindex focusables (fallback)
+    else if (el.hasAttribute('tabindex')) {
+      var text = getText(el) || getLabel(el);
+      if (text && text.length > 1) {
+        var ref = assignRef(el);
+        lines.push('[' + ref + '] interactive "' + text.slice(0, 60) + '"' + disabledTag);
+        seen.add(el);
+        isInteractive = true;
+      }
+    }
+
+    // Static text / Headings (only process if we didn't just mark it interactive)
+    if (!isInteractive) {
+      var isHeading = ['h1','h2','h3','h4','h5','h6'].indexOf(tag) >= 0;
+      var hasInteractiveChild = el.querySelector('input, button, select, textarea, a[href], [role="button"]');
+      if (hasInteractiveChild && tag !== 'label') continue;
+
+      var bt = '';
+      for (var cn = 0; cn < el.childNodes.length; cn++) {
+        if (el.childNodes[cn].nodeType === 3) bt += el.childNodes[cn].textContent;
+      }
+      bt = bt.trim().replace(/\s+/g, ' ');
+      
+      // Headings always emitted; text lines capped to avoid noise
+      if (isHeading && bt) {
+        if (!textSeen.has(bt)) {
+          lines.push(tag + ': ' + bt);
+          textSeen.add(bt);
+        }
+      } else if (textLineCount < TEXT_LINE_CAP && bt.length >= 2 && bt.length <= 120 && !textSeen.has(bt)) {
+        lines.push('text: ' + bt);
+        textSeen.add(bt);
+        textSeen.add(el);
+        textLineCount++;
       }
     }
   }
 
-  // Cap output size for LLM context
-  return lines.slice(0, 150).join('\\\\n');
-})()`;
+  return JSON.stringify({ lines: lines.slice(0, 400), lastRef: refCounter });
+})(${startRef})`;
+}
+
+// Legacy compat: the old SNAPSHOT_SCRIPT constant for any remaining callers
+const SNAPSHOT_SCRIPT = buildSnapshotScript(0, true);
 
 // ── Lightweight iframe info script — NO ref injection ──
 // Used by browserSnapshot() to report what's inside each iframe without
@@ -261,56 +379,124 @@ export async function browserNavigate(url: string): Promise<string> {
 }
 
 /**
+ * Registry mapping JS-path refs to their frame index.
+ * When CDP refs are unavailable, click/type use this to route to the correct frame.
+ */
+const jsRefFrameMap = new Map<string, number>();
+
+/**
  * Get a text snapshot of the current page.
  * PRIMARY: CDP Accessibility Tree (cross-frame, semantic, zero DOM pollution)
- * FALLBACK: JS injection (for when CDP is unavailable)
+ * FALLBACK: JS injection that PENETRATES ALL IFRAMES with unified ref space
  */
 export async function browserSnapshot(): Promise<string> {
   // Try CDP accessibility tree first — this is the reliable path
   try {
     const cdpResult = await browserViewManager.getAccessibilitySnapshot();
-    if (cdpResult && cdpResult.length > 50) {
+    // Validate: CDP result must contain at least one interactive ref [eN]
+    // A result with just "Page: ...\nURL: ..." but no refs means AXTree was incomplete
+    if (cdpResult && /\[e\d+\]/.test(cdpResult)) {
+      jsRefFrameMap.clear(); // CDP refs are active, no need for JS ref routing
       const screenshot = await browserViewManager.captureScreenshot();
       notifyBrowserStep('snapshot', {}, `${cdpResult.length} chars (CDP)`, screenshot ?? undefined);
       return cdpResult;
+    }
+    if (cdpResult) {
+      console.warn('[browser-use] CDP AXTree returned no interactive refs, falling back to JS');
     }
   } catch (e: any) {
     console.warn('[browser-use] CDP snapshot failed, falling back to JS injection:', e.message);
   }
 
-  // Fallback: JS injection snapshot (legacy path)
-  const mainResult = await browserViewManager.executeJS(SNAPSHOT_SCRIPT);
-  
-  // Lightweight iframe exploration for JS fallback
-  let combined = mainResult;
+  // ── JS Fallback: penetrate ALL frames with unified ref counter ──
+  jsRefFrameMap.clear();
+  const allLines: string[] = [];
+  let globalRefCounter = 0;
   const frameInfos = browserViewManager.getAllFrameInfos();
-  if (frameInfos.length > 1) {
+
+  // Save current target frame so we can restore it after scanning
+  const savedFrame = (browserViewManager as any).targetFrame;
+
+  for (const frame of frameInfos) {
+    // Switch to the target frame for script execution
+    if (frame.index === 0) {
+      browserViewManager.switchToFrame(-1); // main frame
+    } else {
+      const switchResult = browserViewManager.switchToFrame(frame.index);
+      if (switchResult.startsWith('Error:')) continue;
+    }
+
     try {
-      const frameResults = await browserViewManager.executeJSAllFrames(IFRAME_INFO_SCRIPT, 5000);
-      for (const fr of frameResults) {
-        if (fr.frameIndex === 0) continue;
-        if (fr.result.length > 20) {
-          const urlLabel = fr.frameUrl === 'about:blank' ? 'about:blank (likely rich text editor)' : fr.frameUrl.slice(0, 80);
-          combined += `\n\n--- iframe[${fr.frameIndex}]: ${urlLabel} ---\n${fr.result}\n⚡ To interact with this iframe, call: browser_switch_frame(${fr.frameIndex}) then browser_snapshot()`;
+      const script = buildSnapshotScript(globalRefCounter, frame.index === 0);
+      const raw = await browserViewManager.executeJS(script);
+
+      // Parse the JSON result from the snapshot script
+      let parsed: { lines: string[]; lastRef: number };
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        // Script returned non-JSON (error or page text fallback) — skip this frame
+        continue;
+      }
+
+      // Register all refs from this frame in the routing map
+      for (let r = globalRefCounter + 1; r <= parsed.lastRef; r++) {
+        jsRefFrameMap.set(`e${r}`, frame.index);
+      }
+      globalRefCounter = parsed.lastRef;
+
+      if (parsed.lines.length > 0) {
+        // Add frame header for non-main frames
+        if (frame.index > 0) {
+          const urlLabel = frame.url === 'about:blank'
+            ? 'about:blank (rich text editor)'
+            : (() => { try { return new URL(frame.url).hostname; } catch { return frame.url.slice(0, 60); } })();
+          allLines.push(`\n--- iframe[${frame.index}]: ${urlLabel} ---`);
         }
+        allLines.push(...parsed.lines);
       }
     } catch (e: any) {
-      console.warn('[browser-use] iframe scan failed:', e.message);
-    }
-    if (!combined.includes('iframe[')) {
-      combined += `\n\n📌 Page has ${frameInfos.length - 1} iframe(s). Use browser_list_frames() for details.`;
+      // Frame may have been destroyed or CSP blocked — skip
+      console.warn(`[browser-use] Frame ${frame.index} snapshot failed:`, e.message);
     }
   }
-  
+
+  // Restore original target frame
+  if (savedFrame) {
+    (browserViewManager as any).targetFrame = savedFrame;
+  } else {
+    browserViewManager.switchToFrame(-1);
+  }
+
+  const combined = allLines.join('\n');
   const screenshot = await browserViewManager.captureScreenshot();
-  notifyBrowserStep('snapshot', {}, `${combined.length} chars (JS fallback)`, screenshot ?? undefined);
-  return combined;
+  notifyBrowserStep('snapshot', {}, `${combined.length} chars, ${globalRefCounter} refs, ${frameInfos.length} frames (JS)`, screenshot ?? undefined);
+  return combined || 'Empty page — no visible elements found.';
+}
+
+/**
+ * Switch to the correct frame for a JS ref, execute a callback, then restore.
+ * Returns the callback result, or null if no frame routing was needed.
+ */
+async function withJsRefFrame<T>(ref: string, fn: () => Promise<T>): Promise<T> {
+  const frameIndex = jsRefFrameMap.get(ref);
+  if (frameIndex !== undefined && frameIndex > 0) {
+    const saved = (browserViewManager as any).targetFrame;
+    browserViewManager.switchToFrame(frameIndex);
+    try {
+      return await fn();
+    } finally {
+      if (saved) { (browserViewManager as any).targetFrame = saved; }
+      else { browserViewManager.switchToFrame(-1); }
+    }
+  }
+  return fn();
 }
 
 /**
  * Click element by ref.
  * PRIMARY: CDP coordinates (cross-frame, precise)
- * FALLBACK: JS injection coordinates → JS el.click()
+ * FALLBACK: JS injection with auto frame routing
  * AUTO-RETRY: if ref not found, takes a fresh snapshot once and retries
  */
 export async function browserClick(ref: string, _retry = false): Promise<string> {
@@ -325,6 +511,25 @@ export async function browserClick(ref: string, _retry = false): Promise<string>
     const idleStatus = await browserViewManager.waitForIdle(8000);
     return result + ` [${idleStatus}]`;
   }
+
+  // Fallback to JS click with auto frame routing
+  try {
+    const jsClickResult = await withJsRefFrame(ref, () => browserViewManager.executeJS(`
+      (function() {
+        const el = document.querySelector('[data-dsme-ref="${ref}"]');
+        if (el) { el.click(); return 'SUCCESS'; }
+        return 'NOT_FOUND';
+      })()
+    `));
+    if (jsClickResult === 'SUCCESS') {
+      const frameIdx = jsRefFrameMap.get(ref);
+      const frameSuffix = frameIdx && frameIdx > 0 ? ` (frame ${frameIdx})` : '';
+      const result = `Clicked [${ref}]${frameSuffix} [JS]`;
+      notifyBrowserStep('click', { ref }, result);
+      const idleStatus = await browserViewManager.waitForIdle(8000);
+      return result + ` [${idleStatus}]`;
+    }
+  } catch {}
 
   // Ref not found — page state may have changed (dynamic UI like login forms).
   // Auto-retry once with a fresh snapshot.
@@ -382,6 +587,50 @@ export async function browserType(ref: string, text: string, _retry = false): Pr
     await browserViewManager.waitForIdle(800);
     return result;
   }
+
+  // Fallback: JS focus + native insertText (works for ALL element types)
+  // Why not el.value=text? Custom components (126 mail subject, Quill, etc.) ignore
+  // direct value assignment because their internal state isn't bound to el.value.
+  // insertText fires real input events that frameworks listen to.
+  try {
+    const jsFocusResult = await withJsRefFrame(ref, () => browserViewManager.executeJS(`
+      (function() {
+        const el = document.querySelector('[data-dsme-ref="${ref}"]');
+        if (!el) return 'NOT_FOUND';
+        el.focus();
+        // For standard inputs, also click to ensure cursor placement
+        if (typeof el.click === 'function') el.click();
+        // Select existing content for replacement
+        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+          el.select();
+        }
+        return 'FOCUSED';
+      })()
+    `));
+    if (jsFocusResult === 'FOCUSED') {
+      // Use Cmd/Ctrl+A as a backup select-all (handles contenteditable & custom components)
+      try {
+        const modifier = process.platform === 'darwin' ? 4 : 2;
+        await browserViewManager.cdpCommand('Input.dispatchKeyEvent', {
+          type: 'keyDown', key: 'a', code: 'KeyA',
+          modifiers: modifier, windowsVirtualKeyCode: 65,
+        });
+        await browserViewManager.cdpCommand('Input.dispatchKeyEvent', {
+          type: 'keyUp', key: 'a', code: 'KeyA',
+          modifiers: modifier, windowsVirtualKeyCode: 65,
+        });
+      } catch { /* select-all is best-effort */ }
+
+      // Native insertText — fires real input events, works with any framework
+      const insertResult = await browserViewManager.insertText(text);
+      const frameIdx = jsRefFrameMap.get(ref);
+      const frameSuffix = frameIdx && frameIdx > 0 ? ` (frame ${frameIdx})` : '';
+      const result = `Typed into [${ref}]${frameSuffix} [JS+Native] → ${insertResult}`;
+      notifyBrowserStep('type', { ref, text }, result);
+      await browserViewManager.waitForIdle(800);
+      return result;
+    }
+  } catch {}
 
   // Ref not found — page state may have changed (e.g. password field appeared after email entry).
   // Auto-retry once with a fresh snapshot before failing.

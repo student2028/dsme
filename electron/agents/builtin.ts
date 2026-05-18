@@ -8,6 +8,7 @@
  */
 
 import * as fs from 'node:fs/promises';
+import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -34,6 +35,26 @@ import {
   browserTaskFinish,
   browserWaitForIdle,
   browserPressKey,
+  browserListFrames,
+  browserSwitchFrame,
+  // Electron Native tools
+  browserFind,
+  browserExportCookies,
+  browserImportCookies,
+  browserClearSession,
+  browserZoom,
+  browserExportPDF,
+  browserReadClipboard,
+  browserWriteClipboard,
+  browserPageHealth,
+  // Visual Overlay tools
+  browserShowOverlay,
+  browserClearOverlay,
+  browserHighlightRef,
+  browserStopFind,
+  // Advanced CDP tools
+  browserUploadFile,
+  browserCaptureNetwork,
 } from './browser-use';
 import {
   formatWebSearchResult,
@@ -46,6 +67,44 @@ import {
 } from './shared-tools';
 
 const execAsync = promisify(exec);
+
+// ── JSON repair (ported from tools1/cortex/llm/sanitize.py) ──
+// Small models often emit malformed JSON: trailing commas, single quotes,
+// Python literals (True/False/None), unquoted keys, etc.
+function safeJsonParse(raw: string, fallback: any = null): any {
+  if (!raw || typeof raw !== 'string') return fallback;
+  raw = raw.trim();
+
+  // Tier 1: standard JSON.parse (fast path for well-formed JSON)
+  try { return JSON.parse(raw); } catch {}
+
+  // Tier 2: manual repair (mirrors sanitize.py _manual_repair)
+  let s = raw;
+
+  // Strip markdown code blocks wrapping
+  const codeBlockMatch = s.match(/```(?:json|JSON)?\s*\n?([\s\S]*?)\n?\s*```/);
+  if (codeBlockMatch) s = codeBlockMatch[1].trim();
+
+  // Extract JSON region from surrounding text
+  for (const startChar of ['{', '[']) {
+    const idx = s.indexOf(startChar);
+    if (idx > 0) { s = s.slice(idx); break; }
+  }
+
+  // Fix trailing commas before } or ]
+  s = s.replace(/,\s*([}\]])/g, '$1');
+  // Python literals → JSON
+  s = s.replace(/\bNone\b/g, 'null');
+  s = s.replace(/\bTrue\b/g, 'true');
+  s = s.replace(/\bFalse\b/g, 'false');
+  s = s.replace(/\bNaN\b/g, 'null');
+  s = s.replace(/\bInfinity\b/g, 'null');
+  // Single quotes → double quotes (simple heuristic)
+  s = s.replace(/'/g, '"');
+
+  try { return JSON.parse(s); } catch {}
+  return fallback;
+}
 
 // System prompt: shared base + builtin-specific additions
 function getSystemPrompt(cwd: string): string {
@@ -71,10 +130,28 @@ const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   { type: 'function', function: { name: 'browser_type', description: 'Type into input/textarea by ref from browser_snapshot.', parameters: { type: 'object', properties: { ref: { type: 'string' }, text: { type: 'string' } }, required: ['ref', 'text'] } } },
   { type: 'function', function: { name: 'browser_scroll', description: 'Scroll the page up or down.', parameters: { type: 'object', properties: { direction: { type: 'string', enum: ['up', 'down'] } }, required: ['direction'] } } },
   { type: 'function', function: { name: 'browser_back', description: 'Browser history back.', parameters: { type: 'object', properties: {} } } },
-  { type: 'function', function: { name: 'browser_eval', description: 'Run arbitrary JS in page context; must return a string. Base64 image data is auto-saved to disk.', parameters: { type: 'object', properties: { script: { type: 'string' } }, required: ['script'] } } },
+  { type: 'function', function: { name: 'browser_eval', description: 'Run arbitrary JS in page context; must return a string. Use ONLY for reading data or debugging. NEVER use browser_eval to enumerate elements with your own [e0],[e1] labels — those fake refs will NOT work with browser_click or browser_type. Always use browser_snapshot to get real refs. Base64 image data is auto-saved to disk.', parameters: { type: 'object', properties: { script: { type: 'string' } }, required: ['script'] } } },
   { type: 'function', function: { name: 'browser_wait_for_idle', description: 'Wait for page to become idle (no loading spinners, stable DOM). Use after triggering async operations like AI generation.', parameters: { type: 'object', properties: { timeout_ms: { type: 'number', description: 'Max wait ms. Default: 15000. For AI tasks use 60000-120000.' } } } } },
   { type: 'function', function: { name: 'browser_press_key', description: 'Press a special key (Enter, Tab, Escape, Backspace, Delete, Arrow keys, Space) using native keyboard simulation. Use this to submit forms (Enter), navigate tabs (Tab), or dismiss dialogs (Escape). This fires at the Chromium engine level — identical to a physical key press.', parameters: { type: 'object', properties: { key: { type: 'string', enum: ['Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'], description: 'Key to press' } }, required: ['key'] } } },
+  { type: 'function', function: { name: 'browser_list_frames', description: 'List all frames (main page + iframes) with their URLs and indices. Use this when browser_snapshot shows few or no interactive elements — the login form or content might be inside an iframe. Each frame has an index you can pass to browser_switch_frame.', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'browser_switch_frame', description: 'Switch browser tool execution context to a specific iframe by index. NOTE: browser_snapshot already uses CDP which spans ALL frames automatically — you usually do NOT need to switch frames. Only use this for edge cases like same-origin about:blank iframes not captured by CDP. Use browser_list_frames first to see available frames. Pass frameIndex=-1 to switch back to the main frame.', parameters: { type: 'object', properties: { frameIndex: { type: 'number', description: 'Frame index from browser_list_frames. Use -1 to return to main frame.' } }, required: ['frameIndex'] } } },
   { type: 'function', function: { name: 'render_html', description: 'Render a beautiful, rich HTML document directly in the IDE browser panel. Use this for highly visual results like shopping items, social media posts, image galleries, or dashboards. You can use absolute local file paths (e.g. file:///Users/...) directly in src/href attributes.', parameters: { type: 'object', properties: { html: { type: 'string', description: 'The complete HTML document string to render (include <style> tags or Tailwind via CDN for styling).' } }, required: ['html'] } } },
+  // ── Electron Native tools (unique to DSME) ──
+  { type: 'function', function: { name: 'browser_find', description: 'Search for text on the page using Chromium\'s built-in find-in-page. Works across shadow DOM, cross-origin iframes, and canvas text. Returns match count and auto-scrolls to the first match.', parameters: { type: 'object', properties: { text: { type: 'string', description: 'Text to search for' } }, required: ['text'] } } },
+  { type: 'function', function: { name: 'browser_stop_find', description: 'Stop find-in-page and clear all match highlights.', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'browser_export_cookies', description: 'Export browser session cookies to a JSON file. Use to save login state. Pass url to export only cookies for that domain.', parameters: { type: 'object', properties: { url: { type: 'string', description: 'Optional: export only cookies for this URL (e.g. https://google.com)' } } } } },
+  { type: 'function', function: { name: 'browser_import_cookies', description: 'Import cookies from a previously exported JSON file to restore a login session.', parameters: { type: 'object', properties: { file_path: { type: 'string', description: 'Path to the cookies JSON file' } }, required: ['file_path'] } } },
+  { type: 'function', function: { name: 'browser_clear_session', description: 'Clear all cookies, localStorage, and cache. Use to start fresh.', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'browser_zoom', description: 'Set page zoom level. Use when text is too small to read or page layout is broken.', parameters: { type: 'object', properties: { factor: { type: 'number', description: 'Zoom factor: 1.0=100%, 0.5=50%, 2.0=200%' } }, required: ['factor'] } } },
+  { type: 'function', function: { name: 'browser_export_pdf', description: 'Export the current page as a PDF file to disk. No print dialog — direct Chromium print pipeline.', parameters: { type: 'object', properties: { output_path: { type: 'string', description: 'Optional absolute path to save the PDF. Defaults to ~/Downloads/page_<timestamp>.pdf' } } } } },
+  { type: 'function', function: { name: 'browser_read_clipboard', description: 'Read the current system clipboard text. No user gesture needed (Electron Native privilege).', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'browser_write_clipboard', description: 'Write text to the system clipboard. Useful for passing extracted page data to other apps.', parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } } },
+  { type: 'function', function: { name: 'browser_page_health', description: 'Get a quick page status summary: URL, title, loading state, network activity, error count, zoom, navigation history. Zero JS injection — instant read from Electron Native APIs. Use before snapshot to understand page state.', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'browser_show_overlay', description: 'Render ALL interactive elements as blue highlighted boxes ("X-ray vision" mode). Uses CDP Overlay — no DOM injection. Shows exactly what the agent can see and click. Run after browser_snapshot.', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'browser_clear_overlay', description: 'Remove all element highlight overlays from the page.', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'browser_highlight_ref', description: 'Highlight a specific element ref with an orange box for 3 seconds. Use to verify you are targeting the right element before clicking.', parameters: { type: 'object', properties: { ref: { type: 'string', description: 'Element ref from browser_snapshot, e.g. "e3"' } }, required: ['ref'] } } },
+  { type: 'function', function: { name: 'browser_upload_file', description: 'Set file(s) on a file input element — bypasses the native OS file picker dialog. The ref MUST be an <input type="file"> from browser_snapshot. Use this for email attachments, avatar upload, document submission, etc.', parameters: { type: 'object', properties: { ref: { type: 'string', description: 'Element ref of the file input (e.g. "e5")' }, file_paths: { type: 'array', items: { type: 'string' }, description: 'Array of absolute file paths to upload' } }, required: ['ref', 'file_paths'] } } },
+  { type: 'function', function: { name: 'browser_capture_network', description: 'Capture the next network response matching a URL pattern. Call this BEFORE triggering the action that makes the request (e.g. click search). Returns the raw response body (JSON, HTML, etc.). Perfect for extracting API data from React/Vue SPAs.', parameters: { type: 'object', properties: { url_pattern: { type: 'string', description: 'Substring to match in request URLs (e.g. "/api/search", "graphql")' }, timeout_ms: { type: 'number', description: 'Max wait time in ms. Default: 15000.' } }, required: ['url_pattern'] } } },
 ];
 
 // webSearch, fetchUrl, browsePage — all imported from shared modules
@@ -212,7 +289,7 @@ export class BuiltinAgent implements IAgent {
 
   // ── Agent loop: streaming + tool calls ──
   private async runLoop(): Promise<void> {
-    const MAX_ITERATIONS = 25;
+    const MAX_ITERATIONS = 100;
     const LOOP_TIMEOUT_MS = 600_000; // 10 min per iteration — allows for slow image/video generation
     this.abortController = new AbortController();
     this.currentTurnSearchResult = null;
@@ -247,6 +324,9 @@ export class BuiltinAgent implements IAgent {
           max_completion_tokens: this.maxOutputTokens,
         }, { signal: this.abortController.signal });
 
+        // Streaming response — with graceful degradation (ported from tools1)
+        // If the stream is interrupted after producing content, we keep the partial output
+        // rather than failing the whole turn.
         let fullText = '';
         let toolCalls: Array<{ id: string; name: string; arguments: string }> = [];
         let currentToolIdx = -1;
@@ -254,6 +334,7 @@ export class BuiltinAgent implements IAgent {
         let insideThink = false;
         let thinkBuffer = '';
 
+        try {
         for await (const chunk of stream) {
           const delta = chunk.choices[0]?.delta;
           if (chunk.choices[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
@@ -302,9 +383,11 @@ export class BuiltinAgent implements IAgent {
 
           // Tool calls (streamed incrementally)
           if (delta.tool_calls) {
-            for (const tc of delta.tool_calls) {
-              if (tc.index !== undefined && tc.index !== currentToolIdx) {
-                currentToolIdx = tc.index;
+            for (let i = 0; i < delta.tool_calls.length; i++) {
+              const tc = delta.tool_calls[i];
+              const tcIndex = tc.index !== undefined ? tc.index : i;
+              if (tcIndex !== currentToolIdx) {
+                currentToolIdx = tcIndex;
                 toolCalls.push({ id: tc.id || '', name: tc.function?.name || '', arguments: '' });
               }
               const current = toolCalls[toolCalls.length - 1];
@@ -314,6 +397,33 @@ export class BuiltinAgent implements IAgent {
                 if (tc.function?.arguments) current.arguments += tc.function.arguments;
               }
             }
+          }
+        }
+        } catch (streamErr: any) {
+          // Graceful degradation (ported from tools1 _handle_streaming lines 985-989):
+          // If stream interrupted AFTER producing content, keep partial output
+          if (!fullText && toolCalls.length === 0) {
+            throw streamErr; // Nothing collected → re-throw to outer catch
+          }
+          console.warn(`[BuiltinAgent] Streaming interrupted (${streamErr.message}), keeping partial output (${fullText.length} chars, ${toolCalls.length} tool calls)`);
+          finishReason = 'error';
+        }
+
+        // Fallback text parsing if no native tool calls were streamed
+        if (toolCalls.length === 0 && fullText.length > 0) {
+          const availableTools = TOOLS.map(t => t.function.name);
+          const parsed = this.parseTextToolCalls(fullText, availableTools);
+          if (parsed.length > 0) {
+            console.log(`[BuiltinAgent] Fallback: parsed ${parsed.length} tool call(s) from text`);
+            for (let i = 0; i < parsed.length; i++) {
+              toolCalls.push({
+                id: `call_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`,
+                name: parsed[i].name,
+                arguments: typeof parsed[i].args === 'string' ? parsed[i].args : JSON.stringify(parsed[i].args)
+              });
+            }
+            // Clear content to prevent duplication if we parsed it into tool calls
+            fullText = '';
           }
         }
 
@@ -329,10 +439,10 @@ export class BuiltinAgent implements IAgent {
           this.messages.push(assistantMsg);
         }
 
-        // No tool calls → check for truncation, then fallback parsing
+        // No tool calls → check for truncation
         if (toolCalls.length === 0) {
-          // Handle output truncation (finish_reason='length'):
-          // Continue the loop so model can resume generating
+          // Handle finish_reason='tool_calls' (Google/Gemma models use this instead of 'stop')
+          // but since we didn't capture tool calls, treat as normal stop
           if (finishReason === 'length') {
             this.truncationCount++;
             if (this.truncationCount >= 5) {
@@ -342,19 +452,18 @@ export class BuiltinAgent implements IAgent {
             } else {
               console.warn(`[BuiltinAgent] Output truncated, continuing loop (${this.truncationCount}/5)`);
               clearTimeout(timeoutId);
-              continue; // ← continue, NOT break
+              continue;
             }
           } else {
             this.truncationCount = 0;
-          }
-
-          if (fullText.length > 0) {
-            await this.autoExecuteCodeBlocks(fullText);
           }
           this.retryCount = 0;
           clearTimeout(timeoutId);
           break;
         }
+
+        // Also handle finish_reason='tool_calls' (Google/Gemma) — same as normal tool call execution
+        // (the code below already handles it since toolCalls.length > 0)
 
         // Execute tools
         for (const tc of toolCalls) {
@@ -363,7 +472,7 @@ export class BuiltinAgent implements IAgent {
           console.log(`[BuiltinAgent] Tool: ${tc.name}`);
 
           let args: any = {};
-          try { args = JSON.parse(tc.arguments); } catch {}
+          args = safeJsonParse(tc.arguments, {});
 
           const result = await this.executeTool(tc.name, args);
 
@@ -423,6 +532,25 @@ export class BuiltinAgent implements IAgent {
       this.messages = [...this.messages.slice(0, 2), ...this.messages.slice(-48)];
     }
 
+    // Sanitize malformed tool call arguments in history (ported from tools1 _sanitize_api_messages)
+    // Prevents 400 Bad Request from providers rejecting replayed tool calls with broken JSON
+    for (const msg of this.messages) {
+      if ((msg as any).role === 'assistant' && (msg as any).tool_calls) {
+        for (const tc of (msg as any).tool_calls) {
+          if (tc.function?.arguments && typeof tc.function.arguments === 'string') {
+            const parsed = safeJsonParse(tc.function.arguments);
+            if (parsed !== null) {
+              const normalized = JSON.stringify(parsed);
+              if (normalized !== tc.function.arguments) {
+                console.log(`[BuiltinAgent] Sanitized malformed tool call args for ${tc.function.name}`);
+                tc.function.arguments = normalized;
+              }
+            }
+          }
+        }
+      }
+    }
+
     for (const msg of this.messages) {
       if (typeof msg.content === 'string' && msg.content.length > maxContentLen && msg.role !== 'user') {
         msg.content = msg.content.slice(0, maxContentLen) + '\n\n[DISPLAY_TRUNCATED: Content was trimmed to fit context window. The original data was fully collected. Do NOT retry the tool call.]';
@@ -452,6 +580,11 @@ export class BuiltinAgent implements IAgent {
   // ── Tool execution ──
   private async executeTool(name: string, args: any): Promise<string> {
     const resolve = (p: string) => path.resolve(this.cwd, p);
+
+    // ── Normalize argument names (small models use variant casing/naming) ──
+    // e.g. URL→url, Command→command, FilePath→filepath, Query→query, etc.
+    args = this.normalizeToolArgs(name, args);
+
     try {
       switch (name) {
         case 'read_file': {
@@ -522,7 +655,10 @@ export class BuiltinAgent implements IAgent {
           );
           return result;
         }
-        case 'fetch_url': return await fetchUrl(args.url);
+        case 'fetch_url': {
+          if (!args.url) return 'Error: url is required for fetch_url. Please provide the URL to fetch.';
+          return await fetchUrl(args.url);
+        }
         case 'browse_page': {
           this.send('chat-stream-token', `\n正在打开浏览器页面：${args.url}\n`);
           const started = Date.now();
@@ -544,6 +680,7 @@ export class BuiltinAgent implements IAgent {
           return await browserTaskFinish(summary || undefined);
         }
         case 'browser_navigate': {
+          if (!args.url) return 'Error: url is required for browser_navigate. Please provide the URL to navigate to.';
           this.send('chat-stream-token', `\n浏览器导航 → ${args.url}\n`);
           return await browserNavigate(args.url);
         }
@@ -581,6 +718,15 @@ export class BuiltinAgent implements IAgent {
           this.send('chat-stream-token', `\n按下按键 ${args.key}\n`);
           return await browserPressKey(args.key);
         }
+        case 'browser_list_frames': {
+          this.send('chat-stream-token', `\n列出页面 frames…\n`);
+          return await browserListFrames();
+        }
+        case 'browser_switch_frame': {
+          const idx = args.frameIndex ?? args.frame_index ?? args.index ?? 0;
+          this.send('chat-stream-token', `\n切换到 frame ${idx}…\n`);
+          return await browserSwitchFrame(idx);
+        }
         case 'render_html': {
           const { browserViewManager } = require('../browser-view-manager');
           const { BrowserWindow } = require('electron');
@@ -592,11 +738,143 @@ export class BuiltinAgent implements IAgent {
           await browserViewManager.loadHTML(args.html);
           return 'HTML rendered successfully in the IDE browser panel. Tell the user to look at the browser panel.';
         }
+        // ── Electron Native tools ──
+        case 'browser_find': {
+          return await browserFind(args.text);
+        }
+        case 'browser_stop_find': {
+          return await browserStopFind();
+        }
+        case 'browser_export_cookies': {
+          return await browserExportCookies(args.url);
+        }
+        case 'browser_import_cookies': {
+          return await browserImportCookies(args.file_path || args.filePath);
+        }
+        case 'browser_clear_session': {
+          return await browserClearSession();
+        }
+        case 'browser_zoom': {
+          return await browserZoom(args.factor);
+        }
+        case 'browser_export_pdf': {
+          return await browserExportPDF(args.output_path || args.outputPath);
+        }
+        case 'browser_read_clipboard': {
+          return await browserReadClipboard();
+        }
+        case 'browser_write_clipboard': {
+          return await browserWriteClipboard(args.text);
+        }
+        case 'browser_page_health': {
+          return await browserPageHealth();
+        }
+        case 'browser_show_overlay': {
+          return await browserShowOverlay();
+        }
+        case 'browser_clear_overlay': {
+          return await browserClearOverlay();
+        }
+        case 'browser_highlight_ref': {
+          return await browserHighlightRef(args.ref);
+        }
+        case 'browser_upload_file': {
+          return await browserUploadFile(args.ref, args.file_paths || args.filePaths);
+        }
+        case 'browser_capture_network': {
+          return await browserCaptureNetwork(args.url_pattern || args.urlPattern, args.timeout_ms || args.timeoutMs);
+        }
         default: return `Unknown tool: ${name}`;
       }
     } catch (e: any) {
       return `Tool error (${name}): ${e.code === 'ENOENT' ? 'File not found' : e.message}`;
     }
+  }
+
+  /**
+   * Normalize tool argument names for small model compatibility.
+   * Small/local models (Gemma, Qwen-small, Llama) often use variant casing
+   * or alternative parameter names. This normalizes them to match our schema.
+   */
+  private normalizeToolArgs(toolName: string, args: any): any {
+    if (!args || typeof args !== 'object') return args;
+
+    // Build a case-insensitive lookup: lowercase key → original value
+    const lowerMap = new Map<string, any>();
+    for (const [key, val] of Object.entries(args)) {
+      lowerMap.set(key.toLowerCase(), val);
+    }
+
+    // Helper: find a value by trying multiple key variants
+    const find = (...keys: string[]): any => {
+      for (const k of keys) {
+        if (args[k] !== undefined) return args[k];
+      }
+      // Case-insensitive fallback
+      for (const k of keys) {
+        const v = lowerMap.get(k.toLowerCase());
+        if (v !== undefined) return v;
+      }
+      return undefined;
+    };
+
+    switch (toolName) {
+      case 'browser_navigate':
+      case 'fetch_url':
+        if (!args.url) args.url = find('url', 'URL', 'Url', 'uri', 'URI', 'href', 'link');
+        break;
+      case 'browser_click':
+        if (!args.ref) args.ref = find('ref', 'Ref', 'REF', 'element', 'selector', 'id');
+        break;
+      case 'browser_type':
+        if (!args.ref) args.ref = find('ref', 'Ref', 'REF', 'element');
+        if (!args.text) args.text = find('text', 'Text', 'value', 'content', 'input');
+        break;
+      case 'browser_scroll':
+        if (!args.direction) args.direction = find('direction', 'Direction', 'dir');
+        break;
+      case 'browser_press_key':
+        if (!args.key) args.key = find('key', 'Key', 'keyName');
+        break;
+      case 'browser_eval':
+        if (!args.script) args.script = find('script', 'Script', 'code', 'js', 'javascript');
+        break;
+      case 'web_search':
+        if (!args.query) args.query = find('query', 'Query', 'q', 'search', 'keyword');
+        break;
+      case 'read_file':
+        if (!args.filepath) args.filepath = find('filepath', 'FilePath', 'path', 'file', 'filename');
+        break;
+      case 'write_file':
+        if (!args.filepath) args.filepath = find('filepath', 'FilePath', 'path', 'file', 'filename');
+        if (!args.content) args.content = find('content', 'Content', 'text', 'data', 'body');
+        break;
+      case 'run_command':
+        if (!args.command) args.command = find('command', 'Command', 'CommandLine', 'cmd', 'shell', 'exec');
+        break;
+      case 'list_directory':
+        if (!args.dirpath) args.dirpath = find('dirpath', 'DirPath', 'path', 'directory', 'dir', 'DirectoryPath');
+        break;
+      case 'search_codebase':
+        if (!args.query) args.query = find('query', 'Query', 'q', 'search', 'pattern');
+        break;
+      case 'replace_in_file':
+        if (!args.filepath) args.filepath = find('filepath', 'FilePath', 'path', 'file');
+        if (!args.target) args.target = find('target', 'Target', 'search', 'old', 'find');
+        if (!args.replacement) args.replacement = find('replacement', 'Replacement', 'replace', 'new');
+        break;
+      case 'browse_page':
+        if (!args.url) args.url = find('url', 'URL', 'Url', 'uri');
+        if (!args.script) args.script = find('script', 'Script', 'code', 'js');
+        break;
+      case 'browser_task_start':
+        if (!args.goal) args.goal = find('goal', 'Goal', 'task', 'description', 'title');
+        break;
+      case 'render_html':
+        if (!args.html) args.html = find('html', 'HTML', 'content', 'code');
+        break;
+    }
+    return args;
   }
 
   /** Text-based tool call fallback (Hermes / XML / JSON code block / bare JSON) */
@@ -624,16 +902,14 @@ export class BuiltinAgent implements IAgent {
   }
 
   private parseTextToolCalls(text: string, availableTools: string[]): { name: string; args: any }[] {
-    // Strategy 1: Hermes
+    // Strategy 1: Hermes (uses safeJsonParse for resilient parsing)
     const hermesMatch = text.match(/\[TOOL_CALLS\]\s*(\[[\s\S]*?\])/);
     if (hermesMatch) {
-      try {
-        const calls = JSON.parse(hermesMatch[1]);
-        if (Array.isArray(calls)) {
-          return calls.filter((c: any) => c.name && availableTools.includes(c.name))
-            .map((c: any) => ({ name: c.name, args: c.arguments || c.parameters || {} }));
-        }
-      } catch {}
+      const calls = safeJsonParse(hermesMatch[1]);
+      if (Array.isArray(calls)) {
+        return calls.filter((c: any) => c.name && availableTools.includes(c.name))
+          .map((c: any) => ({ name: c.name, args: c.arguments || c.parameters || {} }));
+      }
     }
     // Strategy 2: XML
     const xmlRegex = /<function=([^>]+)>([\s\S]*?)<\/function>/g;
@@ -642,21 +918,36 @@ export class BuiltinAgent implements IAgent {
     while ((xmlMatch = xmlRegex.exec(text)) !== null) {
       const name = xmlMatch[1].trim();
       if (!availableTools.includes(name)) continue;
-      try { xmlCalls.push({ name, args: JSON.parse(xmlMatch[2].trim()) }); }
-      catch { xmlCalls.push({ name, args: {} }); }
+      const parsed = safeJsonParse(xmlMatch[2].trim());
+      xmlCalls.push({ name, args: parsed ?? {} });
     }
     if (xmlCalls.length > 0) return xmlCalls;
     // Strategy 3: JSON code blocks
+    // Strategy 3: JSON code blocks (matches tools1 CODE_BLOCK_PATTERN with additional key heuristics)
     const jsonBlockRegex = /```(?:json)?\s*\n?\s*(\{[\s\S]*?\})\s*\n?```/g;
     const jsonCalls: { name: string; args: any }[] = [];
     let jsonMatch;
     while ((jsonMatch = jsonBlockRegex.exec(text)) !== null) {
-      try {
-        const data = JSON.parse(jsonMatch[1]);
+      const data = safeJsonParse(jsonMatch[1]);
+      if (data && typeof data === 'object') {
+        // Format: {"name": "tool_name", "parameters": {...}} or {"name": "...", "arguments": {...}}
         if (data.name && availableTools.includes(data.name)) {
           jsonCalls.push({ name: data.name, args: data.parameters || data.arguments || {} });
         }
-      } catch {}
+        // Format: raw args with known parameter keys (like tools1 _try_parse_tool_json)
+        else if (!data.name) {
+          const paramKeyMap: Record<string, string> = {
+            command: 'run_command', filepath: 'read_file', query: 'web_search',
+            url: 'fetch_url', dirpath: 'list_directory', ref: 'browser_click',
+          };
+          for (const [key, toolName] of Object.entries(paramKeyMap)) {
+            if (key in data && availableTools.includes(toolName)) {
+              jsonCalls.push({ name: toolName, args: data });
+              break;
+            }
+          }
+        }
+      }
     }
     if (jsonCalls.length > 0) return jsonCalls;
     // Strategy 4: Bare JSON
@@ -666,8 +957,8 @@ export class BuiltinAgent implements IAgent {
     while ((bareMatch = bareRegex.exec(text)) !== null) {
       const name = bareMatch[1];
       if (!availableTools.includes(name)) continue;
-      try { bareCalls.push({ name, args: JSON.parse(bareMatch[2]) }); }
-      catch {}
+      const parsed = safeJsonParse(bareMatch[2]);
+      if (parsed && typeof parsed === 'object') bareCalls.push({ name, args: parsed });
     }
     if (bareCalls.length > 0) return bareCalls;
 

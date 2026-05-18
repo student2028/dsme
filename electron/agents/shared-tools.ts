@@ -452,6 +452,17 @@ Use browser_* tools for complex, multi-step browser tasks on a **persistent visi
 2. If you need to extract an image from a page, use browser_eval with a script that calls Canvas + toDataURL. The system will **automatically save it to disk** and return a file path.
 3. To download an image, prefer using \`fetch(url).then(r => r.blob())\` + saving to disk via a run_command, or simply provide the image URL to the user.
 
+#### ⚠️ MANDATORY: iframe Awareness (Anti-Blind-Navigation Protocol)
+Many sites (126/163 email, banking, payment, CAPTCHA) put their login forms or key UI inside **cross-origin iframes**. The system handles this automatically:
+1. **Auto-detection**: When the main page has ≤5 interactive elements, browser_snapshot **automatically scans all iframes** and shows a summary (element counts, input hints, button labels) — but **no clickable refs** (to avoid ref ID collisions between frames).
+2. **To interact with iframe content**: Follow this sequence:
+   - \`browser_switch_frame(N)\` — switch execution context into iframe N (shown in snapshot as \`iframe[N]\`)
+   - \`browser_snapshot()\` — now returns refs [e1], [e2]... **inside that iframe**
+   - \`browser_click/type(ref)\` — operates inside the iframe
+   - \`browser_switch_frame(-1)\` — return to main frame when done
+3. **NEVER blindly navigate to different URLs** when you can't find form elements — the content is almost certainly in an iframe on the current page.
+4. **browser_list_frames()** — lists all frames with URLs and indices if you need more detail.
+
 #### Other Guidelines
 - ALWAYS snapshot before clicking — refs change after page updates
 - The webview is persistent — login state carries across calls
@@ -459,6 +470,16 @@ Use browser_* tools for complex, multi-step browser tasks on a **persistent visi
 - Prefer browse_page only when a single scripted interaction block is enough (one URL + one returning script)
 - **Batch data extraction**: When scraping paginated or multi-page data (e.g. stock lists, search results across pages), write a **single self-contained async script** in one browser_eval call that loops through all pages internally (click next → wait → extract → repeat). Do NOT make separate browser_eval calls per page — each call resets local variables, causing redundant work and potential infinite loops.
 - Users can **copy the session as Markdown**, expand each step's **raw output**, use **← 后退** without affecting the agent, or **clear the timeline** while keeping the page open — use these for audits and recovery on long tasks.
+
+#### ⚠️ MANDATORY: Form Filling Protocol
+- **ALWAYS use browser_type(ref, text) to fill form inputs** — it uses native Chromium insertText which triggers all framework event listeners (React, Vue, Angular, 126 Mail, etc.).
+- **NEVER use browser_eval to set input.value directly** — modern frameworks do NOT detect .value changes via JavaScript assignment. This will appear to work (the value shows in the field) but the form validation/state management will NOT update, causing submit failures and infinite retry loops.
+- The correct pattern: \`browser_snapshot()\` → find the input ref → \`browser_type(ref, "text")\` → \`browser_click(submitRef)\`
+
+#### ⚠️ MANDATORY: Task Completion Detection
+- When you have confirmed that the task goal is achieved (e.g. email appears in "已发送" folder, form submission shows success message, data is saved), **immediately call browser_task_finish and report success**.
+- **NEVER re-do completed work** — do not click "再次编辑", "重新发送", or similar buttons after confirming success.
+- If you are unsure whether the task succeeded, verify ONCE (e.g. check the sent folder), then finish.
 
 ### File Editing (replace_in_file)
 - The 'target' parameter must be an EXACT character-for-character match including whitespace, indentation, and newlines.

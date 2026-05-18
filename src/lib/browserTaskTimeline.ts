@@ -22,6 +22,8 @@ export interface BrowserTaskStep {
   outputPreview?: string;
   /** Clipped tool/page output for expand + export (see BROWSER_STEP_RAW_MAX). */
   outputRaw?: string;
+  /** Screenshot data URL captured at this step (snapshot/click/navigate). */
+  screenshotUrl?: string;
   status: BrowserStepStatus;
   startedAt: number;
   finishedAt?: number;
@@ -159,6 +161,7 @@ export function finishBrowserStep(
   result: {
     status: Exclude<BrowserStepStatus, 'running'>;
     output?: string;
+    screenshotUrl?: string;
     now?: number;
   },
 ): BrowserTask {
@@ -176,6 +179,7 @@ export function finishBrowserStep(
         durationMs: Math.max(0, now - step.startedAt),
         outputPreview: summarizeOutput(result.output || ''),
         outputRaw: raw.length > 0 ? raw : undefined,
+        screenshotUrl: result.screenshotUrl,
       };
     }),
   }, now);

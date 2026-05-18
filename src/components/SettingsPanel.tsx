@@ -200,30 +200,9 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
           </div>
         </div>
 
-        {/* Cookie Sync — macOS only */}
+        {/* Cookie Sync — macOS only, with Chrome Profile selector */}
         {navigator.platform.toLowerCase().includes('mac') && (
-          <>
-            <div className="settings-section-label">Browser</div>
-            <div className="settings-group">
-              <button
-                className="settings-save-btn"
-                style={{ width: '100%' }}
-                onClick={async () => {
-                  const res = await window.electronAPI?.syncChromeCookies?.();
-                  if (res?.success) {
-                    alert(`✅ Synced ${res.count} cookies from Chrome`);
-                  } else {
-                    alert(`❌ Sync failed: ${res?.error || 'Unknown error'}`);
-                  }
-                }}
-              >
-                🍪 Sync Chrome Cookies
-              </button>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
-                Pulls cookies from your local Chrome so the browser panel stays logged in.
-              </div>
-            </div>
-          </>
+          <ChromeProfileSync />
         )}
 
         </div>
@@ -236,5 +215,82 @@ export const SettingsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> =
         </div>
       </div>
     </div>
+  );
+};
+
+/** Chrome Profile selector + cookie sync sub-component. */
+const ChromeProfileSync: React.FC = () => {
+  const [profiles, setProfiles] = useState<{ dirName: string; name: string; email: string }[]>([]);
+  const [selectedProfile, setSelectedProfile] = useState('Default');
+  const [syncing, setSyncing] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  useEffect(() => {
+    window.electronAPI?.getChromeProfiles?.().then((p) => {
+      if (p && p.length > 0) {
+        setProfiles(p);
+        setSelectedProfile(p[0].dirName);
+      }
+    }).catch(() => {});
+  }, []);
+
+  const handleSync = async () => {
+    setSyncing(true);
+    setStatus(null);
+    try {
+      const res = await window.electronAPI?.syncChromeCookies?.(selectedProfile);
+      if (res?.success) {
+        const label = profiles.find(p => p.dirName === selectedProfile)?.name || selectedProfile;
+        setStatus({ ok: true, msg: `✅ 从 "${label}" 同步了 ${res.count} 个 Cookie` });
+      } else {
+        setStatus({ ok: false, msg: `❌ 同步失败: ${res?.error || 'Unknown error'}` });
+      }
+    } catch (e: any) {
+      setStatus({ ok: false, msg: `❌ ${e.message}` });
+    }
+    setSyncing(false);
+  };
+
+  return (
+    <>
+      <div className="settings-section-label">Browser</div>
+      <div className="settings-group">
+        <label className="settings-label">Chrome Profile</label>
+        {profiles.length > 0 ? (
+          <select
+            className="settings-input"
+            value={selectedProfile}
+            onChange={e => { setSelectedProfile(e.target.value); setStatus(null); }}
+            style={{ cursor: 'pointer' }}
+          >
+            {profiles.map(p => (
+              <option key={p.dirName} value={p.dirName}>
+                {p.name}{p.email ? ` (${p.email})` : ''}{p.dirName === 'Default' ? ' ★' : ''}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>未检测到 Chrome Profile</div>
+        )}
+      </div>
+      <div className="settings-group">
+        <button
+          className="settings-save-btn"
+          style={{ width: '100%', opacity: syncing ? 0.6 : 1 }}
+          disabled={syncing || profiles.length === 0}
+          onClick={handleSync}
+        >
+          {syncing ? '⏳ 同步中...' : '🍪 同步 Cookie'}
+        </button>
+        {status && (
+          <div style={{ fontSize: '12px', color: status.ok ? 'var(--accent-color)' : '#f87171', marginTop: '6px' }}>
+            {status.msg}
+          </div>
+        )}
+        <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
+          从选定的 Chrome Profile 同步登录状态，让浏览器面板自动保持登录。
+        </div>
+      </div>
+    </>
   );
 };

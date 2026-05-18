@@ -47,6 +47,26 @@ import {
   browserTaskFinish,
   browserWaitForIdle,
   browserPressKey,
+  browserListFrames,
+  browserSwitchFrame,
+  // Electron Native tools
+  browserFind,
+  browserExportCookies,
+  browserImportCookies,
+  browserClearSession,
+  browserZoom,
+  browserExportPDF,
+  browserReadClipboard,
+  browserWriteClipboard,
+  browserPageHealth,
+  // Visual Overlay tools
+  browserShowOverlay,
+  browserClearOverlay,
+  browserHighlightRef,
+  browserStopFind,
+  // Advanced CDP tools
+  browserUploadFile,
+  browserCaptureNetwork,
 } from './browser-use';
 
 const execAsync = promisify(exec);
@@ -84,11 +104,29 @@ function formatToolArgs(name: string, args: any): string {
       case 'browser_back': return ' ←';
       case 'browser_eval': return args.script ? ` \`${args.script.slice(0, 40)}...\`` : '';
       case 'browser_press_key': return args.key ? ` ⌨️ ${args.key}` : '';
+      case 'browser_list_frames': return ' 🖼️';
+      case 'browser_switch_frame': return args.frameIndex !== undefined ? ` → frame[${args.frameIndex}]` : '';
       case 'browser_task_start': return args.goal ? ` — ${args.goal.slice(0, 80)}${args.goal.length > 80 ? '…' : ''}` : '';
       case 'browser_task_finish':
         return args.summary
           ? ` — ${args.summary.slice(0, 240)}${args.summary.length > 240 ? '…' : ''}`
           : '';
+      // Electron Native tools
+      case 'browser_find': return args.text ? ` 🔍 "${args.text}"` : '';
+      case 'browser_stop_find': return ' 🔍 clear';
+      case 'browser_export_cookies': return ' 🍪 export';
+      case 'browser_import_cookies': return args.file_path ? ` 🍪 import ${args.file_path}` : ' 🍪 import';
+      case 'browser_clear_session': return ' 🧹';
+      case 'browser_zoom': return args.factor ? ` 🔎 ${Math.round(args.factor * 100)}%` : '';
+      case 'browser_export_pdf': return ' 📄 PDF';
+      case 'browser_read_clipboard': return ' 📋 read';
+      case 'browser_write_clipboard': return ' 📋 write';
+      case 'browser_page_health': return ' 🩺';
+      case 'browser_show_overlay': return ' 🔵 X-ray';
+      case 'browser_clear_overlay': return ' clear';
+      case 'browser_highlight_ref': return args.ref ? ` 🟠 [${args.ref}]` : '';
+      case 'browser_upload_file': return args.ref ? ` 📁 [${args.ref}]` : '';
+      case 'browser_capture_network': return args.url_pattern ? ` 🌐 "${args.url_pattern}"` : '';
       default: return '';
     }
   } catch { return ''; }
@@ -135,8 +173,12 @@ export class VercelAgent implements IAgent {
         const tc = data?.choices?.[0]?.delta?.tool_calls;
         if (Array.isArray(tc)) {
           let patched = false;
-          for (const call of tc) {
-            if (call.index !== undefined && typeof call.index !== 'number') {
+          for (let i = 0; i < tc.length; i++) {
+            const call = tc[i];
+            if (call.index === undefined) {
+              call.index = i;
+              patched = true;
+            } else if (typeof call.index !== 'number') {
               call.index = Number(call.index);
               patched = true;
             }
@@ -737,6 +779,128 @@ export class VercelAgent implements IAgent {
         execute: async ({ key }) => browserPressKey(key),
       }),
 
+      browser_list_frames: tool({
+        description: 'List all frames (main page + iframes) with their URLs and indices. Use this when browser_snapshot shows few or no interactive elements — the login form or content might be inside an iframe. Each frame has an index you can pass to browser_switch_frame.',
+        inputSchema: z.object({}),
+        execute: async () => browserListFrames(),
+      }),
+
+      browser_switch_frame: tool({
+        description: 'Switch browser tool execution context to a specific iframe by index. After switching, browser_snapshot/click/type/eval will operate inside that frame. Use browser_list_frames first to see available frames. Pass frameIndex=-1 to switch back to the main frame.',
+        inputSchema: z.object({
+          frameIndex: z.number().describe('Frame index from browser_list_frames. Use -1 to return to main frame.'),
+        }),
+        execute: async ({ frameIndex }) => browserSwitchFrame(frameIndex),
+      }),
+
+      // ── Electron Native tools (shared with builtin.ts) ──
+
+      browser_find: tool({
+        description: 'Search for text on the current page using Chromium native find-in-page. Works across Shadow DOM and iframes. Returns match count and scrolls to first match.',
+        inputSchema: z.object({ text: z.string().describe('Text to search for') }),
+        execute: async ({ text }) => browserFind(text),
+      }),
+
+      browser_stop_find: tool({
+        description: 'Stop find-in-page and clear all match highlights.',
+        inputSchema: z.object({}),
+        execute: async () => browserStopFind(),
+      }),
+
+      browser_export_cookies: tool({
+        description: 'Export browser session cookies to a JSON file. Use to save login state for later restore. Pass url to export only cookies for that domain (e.g. https://google.com). Auto-saves to scratch/ folder, returns the file path.',
+        inputSchema: z.object({
+          url: z.string().optional().describe('Optional: export only cookies for this URL/domain. Omit to export all cookies.'),
+        }),
+        execute: async ({ url }) => browserExportCookies(url),
+      }),
+
+      browser_import_cookies: tool({
+        description: 'Import cookies from a previously exported JSON file to restore a login session.',
+        inputSchema: z.object({
+          file_path: z.string().describe('Path to the cookies JSON file'),
+        }),
+        execute: async ({ file_path }) => browserImportCookies(file_path),
+      }),
+
+      browser_clear_session: tool({
+        description: 'Clear all cookies, localStorage, and cache. Use to start fresh.',
+        inputSchema: z.object({}),
+        execute: async () => browserClearSession(),
+      }),
+
+      browser_zoom: tool({
+        description: 'Set page zoom level. Use when text is too small to read or page layout is broken.',
+        inputSchema: z.object({
+          factor: z.number().describe('Zoom factor: 1.0=100%, 0.5=50%, 2.0=200%'),
+        }),
+        execute: async ({ factor }) => browserZoom(factor),
+      }),
+
+      browser_export_pdf: tool({
+        description: 'Export the current page as a PDF file to disk. No print dialog — direct Chromium print pipeline.',
+        inputSchema: z.object({
+          output_path: z.string().optional().describe('Optional absolute path to save the PDF. Defaults to ~/Downloads/page_<timestamp>.pdf'),
+        }),
+        execute: async ({ output_path }) => browserExportPDF(output_path),
+      }),
+
+      browser_read_clipboard: tool({
+        description: 'Read the current system clipboard text. No user gesture needed (Electron Native privilege).',
+        inputSchema: z.object({}),
+        execute: async () => browserReadClipboard(),
+      }),
+
+      browser_write_clipboard: tool({
+        description: 'Write text to the system clipboard. Useful for passing extracted page data to other apps.',
+        inputSchema: z.object({ text: z.string() }),
+        execute: async ({ text }) => browserWriteClipboard(text),
+      }),
+
+      browser_page_health: tool({
+        description: 'Get a quick page status summary: URL, title, loading state, network activity, error count, zoom, navigation history. Zero JS injection — instant read from Electron Native APIs. Use before snapshot to understand page state.',
+        inputSchema: z.object({}),
+        execute: async () => browserPageHealth(),
+      }),
+
+      browser_show_overlay: tool({
+        description: 'Render ALL interactive elements as blue highlighted boxes ("X-ray vision" mode). Uses CDP Overlay — no DOM injection. Shows exactly what the agent can see and click. Run after browser_snapshot.',
+        inputSchema: z.object({}),
+        execute: async () => browserShowOverlay(),
+      }),
+
+      browser_clear_overlay: tool({
+        description: 'Remove all element highlight overlays from the page.',
+        inputSchema: z.object({}),
+        execute: async () => browserClearOverlay(),
+      }),
+
+      browser_highlight_ref: tool({
+        description: 'Highlight a specific element ref with an orange box for 3 seconds. Use to verify you are targeting the right element before clicking.',
+        inputSchema: z.object({
+          ref: z.string().describe('Element ref from browser_snapshot, e.g. "e3"'),
+        }),
+        execute: async ({ ref }) => browserHighlightRef(ref),
+      }),
+
+      browser_upload_file: tool({
+        description: 'Set file(s) on a file input element — bypasses the native OS file picker dialog. The ref MUST be an <input type="file"> from browser_snapshot. Use this for email attachments, avatar upload, document submission, etc.',
+        inputSchema: z.object({
+          ref: z.string().describe('Element ref of the file input (e.g. "e5")'),
+          file_paths: z.array(z.string()).describe('Array of absolute file paths to upload'),
+        }),
+        execute: async ({ ref, file_paths }) => browserUploadFile(ref, file_paths),
+      }),
+
+      browser_capture_network: tool({
+        description: 'Capture the next network response matching a URL pattern. Call this BEFORE triggering the action that makes the request (e.g. click search). Returns the raw response body (JSON, HTML, etc.). Perfect for extracting API data from React/Vue SPAs.',
+        inputSchema: z.object({
+          url_pattern: z.string().describe('Substring to match in request URLs (e.g. "/api/search", "graphql")'),
+          timeout_ms: z.number().optional().describe('Max wait time in ms. Default: 15000.'),
+        }),
+        execute: async ({ url_pattern, timeout_ms }) => browserCaptureNetwork(url_pattern, timeout_ms),
+      }),
+
       render_html: tool({
         description: 'Render a beautiful, rich HTML document directly in the IDE browser panel. Use this for highly visual results like shopping items, social media posts, image galleries, or dashboards. You can use absolute local file paths (e.g. file:///Users/...) directly in src/href attributes.',
         inputSchema: z.object({ html: z.string().describe('The complete HTML document string to render (include <style> tags or Tailwind via CDN for styling).') }),
@@ -761,6 +925,7 @@ export class VercelAgent implements IAgent {
     const POST_TOOL_TEXT_TIMEOUT_MS = 600_000; // 10 min — AI image/video generation can take 5+ minutes
     this.currentTurnSearchResult = null;
     // True iterative retry loop (no recursion, no stack growth)
+    let forceNoTools = false;
     while (true) {
     this.pruneHistory();
     this.abortController = new AbortController();
@@ -798,6 +963,7 @@ export class VercelAgent implements IAgent {
       this.abortController?.abort();
     }, STREAM_TIMEOUT_MS);
     let streamHadMissingToolError = false;
+    let lastStepNumber = 0;
     try {
       const result = streamText({
         model: this.provider.chat(this.model),
@@ -806,13 +972,14 @@ export class VercelAgent implements IAgent {
           this.extractTextContent(this.messages.filter(m => m.role === 'user').pop())
         ),
         messages: this.messages as any,
-        tools: this.getTools(),
+        tools: forceNoTools ? undefined : this.getTools(),
         maxOutputTokens: this.maxOutputTokens,
-        stopWhen: stepCountIs(50),
+        stopWhen: stepCountIs(100),
         abortSignal: this.abortController.signal,
 
         // Lifecycle callbacks for UI updates
         onStepFinish: ({ stepNumber, text, toolCalls, toolResults }) => {
+          lastStepNumber = stepNumber;
           console.log(`[VercelAgent] Step ${stepNumber} finished: text=${text?.length || 0}ch, tools=${toolCalls?.length || 0}`);
         },
 
@@ -1037,6 +1204,14 @@ export class VercelAgent implements IAgent {
           }
           // Nudge model based on failure mode
           if (isEmptyResponse) {
+            // When model was doing tool calls but produced no text, force next run to be text-only.
+            // This handles step-limit exhaustion (stepCountIs triggered mid-tool-loop) and
+            // spontaneous empty stops after tool rounds.
+            if (hadToolCalls) {
+              forceNoTools = true;
+              console.warn(`[VercelAgent] Empty response after tool calls (lastStep=${lastStepNumber}). Next run: no tools.`);
+              this.send('chat-stream-token', `\n\n⚠️ 工具调用已达步数上限（${lastStepNumber + 1} 步），正在生成最终总结…\n`);
+            }
             this.messages.push({
               role: 'user',
               content:
@@ -1059,6 +1234,7 @@ export class VercelAgent implements IAgent {
         }
       } else {
         this.truncationCount = 0;
+        forceNoTools = false; // Reset on successful output
       }
 
       // ── Text-based Tool Call Fallback ──

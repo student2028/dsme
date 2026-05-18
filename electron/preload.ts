@@ -42,9 +42,9 @@ function createExclusiveListenerChannel(channel: string) {
 contextBridge.exposeInMainWorld('electronAPI', {
   sendChatMessage: (message: string) => ipcRenderer.send('chat-message', message),
   sendChatMessageWithImages: (message: string, imageDataUrls: string[]) => ipcRenderer.send('chat-message-images', message, imageDataUrls),
-  onChatStreamStart: createExclusiveListenerChannel('chat-stream-start'),
-  onChatStreamToken: createExclusiveListenerChannel('chat-stream-token'),
-  onChatStreamEnd: createExclusiveListenerChannel('chat-stream-end'),
+  onChatStreamStart: createMultiSubscriberChannel('chat-stream-start'),
+  onChatStreamToken: createMultiSubscriberChannel('chat-stream-token'),
+  onChatStreamEnd: createMultiSubscriberChannel('chat-stream-end'),
   onChatStatus: createMultiSubscriberChannel('chat-status'),
 
   getFileTree: (dir?: string) => ipcRenderer.invoke('get-file-tree', dir),
@@ -110,5 +110,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   captureWindow: () => ipcRenderer.invoke('capture-window'),
 
-  syncChromeCookies: () => ipcRenderer.invoke('sync-chrome-cookies'),
+  getChromeProfiles: () => ipcRenderer.invoke('get-chrome-profiles'),
+  syncChromeCookies: (profileDirName?: string) => ipcRenderer.invoke('sync-chrome-cookies', profileDirName),
 });

@@ -4,6 +4,8 @@
  * Reads cookies from the user's Chrome browser and injects them into
  * Electron's session, so webview/BrowserWindow can access logged-in sites.
  *
+ * Supports MULTIPLE Chrome profiles — user can select which profile to sync from.
+ *
  * macOS only — reads Chrome Safe Storage key from Keychain,
  * decrypts AES-128-CBC encrypted cookie values.
  */
@@ -14,10 +16,81 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { execSync } from 'child_process';
 
-const CHROME_COOKIES_PATH = path.join(
+const CHROME_DIR = path.join(
   os.homedir(),
-  'Library/Application Support/Google/Chrome/Default/Cookies'
+  'Library/Application Support/Google/Chrome'
 );
+
+/** Represents a Chrome profile with its metadata. */
+export interface ChromeProfile {
+  /** Directory name, e.g. "Default", "Profile 1", "Profile 3" */
+  dirName: string;
+  /** User-visible profile name from Chrome Preferences */
+  name: string;
+  /** Email associated with the profile (if signed in) */
+  email: string;
+  /** Full path to the profile's Cookies database */
+  cookiesPath: string;
+}
+
+/**
+ * Discover all Chrome profiles on this machine.
+ * Returns profile metadata sorted by directory name.
+ */
+export function getChromeProfiles(): ChromeProfile[] {
+  if (process.platform !== 'darwin') return [];
+  if (!fs.existsSync(CHROME_DIR)) return [];
+
+  const profiles: ChromeProfile[] = [];
+
+  try {
+    const entries = fs.readdirSync(CHROME_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      // Chrome profiles are "Default" or "Profile N"
+      if (entry.name !== 'Default' && !entry.name.startsWith('Profile ')) continue;
+
+      const profileDir = path.join(CHROME_DIR, entry.name);
+      const cookiesPath = path.join(profileDir, 'Cookies');
+      if (!fs.existsSync(cookiesPath)) continue;
+
+      // Read profile metadata from Preferences
+      let name = entry.name;
+      let email = '';
+      try {
+        const prefsPath = path.join(profileDir, 'Preferences');
+        const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+        // Profile display name
+        name = prefs.profile?.name || entry.name;
+        // Signed-in account email
+        const accountInfo = prefs.account_info;
+        if (Array.isArray(accountInfo) && accountInfo.length > 0) {
+          email = accountInfo[0].email || '';
+          // Use full_name if profile name is generic
+          if (name === entry.name && accountInfo[0].full_name) {
+            name = accountInfo[0].full_name;
+          }
+        }
+      } catch {
+        // Preferences might be unreadable — use defaults
+      }
+
+      profiles.push({ dirName: entry.name, name, email, cookiesPath });
+    }
+  } catch (e: any) {
+    console.error('[ChromeCookies] Failed to enumerate profiles:', e.message);
+  }
+
+  // Sort: Default first, then Profile 1, Profile 3, etc.
+  return profiles.sort((a, b) => {
+    if (a.dirName === 'Default') return -1;
+    if (b.dirName === 'Default') return 1;
+    // Extract number from "Profile N"
+    const numA = parseInt(a.dirName.replace('Profile ', ''), 10) || 0;
+    const numB = parseInt(b.dirName.replace('Profile ', ''), 10) || 0;
+    return numA - numB;
+  });
+}
 
 /** Get Chrome Safe Storage decryption key from macOS Keychain */
 function getDecryptionKey(): Buffer {
@@ -66,18 +139,24 @@ function decryptValue(encrypted: Buffer, key: Buffer): string {
 
 /**
  * Sync Chrome cookies into an Electron session.
- * Results persist in Electron's userData — no need to call on every restart.
  *
+ * @param session - Electron session to inject cookies into
+ * @param profileDirName - Chrome profile directory name (e.g. "Default", "Profile 1").
+ *                         If omitted, syncs from "Default".
  * @returns Number of cookies successfully imported
  */
-export async function syncChromeCookies(session: Electron.Session): Promise<number> {
+export async function syncChromeCookies(
+  session: Electron.Session,
+  profileDirName: string = 'Default',
+): Promise<number> {
   if (process.platform !== 'darwin') {
     console.log('[ChromeCookies] Only macOS supported');
     return 0;
   }
 
-  if (!fs.existsSync(CHROME_COOKIES_PATH)) {
-    console.log('[ChromeCookies] Chrome cookies not found');
+  const cookiesPath = path.join(CHROME_DIR, profileDirName, 'Cookies');
+  if (!fs.existsSync(cookiesPath)) {
+    console.log(`[ChromeCookies] Cookies not found for profile "${profileDirName}"`);
     return 0;
   }
 
@@ -88,11 +167,11 @@ export async function syncChromeCookies(session: Electron.Session): Promise<numb
     const tmpDir = path.join(os.tmpdir(), 'dsme-cookies');
     fs.mkdirSync(tmpDir, { recursive: true });
     const tmpDb = path.join(tmpDir, 'Cookies');
-    fs.copyFileSync(CHROME_COOKIES_PATH, tmpDb);
+    fs.copyFileSync(cookiesPath, tmpDb);
 
     // Also copy journal/wal if present (for complete data)
     for (const suffix of ['-journal', '-wal', '-shm']) {
-      const src = CHROME_COOKIES_PATH + suffix;
+      const src = cookiesPath + suffix;
       if (fs.existsSync(src)) {
         fs.copyFileSync(src, tmpDb + suffix);
       }
@@ -160,10 +239,10 @@ export async function syncChromeCookies(session: Electron.Session): Promise<numb
       }
     }
 
-    console.log(`[ChromeCookies] Synced ${count} cookies (${skipped} skipped, ${rows.length} total)`);
+    console.log(`[ChromeCookies] Synced ${count} cookies from "${profileDirName}" (${skipped} skipped, ${rows.length} total)`);
     return count;
   } catch (e: any) {
-    console.error('[ChromeCookies] Sync failed:', e.message);
+    console.error(`[ChromeCookies] Sync failed for "${profileDirName}":`, e.message);
     return 0;
   }
 }

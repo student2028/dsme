@@ -148,8 +148,10 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
         if (activeConv) window.electronAPI.syncHistory(activeConv.messages);
         return currentConvs;
       });
+      window.dispatchEvent(new Event('dsme-conversation-switched'));
     } else if (prev !== activeConvId && window.electronAPI?.resetConversation) {
       window.electronAPI.resetConversation();
+      window.dispatchEvent(new Event('dsme-conversation-switched'));
     }
   }, [activeConvId]);
 
