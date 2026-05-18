@@ -68,6 +68,9 @@ export class BrowserViewManager {
   private recentNetworkRequests = new Map<string, { url: string; method: string; mimeType: string; status: number; timestamp: number }>();
   private networkListenerAttached = false;
 
+  // ── Download Tracking ──
+  private recentDownloads: { filename: string; path: string; state: string; time: number; size?: number }[] = [];
+
   // ── Static constants (defined once, not rebuilt per call) ──
   private static readonly INTERACTIVE_ROLES = new Set([
     'textbox', 'button', 'link', 'combobox', 'listbox',
@@ -123,9 +126,22 @@ export class BrowserViewManager {
       const downloadPath = path.join(os.homedir(), 'Downloads', item.getFilename());
       item.setSavePath(downloadPath);
       
+      const downloadRecord = {
+        filename: item.getFilename(),
+        path: downloadPath,
+        state: 'progressing',
+        time: Date.now(),
+        size: item.getTotalBytes()
+      };
+      this.recentDownloads.push(downloadRecord);
+      // Keep only last 10 downloads to prevent memory leak
+      if (this.recentDownloads.length > 10) this.recentDownloads.shift();
+      
       console.log(`[BrowserViewManager] Started auto-download: ${downloadPath}`);
       
       item.once('done', (event, state) => {
+        downloadRecord.state = state;
+        downloadRecord.time = Date.now();
         if (state === 'completed') {
           console.log(`[BrowserViewManager] Download successfully completed: ${downloadPath}`);
         } else {
@@ -469,6 +485,7 @@ export class BrowserViewManager {
     this.cdpAttached = false;
     this.networkListenerAttached = false;
     this.recentNetworkRequests.clear();
+    this.recentDownloads = [];
     this.refMap.clear();
     this.refLabels.clear();
     this.currentTitle = '';
@@ -947,6 +964,43 @@ export class BrowserViewManager {
     } catch (e: any) {
       return `Native click error: ${e.message}`;
     }
+  }
+
+  /**
+   * Hover over an element using Electron's native `sendInputEvent`.
+   * This is crucial for triggering CSS `:hover` states and JS `mouseenter` events
+   * to reveal dropdown menus or tooltips.
+   */
+  async hover(ref: string): Promise<string> {
+    if (!this.ensureHealthyView()) return 'Error: view not initialized';
+    const center = await this.getElementCenterByCDP(ref);
+    if (!center) return `Error: Cannot find element [${ref}] on screen.`;
+    
+    const wc = this.view!.webContents;
+    const { cx, cy } = center;
+    
+    // Simulate real mouse movement towards the target
+    const currentX = this.lastMouseX >= 0 ? this.lastMouseX : cx;
+    const currentY = this.lastMouseY >= 0 ? this.lastMouseY : cy;
+    
+    if (this.lastMouseX >= 0 && this.lastMouseY >= 0) {
+      // Interpolate 3 steps
+      for (let i = 1; i <= 3; i++) {
+        const ptX = currentX + (cx - currentX) * (i / 3);
+        const ptY = currentY + (cy - currentY) * (i / 3);
+        wc.sendInputEvent({ type: 'mouseMove', x: ptX, y: ptY } as any);
+        await new Promise(r => setTimeout(r, 16));
+      }
+    }
+    
+    wc.sendInputEvent({ type: 'mouseMove', x: cx, y: cy } as any);
+    this.lastMouseX = cx;
+    this.lastMouseY = cy;
+    
+    // Trigger paint layout for hover effects
+    await new Promise(r => setTimeout(r, 100));
+    
+    return `Hovered over element [${ref}]. Wait a moment for any dropdowns/tooltips to appear before taking snapshot.`;
   }
 
   /**
@@ -1655,6 +1709,15 @@ export class BrowserViewManager {
       }
       return `Error retrieving response body: ${e.message}`;
     }
+  }
+
+  // ── Download API ──
+  
+  listRecentDownloads(): string {
+    if (this.recentDownloads.length === 0) return 'No recent downloads found in this session.';
+    return this.recentDownloads.map((d, i) => 
+      `[${i}] ${d.filename} (State: ${d.state}, Size: ${d.size ? Math.round(d.size/1024) + ' KB' : 'Unknown'}) -> ${d.path}`
+    ).join('\n');
   }
 
   /**

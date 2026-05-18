@@ -71,6 +71,8 @@ import {
   browserGetNetworkResponse,
   browserSnapshotState,
   browserRestoreState,
+  browserHover,
+  browserListDownloads,
 } from './browser-use';
 
 const execAsync = promisify(exec);
@@ -103,6 +105,7 @@ function formatToolArgs(name: string, args: any): string {
       case 'browser_navigate': return args.url ? ` → \`${args.url.slice(0, 60)}\`` : '';
       case 'browser_snapshot': return ' 📸';
       case 'browser_click': return args.ref ? ` [${args.ref}]` : '';
+      case 'browser_hover': return args.ref ? ` 👆 [${args.ref}]` : '';
       case 'browser_type': return args.ref ? ` [${args.ref}] "${(args.text || '').slice(0, 20)}"` : '';
       case 'browser_scroll': return args.direction ? ` ${args.direction}` : '';
       case 'browser_back': return ' ←';
@@ -135,6 +138,7 @@ function formatToolArgs(name: string, args: any): string {
       case 'browser_get_network_response': return args.request_id ? ` 🌐 API res: ${args.request_id}` : '';
       case 'browser_snapshot_state': return ' 📸 Snapshot State';
       case 'browser_restore_state': return args.state_id ? ` ⏪ Restore: ${args.state_id}` : '';
+      case 'browser_list_downloads': return ' ⬇️ List Downloads';
       default: return '';
     }
   } catch { return ''; }
@@ -731,6 +735,12 @@ export class VercelAgent implements IAgent {
         execute: async ({ ref }) => browserClick(ref),
       }),
 
+      browser_hover: tool({
+        description: 'Hover over an element by its reference ID from browser_snapshot. Use this to reveal CSS dropdown menus or tooltips before taking another snapshot.',
+        inputSchema: z.object({ ref: z.string().describe('Element reference from snapshot, e.g. "e3"') }),
+        execute: async ({ ref }) => browserHover(ref),
+      }),
+
       browser_type: tool({
         description: 'Type text into an input/textarea element by its reference ID. Clears existing content first.',
         inputSchema: z.object({
@@ -935,6 +945,12 @@ export class VercelAgent implements IAgent {
           state_id: z.string().describe('The state_id returned by browser_snapshot_state'),
         }),
         execute: async ({ state_id }) => browserRestoreState(state_id),
+      }),
+
+      browser_list_downloads: tool({
+        description: 'List recent file downloads triggered by the browser. Returns file paths (like ~/Downloads/file.csv) and their status. You can use read_file on these paths to process the downloaded data.',
+        inputSchema: z.object({}),
+        execute: async () => browserListDownloads(),
       }),
 
       render_html: tool({

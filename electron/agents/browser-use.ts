@@ -553,6 +553,15 @@ export async function browserClick(ref: string, _retry = false): Promise<string>
 }
 
 /**
+ * Hover over an element by ref (triggers CSS :hover and JS mouseenter).
+ */
+export async function browserHover(ref: string): Promise<string> {
+  const result = await browserViewManager.hover(ref);
+  notifyBrowserStep('hover', { ref }, result);
+  return result;
+}
+
+/**
  * Type into element by ref.
  * PRIMARY: CDP focus + native click + insertText (cross-frame)
  * FALLBACK: JS focus/select + insertText
@@ -959,5 +968,14 @@ export async function browserSnapshotState(): Promise<string> {
 export async function browserRestoreState(stateId: string): Promise<string> {
   notifyBrowserStep('restore_state', { stateId }, `Rolling back to snapshot ${stateId}...`);
   const result = await browserViewManager.restoreState(stateId);
+  return result;
+}
+
+/**
+ * List recently completed downloads and their file paths.
+ */
+export async function browserListDownloads(): Promise<string> {
+  const result = browserViewManager.listRecentDownloads();
+  notifyBrowserStep('list_downloads', {}, result ? 'Listed recent downloads' : 'No downloads found');
   return result;
 }

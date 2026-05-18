@@ -27,6 +27,7 @@ import {
   browserNavigate,
   browserSnapshot,
   browserClick,
+  browserHover,
   browserType,
   browserScroll,
   browserBack,
@@ -59,6 +60,7 @@ import {
   browserGetNetworkResponse,
   browserSnapshotState,
   browserRestoreState,
+  browserListDownloads,
 } from './browser-use';
 import {
   formatWebSearchResult,
@@ -131,6 +133,7 @@ const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   { type: 'function', function: { name: 'browser_navigate', description: 'Navigate the visible built-in browser to a URL. Prefer browser_task_start(goal) before long flows.', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
   { type: 'function', function: { name: 'browser_snapshot', description: 'Capture page text layout with element refs [e1],[e2]… Call before click/type.', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'browser_click', description: 'Click element by ref from browser_snapshot.', parameters: { type: 'object', properties: { ref: { type: 'string' } }, required: ['ref'] } } },
+  { type: 'function', function: { name: 'browser_hover', description: 'Hover over an element by ref. Use this to reveal CSS dropdown menus or tooltips before taking another snapshot.', parameters: { type: 'object', properties: { ref: { type: 'string' } }, required: ['ref'] } } },
   { type: 'function', function: { name: 'browser_type', description: 'Type into input/textarea by ref from browser_snapshot.', parameters: { type: 'object', properties: { ref: { type: 'string' }, text: { type: 'string' } }, required: ['ref', 'text'] } } },
   { type: 'function', function: { name: 'browser_scroll', description: 'Scroll the page up or down.', parameters: { type: 'object', properties: { direction: { type: 'string', enum: ['up', 'down'] } }, required: ['direction'] } } },
   { type: 'function', function: { name: 'browser_back', description: 'Browser history back.', parameters: { type: 'object', properties: {} } } },
@@ -160,6 +163,7 @@ const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   { type: 'function', function: { name: 'browser_get_network_response', description: 'Get the JSON response body of a previously intercepted network request by its Request ID. Use browser_list_network_requests first to find the ID.', parameters: { type: 'object', properties: { request_id: { type: 'string', description: 'The Request ID obtained from browser_list_network_requests' } }, required: ['request_id'] } } },
   { type: 'function', function: { name: 'browser_snapshot_state', description: 'Take a memory snapshot of the current page state (URL, Cookies, LocalStorage, SessionStorage). Use this before attempting a complex or risky sequence of actions (like filling out a long form or clicking uncertain links). Returns a state_id.', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'browser_restore_state', description: 'Instantly rollback the browser to a previously snapshotted state (Cookies, LocalStorage, URL). Use this if you made a mistake, clicked the wrong button, or got stuck on an error page.', parameters: { type: 'object', properties: { state_id: { type: 'string', description: 'The state_id returned by browser_snapshot_state' } }, required: ['state_id'] } } },
+  { type: 'function', function: { name: 'browser_list_downloads', description: 'List recent file downloads triggered by the browser. Returns file paths (like ~/Downloads/file.csv) and their status. You can use read_file on these paths to process the downloaded data.', parameters: { type: 'object', properties: {} } } },
 ];
 
 // webSearch, fetchUrl, browsePage — all imported from shared modules
@@ -697,6 +701,10 @@ export class BuiltinAgent implements IAgent {
           this.send('chat-stream-token', `\n浏览器点击 ${args.ref}\n`);
           return await browserClick(args.ref);
         }
+        case 'browser_hover': {
+          this.send('chat-stream-token', `\n浏览器悬停 ${args.ref}\n`);
+          return await browserHover(args.ref);
+        }
         case 'browser_type': {
           this.send('chat-stream-token', `\n浏览器输入 ${args.ref}\n`);
           return await browserType(args.ref, args.text);
@@ -803,6 +811,9 @@ export class BuiltinAgent implements IAgent {
         }
         case 'browser_restore_state': {
           return await browserRestoreState(args.state_id || args.stateId);
+        }
+        case 'browser_list_downloads': {
+          return await browserListDownloads();
         }
         default: return `Unknown tool: ${name}`;
       }
