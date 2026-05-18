@@ -643,7 +643,9 @@ export class BrowserViewManager {
     // ── Frame-level Render Pipeline Awareness ──
     try {
       if (!this.view.webContents.isDestroyed()) {
-        this.view.webContents.beginFrameSubscription((_image, _dirtyRect) => {
+        // Pass `true` for onlyDirty — we only need the timestamp, not the full NativeImage.
+        // Without this, Chromium captures the entire viewport image every frame (~MB each).
+        this.view.webContents.beginFrameSubscription(true, (_image, _dirtyRect) => {
           lastFrameTime = Date.now();
         });
         frameSubscriptionActive = true;
@@ -840,14 +842,15 @@ export class BrowserViewManager {
     const walkFrames = async (frame: WebFrameMain) => {
       const currentIdx = idx++;
       try {
+        let timer: NodeJS.Timeout;
         const result = await Promise.race([
           isolatedWorld
             ? frame.executeJavaScriptInIsolatedWorld(999, [{ code: script }])
             : frame.executeJavaScript(script),
-          new Promise<any>((_, reject) =>
-            setTimeout(() => reject(new Error('timeout')), timeoutMs),
-          ),
-        ]);
+          new Promise<any>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('timeout')), timeoutMs);
+          }),
+        ]).finally(() => clearTimeout(timer!));
         const str = result === null || result === undefined ? '' : (typeof result === 'string' ? result : JSON.stringify(result));
         if (str) {
           results.push({ frameIndex: currentIdx, frameUrl: frame.url, result: str });
@@ -973,11 +976,17 @@ export class BrowserViewManager {
    */
   async hover(ref: string): Promise<string> {
     if (!this.ensureHealthyView()) return 'Error: view not initialized';
+    // Bounds check — same guard as nativeMouseClick
+    if (this.bounds.width < 10 || this.bounds.height < 10) {
+      return 'Error: view bounds too small — is the browser panel visible?';
+    }
     const center = await this.getElementCenterByCDP(ref);
     if (!center) return `Error: Cannot find element [${ref}] on screen.`;
     
     const wc = this.view!.webContents;
-    const { cx, cy } = center;
+    // BUG FIX: getElementCenterByCDP returns { x, y, label }, NOT { cx, cy }
+    const cx = Math.max(1, Math.min(Math.round(center.x), this.bounds.width - 1));
+    const cy = Math.max(1, Math.min(Math.round(center.y), this.bounds.height - 1));
     
     // Simulate real mouse movement towards the target
     const currentX = this.lastMouseX >= 0 ? this.lastMouseX : cx;
@@ -1227,11 +1236,19 @@ export class BrowserViewManager {
       // 2. Restore Cookies (Electron Native)
       await this.importCookies(snap.cookies);
       
-      // 3. Navigate back
+      // 3. Navigate back — wait for did-navigate event (not a fixed timeout)
+      const navDone = new Promise<void>((resolve) => {
+        const onNav = () => {
+          this.view?.webContents.removeListener('did-navigate', onNav);
+          this.view?.webContents.removeListener('did-navigate-in-page', onNav);
+          resolve();
+        };
+        this.view!.webContents.once('did-navigate', onNav);
+        this.view!.webContents.once('did-navigate-in-page', onNav);
+      });
       await this.view!.webContents.loadURL(snap.url);
-      
-      // Wait for document to be created so we can inject storage
-      await new Promise(r => setTimeout(r, 500));
+      // Wait for navigation with a 5s timeout fallback
+      await Promise.race([navDone, new Promise<void>(r => setTimeout(r, 5000))]);
 
       // 4. Restore Local/Session Storage
       const frame = this.view!.webContents.mainFrame;
@@ -1657,7 +1674,7 @@ export class BrowserViewManager {
 
   async showIntentOverlay(text: string): Promise<void> {
     if (!this.ensureHealthyView()) return;
-    const escaped = text.replace(/`/g, '\\`').replace(/\$/g, '\\$');
+    const escaped = text.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
     const HUD_JS = `
       try {
         let hud = document.getElementById('dsme-intent-hud');
