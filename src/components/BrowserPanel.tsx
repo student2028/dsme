@@ -41,6 +41,7 @@ export const BrowserPanel: React.FC<{
   const [lastAction, setLastAction] = useState('');
   const [summary, setSummary] = useState<BrowserSummary | null>(null);
   const [task, setTask] = useState<BrowserTask | null>(null);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
   const taskRef = useRef<BrowserTask | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -112,9 +113,9 @@ export const BrowserPanel: React.FC<{
 
   // ── Show/hide WebContentsView when tab visibility or overlay state changes ──
   // WebContentsView is a native layer above all DOM content, so we must explicitly
-  // hide it when any modal overlay (Settings, CommandPalette, etc.) is open.
+  // hide it when any modal overlay (Settings, CommandPalette, dropdowns etc.) is open.
   useEffect(() => {
-    if (visible && !overlayOpen) {
+    if (visible && !overlayOpen && !dropdownOpen) {
       // Show with current bounds
       if (containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
@@ -130,7 +131,7 @@ export const BrowserPanel: React.FC<{
     } else {
       window.electronAPI?.hideBrowserView?.();
     }
-  }, [visible, overlayOpen]);
+  }, [visible, overlayOpen, dropdownOpen]);
 
   // ── Auto-clear timeline when a new chat round begins, or conversation switches ──
   useEffect(() => {
@@ -237,7 +238,7 @@ export const BrowserPanel: React.FC<{
           ← 后退
         </button>
         {navigator.platform.toLowerCase().includes('mac') && (
-          <CookieSyncDropdown />
+          <CookieSyncDropdown onOpenChange={setDropdownOpen} />
         )}
         {lastAction && <span className="browser-slot-action">{lastAction}</span>}
       </div>
@@ -446,11 +447,15 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
 };
 
 /** Compact cookie sync button with Chrome Profile dropdown. */
-const CookieSyncDropdown: React.FC = () => {
+const CookieSyncDropdown: React.FC<{ onOpenChange?: (open: boolean) => void }> = ({ onOpenChange }) => {
   const [open, setOpen] = useState(false);
   const [profiles, setProfiles] = useState<{ dirName: string; name: string; email: string }[]>([]);
   const [syncing, setSyncing] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    onOpenChange?.(open);
+  }, [open, onOpenChange]);
 
   // Load profiles when dropdown opens
   useEffect(() => {
