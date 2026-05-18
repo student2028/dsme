@@ -395,7 +395,9 @@ const BrowserTaskStepRow: React.FC<{
 
   return (
     <div className={`browser-task-step ${step.status}`}>
-      <div className="browser-task-step-dot" />
+      <div className="browser-task-step-dot-wrapper">
+        <div className="browser-task-step-dot" />
+      </div>
       <div className="browser-task-step-body">
         <div className="browser-task-step-line">
           <span className="browser-task-step-kind">{step.kind}</span>
@@ -411,29 +413,11 @@ const BrowserTaskStepRow: React.FC<{
         {step.input && <div className="browser-task-step-input">{step.input}</div>}
         {step.outputPreview && <div className="browser-task-step-output">{step.outputPreview}</div>}
         {step.screenshotUrl && (
-          <div className="browser-task-step-screenshot">
-            <img
-              src={step.screenshotUrl}
-              alt={`Screenshot at step: ${step.label}`}
-              loading="lazy"
-              style={{
-                width: '100%',
-                maxHeight: '260px',
-                objectFit: 'contain',
-                borderRadius: '6px',
-                marginTop: '6px',
-                border: '1px solid rgba(255,255,255,0.08)',
-                cursor: 'pointer',
-              }}
-              onClick={() => {
-                // Open screenshot in a new window for full-size viewing
-                const w = window.open('', '_blank', 'width=1200,height=800');
-                if (w) {
-                  w.document.write(`<html><body style="margin:0;background:#111;display:flex;align-items:center;justify-content:center;height:100vh"><img src="${step.screenshotUrl}" style="max-width:100%;max-height:100vh"/></body></html>`);
-                }
-              }}
-              title="点击放大查看"
-            />
+          <div className="browser-task-step-screenshot" onClick={() => {
+            const w = window.open('', '_blank', 'width=1200,height=800');
+            if (w) w.document.write(`<html><body style="margin:0;background:#05080c;display:flex;align-items:center;justify-content:center;height:100vh"><img src="${step.screenshotUrl}" style="max-width:100%;max-height:100vh;box-shadow:0 0 40px rgba(0,255,204,0.2);"/></body></html>`);
+          }} title="点击放大查看">
+            <img src={step.screenshotUrl} alt={`Screenshot at step: ${step.label}`} loading="lazy" />
           </div>
         )}
         {expandable && expanded && (
