@@ -1677,27 +1677,97 @@ export class BrowserViewManager {
     const escaped = text.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
     const HUD_JS = `
       try {
-        let hud = document.getElementById('dsme-intent-hud');
-        if (!hud) {
-          hud = document.createElement('div');
-          hud.id = 'dsme-intent-hud';
-          Object.assign(hud.style, {
-            position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)',
-            zIndex: '2147483647', background: 'rgba(10, 15, 20, 0.85)', color: '#00ffcc', 
-            padding: '12px 24px', borderRadius: '12px', fontFamily: '"Fira Code", monospace', 
-            fontSize: '14px', pointerEvents: 'none', boxShadow: '0 8px 32px rgba(0,255,204,0.2)',
-            border: '1px solid rgba(0, 255, 204, 0.3)', maxWidth: '90%', wordWrap: 'break-word',
-            backdropFilter: 'blur(8px)', transition: 'all 0.2s ease', textAlign: 'center'
-          });
-          document.documentElement.appendChild(hud);
+        let root = document.getElementById('dsme-intent-root');
+        if (!root) {
+          root = document.createElement('div');
+          root.id = 'dsme-intent-root';
+          root.style.cssText = 'position:fixed;bottom:30px;left:50%;transform:translateX(-50%);z-index:2147483647;pointer-events:none;';
+          document.documentElement.appendChild(root);
+          
+          const shadow = root.attachShadow({ mode: 'open' });
+          const style = document.createElement('style');
+          style.textContent = \`
+            @keyframes pulse-glow {
+              0% { box-shadow: 0 0 15px rgba(0,255,204,0.1), inset 0 0 10px rgba(0,255,204,0.05); }
+              50% { box-shadow: 0 0 25px rgba(0,255,204,0.3), inset 0 0 20px rgba(0,255,204,0.1); }
+              100% { box-shadow: 0 0 15px rgba(0,255,204,0.1), inset 0 0 10px rgba(0,255,204,0.05); }
+            }
+            @keyframes slide-up {
+              from { transform: translateY(20px) scale(0.95); opacity: 0; }
+              to { transform: translateY(0) scale(1); opacity: 1; }
+            }
+            .hud-container {
+              background: linear-gradient(135deg, rgba(12, 16, 24, 0.85) 0%, rgba(5, 8, 12, 0.95) 100%);
+              border: 1px solid rgba(0, 255, 204, 0.4);
+              border-top: 1px solid rgba(0, 255, 204, 0.8);
+              border-radius: 16px;
+              padding: 16px 32px;
+              color: #00ffcc;
+              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+              font-size: 15px;
+              font-weight: 500;
+              letter-spacing: 0.5px;
+              backdrop-filter: blur(12px) saturate(150%);
+              -webkit-backdrop-filter: blur(12px) saturate(150%);
+              text-align: center;
+              max-width: 90vw;
+              min-width: 320px;
+              word-wrap: break-word;
+              animation: slide-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards, pulse-glow 3s infinite ease-in-out;
+              position: relative;
+              overflow: hidden;
+            }
+            .hud-container::before {
+              content: '';
+              position: absolute;
+              top: 0; left: 0; right: 0; height: 1px;
+              background: linear-gradient(90deg, transparent, rgba(0, 255, 204, 1), transparent);
+            }
+            .hud-title {
+              color: #a0aec0;
+              font-size: 11px;
+              text-transform: uppercase;
+              letter-spacing: 2px;
+              margin-bottom: 8px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              gap: 8px;
+            }
+            .hud-title::before {
+              content: '';
+              display: inline-block;
+              width: 8px;
+              height: 8px;
+              border-radius: 50%;
+              background: #00ffcc;
+              box-shadow: 0 0 8px #00ffcc;
+            }
+            .hud-content {
+              text-shadow: 0 0 10px rgba(0, 255, 204, 0.5);
+              line-height: 1.5;
+            }
+          \`;
+          shadow.appendChild(style);
+          
+          const container = document.createElement('div');
+          container.className = 'hud-container';
+          container.id = 'hud-content-box';
+          shadow.appendChild(container);
         }
-        hud.innerHTML = \`<span style="color:#fff">🤖 Agent Intent:</span> <br/>\${ \`${escaped}\` }\`;
-        hud.style.opacity = '0.5';
-        hud.style.transform = 'translateX(-50%) scale(0.98)';
-        setTimeout(() => {
-          hud.style.opacity = '1';
-          hud.style.transform = 'translateX(-50%) scale(1)';
-        }, 50);
+        
+        const shadow = root.shadowRoot;
+        const container = shadow.getElementById('hud-content-box');
+        
+        // Re-trigger animation
+        container.style.animation = 'none';
+        container.offsetHeight; /* trigger reflow */
+        container.style.animation = 'slide-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards, pulse-glow 3s infinite ease-in-out';
+        
+        container.innerHTML = \`
+          <div class="hud-title">DSME Cognitive Engine</div>
+          <div class="hud-content">\${ \`${escaped}\` }</div>
+        \`;
       } catch(e) {}
     `;
     try {
@@ -2049,9 +2119,9 @@ export class BrowserViewManager {
           showStyles: false,
           showRulers: false,
           showAccessibilityInfo: false,
-          contentColor:  { r: 255, g: 140, b:  0, a: 0.25 }, // orange fill
-          borderColor:   { r: 255, g: 140, b:  0, a: 0.9  }, // orange border
-          marginColor:   { r: 255, g: 140, b:  0, a: 0.05 },
+          contentColor:  { r: 0, g: 255, b: 204, a: 0.15 }, // cyan neon fill
+          borderColor:   { r: 0, g: 255, b: 204, a: 0.9  }, // cyan neon border
+          marginColor:   { r: 0, g: 255, b: 204, a: 0.05 },
         },
         backendNodeId,
       });
@@ -2142,43 +2212,86 @@ export class BrowserViewManager {
 
           const shadow = host.attachShadow({ mode: 'open' });
 
-          // Inject styles into shadow DOM
+          // Inject styles into shadow DOM — Cyberpunk Targeting Aesthetic
           const style = document.createElement('style');
           style.textContent = \`
             :host { all: initial; }
+            @keyframes target-lock {
+              0% { transform: scale(1.1); opacity: 0; box-shadow: inset 0 0 0px rgba(0, 255, 204, 0); }
+              100% { transform: scale(1); opacity: 1; box-shadow: inset 0 0 15px rgba(0, 255, 204, 0.15); }
+            }
             .dsme-box {
               position: fixed;
-              border: 2px solid rgba(59, 130, 246, 0.85);
-              background: rgba(59, 130, 246, 0.08);
-              border-radius: 3px;
+              border: 1px solid rgba(0, 255, 204, 0.3);
+              background: rgba(0, 255, 204, 0.03);
               pointer-events: none;
               box-sizing: border-box;
-              transition: opacity 0.2s;
+              opacity: 0; /* Start hidden for animation */
+              animation: target-lock 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            }
+            /* Sci-fi corner brackets */
+            .dsme-box::before, .dsme-box::after {
+              content: ''; position: absolute; width: 8px; height: 8px; pointer-events: none;
+            }
+            .dsme-box::before {
+              top: -1px; left: -1px;
+              border-top: 2px solid #00ffcc; border-left: 2px solid #00ffcc;
+            }
+            .dsme-box::after {
+              bottom: -1px; right: -1px;
+              border-bottom: 2px solid #00ffcc; border-right: 2px solid #00ffcc;
+            }
+            .dsme-box-inner {
+              position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none;
+            }
+            .dsme-box-inner::before, .dsme-box-inner::after {
+              content: ''; position: absolute; width: 8px; height: 8px; pointer-events: none;
+            }
+            .dsme-box-inner::before {
+              top: -1px; right: -1px;
+              border-top: 2px solid #00ffcc; border-right: 2px solid #00ffcc;
+            }
+            .dsme-box-inner::after {
+              bottom: -1px; left: -1px;
+              border-bottom: 2px solid #00ffcc; border-left: 2px solid #00ffcc;
             }
             .dsme-label {
               position: absolute;
               top: -1px;
               left: -1px;
-              background: rgba(59, 130, 246, 0.9);
-              color: #fff;
-              font: bold 9px/1 -apple-system, sans-serif;
-              padding: 1px 4px;
-              border-radius: 0 0 3px 0;
+              background: rgba(0, 255, 204, 0.9);
+              color: #05080c;
+              font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+              font-weight: 800;
+              font-size: 10px;
+              line-height: 1;
+              padding: 2px 5px;
+              letter-spacing: 0.5px;
+              box-shadow: 0 2px 8px rgba(0, 255, 204, 0.4);
               white-space: nowrap;
               pointer-events: none;
+              backdrop-filter: blur(4px);
+              z-index: 2;
             }
           \`;
           shadow.appendChild(style);
 
-          // Render boxes
+          // Render boxes with staggered animation
           const boxes = ${boxesJSON};
-          for (const b of boxes) {
+          for (let i = 0; i < boxes.length; i++) {
+            const b = boxes[i];
             const div = document.createElement('div');
             div.className = 'dsme-box';
             div.style.left = b.x + 'px';
             div.style.top = b.y + 'px';
-            div.style.width = Math.max(b.w, 4) + 'px';
-            div.style.height = Math.max(b.h, 4) + 'px';
+            div.style.width = Math.max(b.w, 10) + 'px';
+            div.style.height = Math.max(b.h, 10) + 'px';
+            // Stagger animation based on element index
+            div.style.animationDelay = (i * 0.005) + 's';
+
+            const inner = document.createElement('div');
+            inner.className = 'dsme-box-inner';
+            div.appendChild(inner);
 
             const lbl = document.createElement('span');
             lbl.className = 'dsme-label';
