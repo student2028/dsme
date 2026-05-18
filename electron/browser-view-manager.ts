@@ -40,6 +40,8 @@ export class BrowserViewManager {
   private attached = false;
   private currentUrl = '';
   private bounds = { x: 0, y: 0, width: 0, height: 0 };
+  private lastMouseX = -1;
+  private lastMouseY = -1;
   /** When set, executeJS/insertText/pressKey operate on this subframe instead of mainFrame. */
   private targetFrame: WebFrameMain | null = null;
 
@@ -61,6 +63,10 @@ export class BrowserViewManager {
    * Eliminates the extra DOM.describeNode round-trip in getElementCenterByCDP.
    */
   private refLabels = new Map<string, string>();
+  
+  // ── Network Sniffing (CDP MITM) ──
+  private recentNetworkRequests = new Map<string, { url: string; method: string; mimeType: string; status: number; timestamp: number }>();
+  private networkListenerAttached = false;
 
   // ── Static constants (defined once, not rebuilt per call) ──
   private static readonly INTERACTIVE_ROLES = new Set([
@@ -461,6 +467,8 @@ export class BrowserViewManager {
     console.log('[BrowserViewManager] Recreating view...');
     // Reset ALL state before reinit — old debugger/refs/labels/errors are invalid after view destroy
     this.cdpAttached = false;
+    this.networkListenerAttached = false;
+    this.recentNetworkRequests.clear();
     this.refMap.clear();
     this.refLabels.clear();
     this.currentTitle = '';
@@ -603,18 +611,38 @@ export class BrowserViewManager {
   async waitForIdle(maxWaitMs = 15_000): Promise<string> {
     if (!this.ensureHealthyView()) return 'Error: view not initialized';
 
-    const POLL = 500;
-    const STABLE_NEEDED = 2;
+    const POLL = 50; // Ultra-fast poll (20fps) instead of 500ms
+    const VISUAL_QUIET_MS = 300;
     const NETWORK_QUIET_MS = 800;
     const SPINNER_PERMANENT_MS = 3000;
 
     const start = Date.now();
-    let stableCount = 0;
-    let lastText = '';
     let spinnerStableMs = 0;
+    let lastFrameTime = Date.now();
+    let frameSubscriptionActive = false;
+    let lastSpinnerCheck = 0;
+    let lastSpinnerResult = '';
 
-    // Minimal JS snippets — each is a single expression, no complex scripts
-    const TEXT_EXTRACT_JS = `(document.body?.innerText||'').slice(0,500)`;
+    // ── Frame-level Render Pipeline Awareness ──
+    try {
+      if (!this.view.webContents.isDestroyed()) {
+        this.view.webContents.beginFrameSubscription((_image, _dirtyRect) => {
+          lastFrameTime = Date.now();
+        });
+        frameSubscriptionActive = true;
+      }
+    } catch (e) {
+       console.warn('[BrowserViewManager] beginFrameSubscription failed:', e);
+    }
+
+    const cleanup = () => {
+      try {
+        if (frameSubscriptionActive && this.view?.webContents && !this.view.webContents.isDestroyed()) {
+          this.view.webContents.endFrameSubscription();
+        }
+      } catch {}
+    };
+
     const SPINNER_JS = `(()=>{
       const v=e=>{if(!e)return false;const r=e.getBoundingClientRect();return r.width>0&&r.height>0;};
       for(const s of['.thinking','.generating','[data-state="streaming"]','.response-loading']){const e=document.querySelector(s);if(e&&v(e))return 'D:'+s;}
@@ -625,77 +653,68 @@ export class BrowserViewManager {
     while (Date.now() - start < maxWaitMs) {
       await new Promise(r => setTimeout(r, POLL));
 
-      // Layer 0: Page loading state — Electron Native, synchronous, zero cost.
-      // Chromium's internal loading state machine (covers document load, subresources).
+      // Layer 0: Page loading state — Electron Native
       if (this.view?.webContents && !this.view.webContents.isDestroyed() && this.view.webContents.isLoading()) {
-        stableCount = 0;
         spinnerStableMs = 0;
         continue;
       }
 
-      // Layer 1: Network quiescence — Electron Native, zero JS injection.
-      // If any HTTP request was sent/received recently, don't even bother checking DOM.
+      // Layer 1: Network quiescence
       const networkAge = Date.now() - this.lastNetworkActivity;
       if (this.lastNetworkActivity > 0 && networkAge < NETWORK_QUIET_MS) {
-        stableCount = 0;
         spinnerStableMs = 0;
         continue;
       }
 
-      // Layer 2: DOM text stability — minimal JS (extract first 500 chars to avoid hash collisions)
-      let textNow = '';
-      try {
-        const frame = this.getExecutionFrame();
-        if (frame) textNow = await frame.executeJavaScript(TEXT_EXTRACT_JS);
-      } catch { textNow = 'error'; }
-
-      const textChanged = textNow !== lastText || lastText === '';
-      lastText = textNow;
-
-      if (textChanged) {
-        stableCount = 0;
-        spinnerStableMs = 0;
-      } else {
-        stableCount++;
+      // Layer 2: Visual Frame Sync (replaces slow DOM innerText polling)
+      const visualAge = Date.now() - lastFrameTime;
+      const isVisuallyIdle = frameSubscriptionActive && visualAge >= VISUAL_QUIET_MS;
+      
+      if (isVisuallyIdle) {
+         cleanup();
+         const elapsed = Date.now() - start;
+         return `idle: frame sync visually stable after ${elapsed}ms`;
       }
 
-      if (stableCount >= STABLE_NEEDED) {
-        // Layer 3: Loading indicators — compact inline JS
-        let spinnerResult = '';
+      // Layer 3: Loading indicators (Throttled fallback for pages with constant animations/videos)
+      if (Date.now() - lastSpinnerCheck > 250) {
+        lastSpinnerCheck = Date.now();
         try {
           const frame = this.getExecutionFrame();
-          if (frame) spinnerResult = await frame.executeJavaScript(SPINNER_JS);
-        } catch {}
+          if (frame) lastSpinnerResult = await frame.executeJavaScriptInIsolatedWorld(999, [{ code: SPINNER_JS }]);
+        } catch { lastSpinnerResult = ''; }
+      }
 
-        if (spinnerResult.startsWith('D:')) {
-          // Definite indicator (AI generating) — MUST keep waiting
-          stableCount = STABLE_NEEDED - 1;
-          continue;
-        }
+      if (lastSpinnerResult.startsWith('D:')) {
+        continue; // Definite indicator (AI generating) — MUST keep waiting
+      }
 
-        if (!spinnerResult) {
-          // No indicators — truly idle
-          const elapsed = Date.now() - start;
-          return `idle: network quiet ${networkAge}ms, DOM stable ${STABLE_NEEDED * POLL}ms after ${elapsed}ms`;
-        }
-
-        // Ambiguous indicator — apply permanence heuristic
-        const indicator = spinnerResult.slice(2);
+      if (lastSpinnerResult.startsWith('A:')) {
         spinnerStableMs += POLL;
         if (spinnerStableMs >= SPINNER_PERMANENT_MS) {
+          cleanup();
           const elapsed = Date.now() - start;
-          return `idle: network quiet, DOM stable after ${elapsed}ms (${indicator} appears permanent)`;
+          const indicator = lastSpinnerResult.slice(2);
+          return `idle: network quiet after ${elapsed}ms (${indicator} appears permanent)`;
         }
-        stableCount = STABLE_NEEDED - 1; // re-evaluate next tick
+        continue;
+      }
+
+      // Layer 4: Network deeply quiet fallback
+      // If the page is continuously painting (e.g. a carousel or blinking cursor) but network is silent
+      if (networkAge >= NETWORK_QUIET_MS * 2) {
+         cleanup();
+         const elapsed = Date.now() - start;
+         return `idle: network deeply quiet (animations present) after ${elapsed}ms`;
       }
     }
 
-    // Timeout — report why
+    cleanup();
     const networkAge = Date.now() - this.lastNetworkActivity;
     if (this.lastNetworkActivity > 0 && networkAge < NETWORK_QUIET_MS) {
       return `timeout: network still active after ${maxWaitMs}ms`;
     }
-    return `timeout: DOM not stable after ${maxWaitMs}ms`;
+    return `timeout: visual frames still changing after ${maxWaitMs}ms`;
   }
 
   // ── Script execution ──
@@ -716,7 +735,7 @@ export class BrowserViewManager {
     return this.view.webContents.mainFrame;
   }
 
-  async executeJS(script: string, timeoutMs = 600_000): Promise<string> {
+  async executeJS(script: string, timeoutMs = 600_000, isolatedWorld = true): Promise<string> {
     if (!this.ensureHealthyView()) return 'Error: view not initialized';
     const frame = this.getExecutionFrame();
     if (!frame) return 'Error: no execution frame available';
@@ -741,16 +760,18 @@ export class BrowserViewManager {
       });
 
       const result = await Promise.race([
-        frame.executeJavaScript(finalScript),
+        isolatedWorld
+          ? frame.executeJavaScriptInIsolatedWorld(999, [{ code: finalScript }])
+          : frame.executeJavaScript(finalScript),
         timeoutPromise
       ]).finally(() => clearTimeout(timer));
       
       const val = result;
       if (val === null || val === undefined) {
         try {
-          const fallback = await frame.executeJavaScript(
-            `document.body?.innerText?.slice(0, 8000) || ''`
-          );
+          const fallback = await (isolatedWorld
+            ? frame.executeJavaScriptInIsolatedWorld(999, [{ code: `document.body?.innerText?.slice(0, 8000) || ''` }])
+            : frame.executeJavaScript(`document.body?.innerText?.slice(0, 8000) || ''`));
           if (fallback && typeof fallback === 'string' && fallback.length > 10) {
             return fallback;
           }
@@ -794,7 +815,7 @@ export class BrowserViewManager {
    * Execute a script in ALL frames and collect results.
    * Returns results from every frame that successfully executes the script.
    */
-  async executeJSAllFrames(script: string, timeoutMs = 15_000): Promise<{ frameIndex: number; frameUrl: string; result: string }[]> {
+  async executeJSAllFrames(script: string, timeoutMs = 15_000, isolatedWorld = true): Promise<{ frameIndex: number; frameUrl: string; result: string }[]> {
     if (!this.ensureHealthyView()) return [];
     const results: { frameIndex: number; frameUrl: string; result: string }[] = [];
     let idx = 0;
@@ -803,7 +824,9 @@ export class BrowserViewManager {
       const currentIdx = idx++;
       try {
         const result = await Promise.race([
-          frame.executeJavaScript(script),
+          isolatedWorld
+            ? frame.executeJavaScriptInIsolatedWorld(999, [{ code: script }])
+            : frame.executeJavaScript(script),
           new Promise<any>((_, reject) =>
             setTimeout(() => reject(new Error('timeout')), timeoutMs),
           ),
@@ -882,11 +905,45 @@ export class BrowserViewManager {
       const cx = Math.max(1, Math.min(Math.round(x), this.bounds.width - 1));
       const cy = Math.max(1, Math.min(Math.round(y), this.bounds.height - 1));
       const wc = this.view!.webContents;
+      
+      // Initialize start position if this is the first move
+      if (this.lastMouseX === -1) {
+        this.lastMouseX = this.bounds.width / 2;
+        this.lastMouseY = this.bounds.height / 2;
+      }
+      
+      const startX = this.lastMouseX;
+      const startY = this.lastMouseY;
+      
+      // Generate Bezier path to simulate human movement
+      const steps = 15 + Math.floor(Math.random() * 15);
+      const ctrl1X = startX + (cx - startX) * 0.3 + (Math.random() - 0.5) * 100;
+      const ctrl1Y = startY + (cy - startY) * 0.3 + (Math.random() - 0.5) * 100;
+      const ctrl2X = startX + (cx - startX) * 0.7 + (Math.random() - 0.5) * 100;
+      const ctrl2Y = startY + (cy - startY) * 0.7 + (Math.random() - 0.5) * 100;
+      
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const u = 1 - t;
+        const ptX = Math.round(u*u*u*startX + 3*u*u*t*ctrl1X + 3*u*t*t*ctrl2X + t*t*t*cx);
+        const ptY = Math.round(u*u*u*startY + 3*u*u*t*ctrl1Y + 3*u*t*t*ctrl2Y + t*t*t*cy);
+        wc.sendInputEvent({ type: 'mouseMove', x: ptX, y: ptY } as any);
+        
+        // Ease-out delay: slow down as it approaches target
+        const delay = 10 + (t * t * 20) + (Math.random() * 10);
+        await new Promise(r => setTimeout(r, delay));
+      }
+      
+      // Final adjustment & pause before clicking
       wc.sendInputEvent({ type: 'mouseMove', x: cx, y: cy } as any);
+      this.lastMouseX = cx;
+      this.lastMouseY = cy;
+      await new Promise(r => setTimeout(r, 60 + Math.random() * 80));
+
       wc.sendInputEvent({ type: 'mouseDown', x: cx, y: cy, button: 'left', clickCount: 1 } as any);
-      await new Promise(r => setTimeout(r, 60));
+      await new Promise(r => setTimeout(r, 40 + Math.random() * 50)); // Human click hold time
       wc.sendInputEvent({ type: 'mouseUp', x: cx, y: cy, button: 'left', clickCount: 1 } as any);
-      return `Native click at (${cx}, ${cy})`;
+      return `Native click at (${cx}, ${cy}) with humanized Bezier trajectory`;
     } catch (e: any) {
       return `Native click error: ${e.message}`;
     }
@@ -921,8 +978,17 @@ export class BrowserViewManager {
   async insertText(text: string): Promise<string> {
     if (!this.ensureHealthyView()) return 'Error: view not initialized';
     try {
-      await this.view!.webContents.insertText(text);
-      return `Inserted ${text.length} characters`;
+      const wc = this.view!.webContents;
+      // Convert to array of characters to handle surrogate pairs correctly (emojis)
+      const chars = Array.from(text);
+      for (const char of chars) {
+        await wc.insertText(char);
+        // Human typing delay: 30-100ms per char, occasional longer pauses
+        let delay = 30 + Math.random() * 70;
+        if (Math.random() < 0.1) delay += 100 + Math.random() * 150; // brief hesitation
+        await new Promise(r => setTimeout(r, delay));
+      }
+      return `Inserted ${text.length} characters with humanized typing delays`;
     } catch (e: any) {
       return `insertText error: ${e.message}`;
     }
@@ -1045,6 +1111,94 @@ export class BrowserViewManager {
    */
   isPageLoading(): boolean {
     return this.view?.webContents?.isLoading() ?? false;
+  }
+
+  // ── Session Time-Machine & Memory ──
+  
+  private sessionSnapshots = new Map<string, {
+    url: string;
+    cookies: Electron.Cookie[];
+    localStorage: string;
+    sessionStorage: string;
+  }>();
+
+  /**
+   * Create a memory snapshot of the current browser state (URL, Cookies, LocalStorage, SessionStorage).
+   * This enables Tree-of-Thoughts (ToT) exploration: if an action fails, AI can instantly rollback.
+   */
+  async snapshotState(): Promise<string> {
+    if (!this.ensureHealthyView()) return 'Error: view not initialized';
+    const id = `snap_${Date.now()}`;
+    try {
+      const url = this.view!.webContents.getURL();
+      const cookies = await this.exportCookies();
+      
+      const frame = this.getExecutionFrame() || this.view!.webContents.mainFrame;
+      // Note: localStorage is tied to origin, so it's shared between main world and isolated world
+      const storageResult = await frame.executeJavaScriptInIsolatedWorld(999, [{ code: `
+        JSON.stringify({
+          local: Object.entries(localStorage),
+          session: Object.entries(sessionStorage)
+        })
+      ` }]);
+      const parsed = JSON.parse(storageResult);
+
+      this.sessionSnapshots.set(id, {
+        url,
+        cookies,
+        localStorage: JSON.stringify(parsed.local),
+        sessionStorage: JSON.stringify(parsed.session)
+      });
+      return id;
+    } catch (e: any) {
+      return `Error creating snapshot: ${e.message}`;
+    }
+  }
+
+  /**
+   * Restore a previously created snapshot.
+   * Clears current state, restores cookies & storage, and navigates back to the exact URL.
+   */
+  async restoreState(id: string): Promise<string> {
+    if (!this.sessionSnapshots.has(id)) return `Error: Snapshot ${id} not found`;
+    if (!this.ensureHealthyView()) return 'Error: view not initialized';
+    
+    try {
+      const snap = this.sessionSnapshots.get(id)!;
+      
+      // 1. Wipe current state clean
+      const browserSession = session.fromPartition('persist:browser-panel');
+      await browserSession.clearStorageData(); 
+      
+      // 2. Restore Cookies (Electron Native)
+      await this.importCookies(snap.cookies);
+      
+      // 3. Navigate back
+      await this.view!.webContents.loadURL(snap.url);
+      
+      // Wait for document to be created so we can inject storage
+      await new Promise(r => setTimeout(r, 500));
+
+      // 4. Restore Local/Session Storage
+      const frame = this.view!.webContents.mainFrame;
+      await frame.executeJavaScriptInIsolatedWorld(999, [{ code: `
+        try {
+          const local = ${snap.localStorage};
+          const session = ${snap.sessionStorage};
+          localStorage.clear();
+          sessionStorage.clear();
+          for (const [k, v] of local) localStorage.setItem(k, v);
+          for (const [k, v] of session) sessionStorage.setItem(k, v);
+        } catch(e) {}
+      ` }]);
+      
+      // 5. Reload to apply restored storage (React/Vue hydration)
+      this.view!.webContents.reload();
+      
+      return `Successfully rolled back to state ${id} and navigated to ${snap.url}`;
+    } catch (e: any) {
+      return `Error restoring snapshot: ${e.message}`;
+    }
   }
 
   // ── Cookie / Session Management (Electron Native) ──
@@ -1364,6 +1518,34 @@ export class BrowserViewManager {
     try {
       this.view.webContents.debugger.attach('1.3');
       this.cdpAttached = true;
+      
+      this.cdpCommand('Network.enable').catch(() => {});
+
+      if (!this.networkListenerAttached) {
+        this.networkListenerAttached = true;
+        this.view.webContents.debugger.on('message', (_event, method, params) => {
+          if (method === 'Network.responseReceived') {
+            const url = params.response?.url || '';
+            const mimeType = params.response?.mimeType || '';
+            // Only track JSON or API-like requests
+            if (url.startsWith('http') && (mimeType.includes('application/json') || mimeType.includes('text/plain') || url.includes('/api/') || url.includes('graphql'))) {
+              this.recentNetworkRequests.set(params.requestId, {
+                url,
+                method: params.response?.requestHeaders?.[':method'] || params.response?.requestHeaders?.['Method'] || 'GET',
+                mimeType,
+                status: params.response?.status || 0,
+                timestamp: Date.now()
+              });
+              // Keep map size reasonable (last 50 requests)
+              if (this.recentNetworkRequests.size > 50) {
+                const oldest = Array.from(this.recentNetworkRequests.keys())[0];
+                this.recentNetworkRequests.delete(oldest);
+              }
+            }
+          }
+        });
+      }
+
       // Bug fix #2: Use removeAllListeners+once to prevent accumulating detach listeners
       // across multiple attach/detach cycles (e.g. page navigations).
       this.view.webContents.debugger.removeAllListeners('detach');
@@ -1413,6 +1595,66 @@ export class BrowserViewManager {
       try { this.view.webContents.debugger.detach(); } catch {}
     }
     this.cdpAttached = false;
+    // Do NOT set this.networkListenerAttached = false here!
+    // The 'message' listener remains on the debugger object for the lifetime of the view.
+  }
+
+  // ── Network MITM Methods ──
+
+  async showIntentOverlay(text: string): Promise<void> {
+    if (!this.ensureHealthyView()) return;
+    const escaped = text.replace(/`/g, '\\`').replace(/\$/g, '\\$');
+    const HUD_JS = `
+      try {
+        let hud = document.getElementById('dsme-intent-hud');
+        if (!hud) {
+          hud = document.createElement('div');
+          hud.id = 'dsme-intent-hud';
+          Object.assign(hud.style, {
+            position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)',
+            zIndex: '2147483647', background: 'rgba(10, 15, 20, 0.85)', color: '#00ffcc', 
+            padding: '12px 24px', borderRadius: '12px', fontFamily: '"Fira Code", monospace', 
+            fontSize: '14px', pointerEvents: 'none', boxShadow: '0 8px 32px rgba(0,255,204,0.2)',
+            border: '1px solid rgba(0, 255, 204, 0.3)', maxWidth: '90%', wordWrap: 'break-word',
+            backdropFilter: 'blur(8px)', transition: 'all 0.2s ease', textAlign: 'center'
+          });
+          document.documentElement.appendChild(hud);
+        }
+        hud.innerHTML = \`<span style="color:#fff">🤖 Agent Intent:</span> <br/>\${ \`${escaped}\` }\`;
+        hud.style.opacity = '0.5';
+        hud.style.transform = 'translateX(-50%) scale(0.98)';
+        setTimeout(() => {
+          hud.style.opacity = '1';
+          hud.style.transform = 'translateX(-50%) scale(1)';
+        }, 50);
+      } catch(e) {}
+    `;
+    try {
+      const frame = this.getExecutionFrame() || this.view!.webContents.mainFrame;
+      await frame.executeJavaScriptInIsolatedWorld(999, [{ code: HUD_JS }]);
+    } catch {}
+  }
+
+  listRecentNetworkRequests() {
+    const list = Array.from(this.recentNetworkRequests.entries()).map(([id, req]) => {
+      return `[ID: ${id}] ${req.method} ${req.url.slice(0, 150)} (${req.status}, ${req.mimeType})`;
+    });
+    return list.length ? list.join('\n') : 'No recent API/JSON requests found.';
+  }
+
+  async getNetworkResponseBody(requestId: string): Promise<string> {
+    if (!this.recentNetworkRequests.has(requestId)) return `Error: request ID ${requestId} not found or expired.`;
+    if (!await this.ensureCDP()) return 'Error: CDP not attached';
+    try {
+      const { body, base64Encoded } = await this.cdpCommand('Network.getResponseBody', { requestId });
+      const content = base64Encoded ? Buffer.from(body, 'base64').toString('utf-8') : body;
+      return content.length > 50000 ? content.slice(0, 50000) + '\n...(truncated)' : content;
+    } catch (e: any) {
+      if (e.message?.includes('No resource with given identifier')) {
+         return `Error: Response body for ${requestId} has been garbage collected by Chromium. Try capturing it earlier.`;
+      }
+      return `Error retrieving response body: ${e.message}`;
+    }
   }
 
   /**

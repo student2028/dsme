@@ -24818,6 +24818,8 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				width: 0,
 				height: 0
 			};
+			this.lastMouseX = -1;
+			this.lastMouseY = -1;
 			this.targetFrame = null;
 			this.lastNetworkActivity = 0;
 			this.consoleErrors = [];
@@ -24826,6 +24828,8 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			this.cdpAttached = false;
 			this.refMap = /* @__PURE__ */ new Map();
 			this.refLabels = /* @__PURE__ */ new Map();
+			this.recentNetworkRequests = /* @__PURE__ */ new Map();
+			this.networkListenerAttached = false;
 		}
 		static {
 			this.INTERACTIVE_ROLES = new Set([
@@ -25135,6 +25139,8 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			} catch {}
 			console.log("[BrowserViewManager] Recreating view...");
 			this.cdpAttached = false;
+			this.networkListenerAttached = false;
+			this.recentNetworkRequests.clear();
 			this.refMap.clear();
 			this.refLabels.clear();
 			this.currentTitle = "";
@@ -25340,7 +25346,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			}
 			return this.view.webContents.mainFrame;
 		}
-		async executeJS(script, timeoutMs = 6e5) {
+		async executeJS(script, timeoutMs = 6e5, isolatedWorld = true) {
 			if (!this.ensureHealthyView()) return "Error: view not initialized";
 			const frame = this.getExecutionFrame();
 			if (!frame) return "Error: no execution frame available";
@@ -25351,10 +25357,10 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				const timeoutPromise = new Promise((_, reject) => {
 					timer = setTimeout(() => reject(/* @__PURE__ */ new Error(`Timeout after ${Math.round(timeoutMs / 1e3)}s`)), timeoutMs);
 				});
-				const val = await Promise.race([frame.executeJavaScript(finalScript), timeoutPromise]).finally(() => clearTimeout(timer));
+				const val = await Promise.race([isolatedWorld ? frame.executeJavaScriptInIsolatedWorld(999, [{ code: finalScript }]) : frame.executeJavaScript(finalScript), timeoutPromise]).finally(() => clearTimeout(timer));
 				if (val === null || val === void 0) {
 					try {
-						const fallback = await frame.executeJavaScript(`document.body?.innerText?.slice(0, 8000) || ''`);
+						const fallback = await (isolatedWorld ? frame.executeJavaScriptInIsolatedWorld(999, [{ code: `document.body?.innerText?.slice(0, 8000) || ''` }]) : frame.executeJavaScript(`document.body?.innerText?.slice(0, 8000) || ''`));
 						if (fallback && typeof fallback === "string" && fallback.length > 10) return fallback;
 					} catch {}
 					return "Script completed but returned no value. Use `return` to return data.";
@@ -25390,14 +25396,14 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		* Execute a script in ALL frames and collect results.
 		* Returns results from every frame that successfully executes the script.
 		*/
-		async executeJSAllFrames(script, timeoutMs = 15e3) {
+		async executeJSAllFrames(script, timeoutMs = 15e3, isolatedWorld = true) {
 			if (!this.ensureHealthyView()) return [];
 			const results = [];
 			let idx = 0;
 			const walkFrames = async (frame) => {
 				const currentIdx = idx++;
 				try {
-					const result = await Promise.race([frame.executeJavaScript(script), new Promise((_, reject) => setTimeout(() => reject(/* @__PURE__ */ new Error("timeout")), timeoutMs))]);
+					const result = await Promise.race([isolatedWorld ? frame.executeJavaScriptInIsolatedWorld(999, [{ code: script }]) : frame.executeJavaScript(script), new Promise((_, reject) => setTimeout(() => reject(/* @__PURE__ */ new Error("timeout")), timeoutMs))]);
 					const str = result === null || result === void 0 ? "" : typeof result === "string" ? result : JSON.stringify(result);
 					if (str) results.push({
 						frameIndex: currentIdx,
@@ -25458,11 +25464,38 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				const cx = Math.max(1, Math.min(Math.round(x), this.bounds.width - 1));
 				const cy = Math.max(1, Math.min(Math.round(y), this.bounds.height - 1));
 				const wc = this.view.webContents;
+				if (this.lastMouseX === -1) {
+					this.lastMouseX = this.bounds.width / 2;
+					this.lastMouseY = this.bounds.height / 2;
+				}
+				const startX = this.lastMouseX;
+				const startY = this.lastMouseY;
+				const steps = 15 + Math.floor(Math.random() * 15);
+				const ctrl1X = startX + (cx - startX) * .3 + (Math.random() - .5) * 100;
+				const ctrl1Y = startY + (cy - startY) * .3 + (Math.random() - .5) * 100;
+				const ctrl2X = startX + (cx - startX) * .7 + (Math.random() - .5) * 100;
+				const ctrl2Y = startY + (cy - startY) * .7 + (Math.random() - .5) * 100;
+				for (let i = 0; i <= steps; i++) {
+					const t = i / steps;
+					const u = 1 - t;
+					const ptX = Math.round(u * u * u * startX + 3 * u * u * t * ctrl1X + 3 * u * t * t * ctrl2X + t * t * t * cx);
+					const ptY = Math.round(u * u * u * startY + 3 * u * u * t * ctrl1Y + 3 * u * t * t * ctrl2Y + t * t * t * cy);
+					wc.sendInputEvent({
+						type: "mouseMove",
+						x: ptX,
+						y: ptY
+					});
+					const delay = 10 + t * t * 20 + Math.random() * 10;
+					await new Promise((r) => setTimeout(r, delay));
+				}
 				wc.sendInputEvent({
 					type: "mouseMove",
 					x: cx,
 					y: cy
 				});
+				this.lastMouseX = cx;
+				this.lastMouseY = cy;
+				await new Promise((r) => setTimeout(r, 60 + Math.random() * 80));
 				wc.sendInputEvent({
 					type: "mouseDown",
 					x: cx,
@@ -25470,7 +25503,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 					button: "left",
 					clickCount: 1
 				});
-				await new Promise((r) => setTimeout(r, 60));
+				await new Promise((r) => setTimeout(r, 40 + Math.random() * 50));
 				wc.sendInputEvent({
 					type: "mouseUp",
 					x: cx,
@@ -25478,7 +25511,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 					button: "left",
 					clickCount: 1
 				});
-				return `Native click at (${cx}, ${cy})`;
+				return `Native click at (${cx}, ${cy}) with humanized Bezier trajectory`;
 			} catch (e) {
 				return `Native click error: ${e.message}`;
 			}
@@ -25509,8 +25542,15 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		async insertText(text) {
 			if (!this.ensureHealthyView()) return "Error: view not initialized";
 			try {
-				await this.view.webContents.insertText(text);
-				return `Inserted ${text.length} characters`;
+				const wc = this.view.webContents;
+				const chars = Array.from(text);
+				for (const char of chars) {
+					await wc.insertText(char);
+					let delay = 30 + Math.random() * 70;
+					if (Math.random() < .1) delay += 100 + Math.random() * 150;
+					await new Promise((r) => setTimeout(r, delay));
+				}
+				return `Inserted ${text.length} characters with humanized typing delays`;
 			} catch (e) {
 				return `insertText error: ${e.message}`;
 			}
@@ -25881,6 +25921,29 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			try {
 				this.view.webContents.debugger.attach("1.3");
 				this.cdpAttached = true;
+				if (!this.networkListenerAttached) {
+					this.networkListenerAttached = true;
+					this.cdpCommand("Network.enable").catch(() => {});
+					this.view.webContents.debugger.on("message", (_event, method, params) => {
+						if (method === "Network.responseReceived") {
+							const url = params.response?.url || "";
+							const mimeType = params.response?.mimeType || "";
+							if (url.startsWith("http") && (mimeType.includes("application/json") || mimeType.includes("text/plain") || url.includes("/api/") || url.includes("graphql"))) {
+								this.recentNetworkRequests.set(params.requestId, {
+									url,
+									method: params.response?.requestHeaders?.[":method"] || params.response?.requestHeaders?.["Method"] || "GET",
+									mimeType,
+									status: params.response?.status || 0,
+									timestamp: Date.now()
+								});
+								if (this.recentNetworkRequests.size > 50) {
+									const oldest = Array.from(this.recentNetworkRequests.keys())[0];
+									this.recentNetworkRequests.delete(oldest);
+								}
+							}
+						}
+					});
+				}
 				this.view.webContents.debugger.removeAllListeners("detach");
 				this.view.webContents.debugger.once("detach", () => {
 					this.cdpAttached = false;
@@ -25921,6 +25984,25 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				this.view.webContents.debugger.detach();
 			} catch {}
 			this.cdpAttached = false;
+			this.networkListenerAttached = false;
+		}
+		listRecentNetworkRequests() {
+			const list = Array.from(this.recentNetworkRequests.entries()).map(([id, req]) => {
+				return `[ID: ${id}] ${req.method} ${req.url.slice(0, 150)} (${req.status}, ${req.mimeType})`;
+			});
+			return list.length ? list.join("\n") : "No recent API/JSON requests found.";
+		}
+		async getNetworkResponseBody(requestId) {
+			if (!this.recentNetworkRequests.has(requestId)) return `Error: request ID ${requestId} not found or expired.`;
+			if (!await this.ensureCDP()) return "Error: CDP not attached";
+			try {
+				const { body, base64Encoded } = await this.cdpCommand("Network.getResponseBody", { requestId });
+				const content = base64Encoded ? Buffer.from(body, "base64").toString("utf-8") : body;
+				return content.length > 5e4 ? content.slice(0, 5e4) + "\n...(truncated)" : content;
+			} catch (e) {
+				if (e.message?.includes("No resource with given identifier")) return `Error: Response body for ${requestId} has been garbage collected by Chromium. Try capturing it earlier.`;
+				return `Error retrieving response body: ${e.message}`;
+			}
 		}
 		/**
 		* Get a text snapshot of the page using CDP's Accessibility Tree.
@@ -26854,7 +26936,7 @@ async function browserBack() {
 }
 /** Run arbitrary JS in page context. Auto-saves base64/large binary to disk. */
 async function browserEval(script, cwd) {
-	const result = await browserViewManager.executeJS(script);
+	const result = await browserViewManager.executeJS(script, 6e5, false);
 	notifyBrowserStep("eval", { script: script.slice(0, 200) }, result.slice(0, 500));
 	if (result.length > 5e3 && /^data:[a-z]+\/[a-z+]+;base64,/i.test(result)) {
 		const workDir = cwd || process.cwd();

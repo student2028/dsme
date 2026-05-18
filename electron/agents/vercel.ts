@@ -67,6 +67,10 @@ import {
   // Advanced CDP tools
   browserUploadFile,
   browserCaptureNetwork,
+  browserListNetworkRequests,
+  browserGetNetworkResponse,
+  browserSnapshotState,
+  browserRestoreState,
 } from './browser-use';
 
 const execAsync = promisify(exec);
@@ -127,6 +131,10 @@ function formatToolArgs(name: string, args: any): string {
       case 'browser_highlight_ref': return args.ref ? ` 🟠 [${args.ref}]` : '';
       case 'browser_upload_file': return args.ref ? ` 📁 [${args.ref}]` : '';
       case 'browser_capture_network': return args.url_pattern ? ` 🌐 "${args.url_pattern}"` : '';
+      case 'browser_list_network_requests': return ' 🌐 list API calls';
+      case 'browser_get_network_response': return args.request_id ? ` 🌐 API res: ${args.request_id}` : '';
+      case 'browser_snapshot_state': return ' 📸 Snapshot State';
+      case 'browser_restore_state': return args.state_id ? ` ⏪ Restore: ${args.state_id}` : '';
       default: return '';
     }
   } catch { return ''; }
@@ -899,6 +907,34 @@ export class VercelAgent implements IAgent {
           timeout_ms: z.number().optional().describe('Max wait time in ms. Default: 15000.'),
         }),
         execute: async ({ url_pattern, timeout_ms }) => browserCaptureNetwork(url_pattern, timeout_ms),
+      }),
+
+      browser_list_network_requests: tool({
+        description: 'List recently intercepted background API/JSON network requests. Returns Request IDs and URLs. Use this if the data you want was loaded dynamically via XHR/Fetch, saving you from parsing complex DOM.',
+        inputSchema: z.object({}),
+        execute: async () => browserListNetworkRequests(),
+      }),
+
+      browser_get_network_response: tool({
+        description: 'Get the JSON response body of a previously intercepted network request by its Request ID. Use browser_list_network_requests first to find the ID.',
+        inputSchema: z.object({
+          request_id: z.string().describe('The Request ID obtained from browser_list_network_requests'),
+        }),
+        execute: async ({ request_id }) => browserGetNetworkResponse(request_id),
+      }),
+
+      browser_snapshot_state: tool({
+        description: 'Take a memory snapshot of the current page state (URL, Cookies, LocalStorage, SessionStorage). Use this before attempting a complex or risky sequence of actions (like filling out a long form or clicking uncertain links). Returns a state_id.',
+        inputSchema: z.object({}),
+        execute: async () => browserSnapshotState(),
+      }),
+
+      browser_restore_state: tool({
+        description: 'Instantly rollback the browser to a previously snapshotted state (Cookies, LocalStorage, URL). Use this if you made a mistake, clicked the wrong button, or got stuck on an error page.',
+        inputSchema: z.object({
+          state_id: z.string().describe('The state_id returned by browser_snapshot_state'),
+        }),
+        execute: async ({ state_id }) => browserRestoreState(state_id),
       }),
 
       render_html: tool({

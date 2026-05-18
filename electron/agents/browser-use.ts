@@ -332,6 +332,14 @@ function getMainWindow(): any {
 function notifyBrowserStep(command: string, params: Record<string, any>, result: string, screenshotUrl?: string) {
   const win = getMainWindow();
   if (!win || win.isDestroyed()) return;
+  
+  // Render intent on the webpage itself
+  let intentText = `[${command.toUpperCase()}]`;
+  if (params.ref) intentText += ` Target: ${params.ref}`;
+  if (params.text) intentText += ` Input: "${params.text}"`;
+  if (params.urlPattern) intentText += ` Network: ${params.urlPattern}`;
+  browserViewManager.showIntentOverlay(intentText).catch(() => {});
+
   win.webContents.send('browser-step', {
     command,
     sessionTitle: activeSessionTitle,
@@ -684,7 +692,7 @@ export async function browserBack(): Promise<string> {
 
 /** Run arbitrary JS in page context. Auto-saves base64/large binary to disk. */
 export async function browserEval(script: string, cwd?: string): Promise<string> {
-  const result = await browserViewManager.executeJS(script);
+  const result = await browserViewManager.executeJS(script, 600_000, false);
   notifyBrowserStep('eval', { script: script.slice(0, 200) }, result.slice(0, 500));
 
   // ── Auto-intercept base64 data (images/binary) — save to disk instead of polluting context ──
@@ -913,5 +921,43 @@ export async function browserUploadFile(ref: string, filePaths: string[]): Promi
 export async function browserCaptureNetwork(urlPattern: string, timeoutMs?: number): Promise<string> {
   notifyBrowserStep('capture_network', { urlPattern }, `Waiting for response matching "${urlPattern}"...`);
   const result = await browserViewManager.captureNetworkResponse(urlPattern, timeoutMs);
+  return result;
+}
+
+/**
+ * List recently intercepted API/JSON network requests (background MITM).
+ * This relies on the background network listener automatically tracking requests.
+ */
+export async function browserListNetworkRequests(): Promise<string> {
+  const result = browserViewManager.listRecentNetworkRequests();
+  notifyBrowserStep('list_network', {}, result ? 'Listed recent requests' : 'No requests found');
+  return result;
+}
+
+/**
+ * Get the JSON response body of a previously intercepted network request by ID.
+ * Use browser_list_network_requests first to get the Request ID.
+ */
+export async function browserGetNetworkResponse(requestId: string): Promise<string> {
+  const result = await browserViewManager.getNetworkResponseBody(requestId);
+  notifyBrowserStep('get_network_response', { requestId }, result.slice(0, 100) + '...');
+  return result;
+}
+
+/**
+ * Create a memory snapshot of the current browser state (URL, Cookies, LocalStorage, SessionStorage).
+ */
+export async function browserSnapshotState(): Promise<string> {
+  const result = await browserViewManager.snapshotState();
+  notifyBrowserStep('snapshot_state', {}, `Created state snapshot: ${result}`);
+  return result;
+}
+
+/**
+ * Restore a previously created snapshot, clearing current state and rolling back.
+ */
+export async function browserRestoreState(stateId: string): Promise<string> {
+  notifyBrowserStep('restore_state', { stateId }, `Rolling back to snapshot ${stateId}...`);
+  const result = await browserViewManager.restoreState(stateId);
   return result;
 }

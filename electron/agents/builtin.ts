@@ -55,6 +55,10 @@ import {
   // Advanced CDP tools
   browserUploadFile,
   browserCaptureNetwork,
+  browserListNetworkRequests,
+  browserGetNetworkResponse,
+  browserSnapshotState,
+  browserRestoreState,
 } from './browser-use';
 import {
   formatWebSearchResult,
@@ -152,6 +156,10 @@ const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   { type: 'function', function: { name: 'browser_highlight_ref', description: 'Highlight a specific element ref with an orange box for 3 seconds. Use to verify you are targeting the right element before clicking.', parameters: { type: 'object', properties: { ref: { type: 'string', description: 'Element ref from browser_snapshot, e.g. "e3"' } }, required: ['ref'] } } },
   { type: 'function', function: { name: 'browser_upload_file', description: 'Set file(s) on a file input element — bypasses the native OS file picker dialog. The ref MUST be an <input type="file"> from browser_snapshot. Use this for email attachments, avatar upload, document submission, etc.', parameters: { type: 'object', properties: { ref: { type: 'string', description: 'Element ref of the file input (e.g. "e5")' }, file_paths: { type: 'array', items: { type: 'string' }, description: 'Array of absolute file paths to upload' } }, required: ['ref', 'file_paths'] } } },
   { type: 'function', function: { name: 'browser_capture_network', description: 'Capture the next network response matching a URL pattern. Call this BEFORE triggering the action that makes the request (e.g. click search). Returns the raw response body (JSON, HTML, etc.). Perfect for extracting API data from React/Vue SPAs.', parameters: { type: 'object', properties: { url_pattern: { type: 'string', description: 'Substring to match in request URLs (e.g. "/api/search", "graphql")' }, timeout_ms: { type: 'number', description: 'Max wait time in ms. Default: 15000.' } }, required: ['url_pattern'] } } },
+  { type: 'function', function: { name: 'browser_list_network_requests', description: 'List recently intercepted background API/JSON network requests. Returns Request IDs and URLs. Use this if the data you want was loaded dynamically via XHR/Fetch, saving you from parsing complex DOM.', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'browser_get_network_response', description: 'Get the JSON response body of a previously intercepted network request by its Request ID. Use browser_list_network_requests first to find the ID.', parameters: { type: 'object', properties: { request_id: { type: 'string', description: 'The Request ID obtained from browser_list_network_requests' } }, required: ['request_id'] } } },
+  { type: 'function', function: { name: 'browser_snapshot_state', description: 'Take a memory snapshot of the current page state (URL, Cookies, LocalStorage, SessionStorage). Use this before attempting a complex or risky sequence of actions (like filling out a long form or clicking uncertain links). Returns a state_id.', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'browser_restore_state', description: 'Instantly rollback the browser to a previously snapshotted state (Cookies, LocalStorage, URL). Use this if you made a mistake, clicked the wrong button, or got stuck on an error page.', parameters: { type: 'object', properties: { state_id: { type: 'string', description: 'The state_id returned by browser_snapshot_state' } }, required: ['state_id'] } } },
 ];
 
 // webSearch, fetchUrl, browsePage — all imported from shared modules
@@ -783,6 +791,18 @@ export class BuiltinAgent implements IAgent {
         }
         case 'browser_capture_network': {
           return await browserCaptureNetwork(args.url_pattern || args.urlPattern, args.timeout_ms || args.timeoutMs);
+        }
+        case 'browser_list_network_requests': {
+          return await browserListNetworkRequests();
+        }
+        case 'browser_get_network_response': {
+          return await browserGetNetworkResponse(args.request_id || args.requestId);
+        }
+        case 'browser_snapshot_state': {
+          return await browserSnapshotState();
+        }
+        case 'browser_restore_state': {
+          return await browserRestoreState(args.state_id || args.stateId);
         }
         default: return `Unknown tool: ${name}`;
       }
