@@ -92,4 +92,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   browserGoBack: () => ipcRenderer.invoke('browser-go-back'),
   browserGoForward: () => ipcRenderer.invoke('browser-go-forward'),
+  browserNavigateTo: (url: string) => ipcRenderer.invoke('browser-navigate-to', url),
 });

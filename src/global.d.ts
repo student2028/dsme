@@ -60,6 +60,7 @@ declare global {
       syncChromeCookies: (profileDirName?: string) => Promise<{ success: boolean; count: number; profile?: string; error?: string }>;
       browserGoBack: () => Promise<string>;
       browserGoForward: () => Promise<string>;
+      browserNavigateTo: (url: string) => Promise<string>;
     };
   }
 }

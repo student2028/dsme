@@ -449,6 +449,16 @@ app.on('before-quit', () => {
   browserViewManager.destroy();
   cdpProxy.close();
 });
+
+// Set global User-Agent fallback to mask Electron environment from Popups/IFrames
+const CHROME_VERSION = '131';
+const CHROME_UA = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION}.0.0.0 Safari/537.36`;
+app.userAgentFallback = CHROME_UA;
+
+// Hide Electron and automated signs from the browser engine
+app.commandLine.appendSwitch('disable-features', 'AutomationControlled');
+app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
+
 app.whenReady().then(async () => {
   // Set macOS dock icon
   if (process.platform === 'darwin' && app.dock) {
@@ -467,7 +477,7 @@ app.whenReady().then(async () => {
   })();
   if (needsSync) {
     // Sync to both default session AND the browser panel session
-    const browserSession = session.fromPartition('persist:browser-panel');
+    const browserSession = session.fromPartition('persist:browser-panel-v2');
     Promise.all([
       syncChromeCookies(session.defaultSession),
       syncChromeCookies(browserSession),
@@ -544,7 +554,7 @@ ipcMain.handle('sync-chrome-cookies', async (_, profileDirName?: string) => {
   if (process.platform !== 'darwin') return { success: false, count: 0, error: 'Only macOS supported' };
   try {
     const profile = profileDirName || 'Default';
-    const browserSession = session.fromPartition('persist:browser-panel');
+    const browserSession = session.fromPartition('persist:browser-panel-v2');
     const [defaultCount, browserCount] = await Promise.all([
       syncChromeCookies(session.defaultSession, profile),
       syncChromeCookies(browserSession, profile),
@@ -563,6 +573,19 @@ ipcMain.handle('browser-go-back', async () => {
 
 ipcMain.handle('browser-go-forward', async () => {
   return browserViewManager.goForward();
+});
+
+ipcMain.handle('browser-navigate-to', async (_, url: string) => {
+  try {
+    let target = url;
+    if (!target.startsWith('http://') && !target.startsWith('https://')) {
+      target = 'https://' + target;
+    }
+    await browserViewManager.navigate(target);
+    return `Navigating to ${target}`;
+  } catch (e: any) {
+    return `Failed: ${e.message}`;
+  }
 });
 
 ipcMain.handle('get-config', () => loadConfig());

@@ -3207,14 +3207,24 @@ textarea:focus-visible {
   flex-shrink: 0;
 }
 
-.browser-slot-url {
-  font-size: 10px;
+.browser-slot-url-input {
+  font-family: inherit;
+  font-size: 11px;
   color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 2px 8px;
   flex: 1;
   min-width: 0;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.browser-slot-url-input:focus {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--cyan);
 }
 
 .browser-slot-badge {

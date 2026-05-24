@@ -38,6 +38,7 @@ export const BrowserPanel: React.FC<{
   onTabOpen: () => void;
 }> = ({ visible, overlayOpen = false, onTabOpen }) => {
   const [slot, setSlot] = useState<BrowserSlot>({ url: '', label: 'Browser', status: 'idle' });
+  const [urlInput, setUrlInput] = useState('');
   const [lastAction, setLastAction] = useState('');
   const [summary, setSummary] = useState<BrowserSummary | null>(null);
   const [task, setTask] = useState<BrowserTask | null>(null);
@@ -88,6 +89,11 @@ export const BrowserPanel: React.FC<{
       if (result) setLastAction(result);
     } catch { setLastAction('前进失败'); }
   }, []);
+
+  // Sync the input value when the underlying slot url changes
+  useEffect(() => {
+    setUrlInput(slot.url);
+  }, [slot.url]);
 
   // ── Bounds sync: tell main process where our placeholder div is ──
   useEffect(() => {
@@ -258,7 +264,24 @@ export const BrowserPanel: React.FC<{
     <div className="browser-panel" style={{ display: visible ? 'flex' : 'none' }}>
       <div className="browser-slot-header">
         <span className="browser-slot-label">🌐 {slot.label}</span>
-        {slot.url && <span className="browser-slot-url">{slot.url}</span>}
+        <input 
+          className="browser-slot-url-input" 
+          value={urlInput} 
+          onChange={(e) => setUrlInput(e.target.value)}
+          onKeyDown={async (e) => {
+            if (e.key === 'Enter') {
+              if (!urlInput.trim()) return;
+              setSlot(s => ({ ...s, status: 'navigating' }));
+              try {
+                const res = await window.electronAPI?.browserNavigateTo?.(urlInput.trim());
+                if (res) setLastAction(res);
+              } catch {
+                setLastAction('Failed to navigate manually');
+              }
+            }
+          }}
+          placeholder="Enter URL..."
+        />
         <StatusBadge status={slot.status} />
         <button type="button" className="browser-slot-user-btn" onClick={userHistoryBack} title="后退">
           ← 后退

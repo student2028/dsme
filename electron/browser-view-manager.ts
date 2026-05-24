@@ -102,7 +102,7 @@ export class BrowserViewManager {
   init(mainWindow: BrowserWindow) {
     this.mainWindow = mainWindow;
 
-    const browserSession = session.fromPartition('persist:browser-panel');
+    const browserSession = session.fromPartition('persist:browser-panel-v2');
 
     this.view = new WebContentsView({
       webPreferences: {
@@ -110,7 +110,7 @@ export class BrowserViewManager {
         session: browserSession,
         nodeIntegration: false,
         contextIsolation: true,
-        webSecurity: false, // Allow file:// to load other local files directly
+        webSecurity: true, // MUST be true for Google Login cookies (SameSite policy) to work
       },
     });
 
@@ -124,6 +124,7 @@ export class BrowserViewManager {
       details.requestHeaders['sec-ch-ua'] = `"Google Chrome";v="${CHROME_VERSION}", "Chromium";v="${CHROME_VERSION}", "Not_A Brand";v="24"`;
       details.requestHeaders['sec-ch-ua-mobile'] = '?0';
       details.requestHeaders['sec-ch-ua-platform'] = '"macOS"';
+      details.requestHeaders['Accept-Language'] = 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7';
       callback({ requestHeaders: details.requestHeaders });
     });
 
@@ -540,7 +541,7 @@ export class BrowserViewManager {
     }
 
     // Proactive Process Recycling: Every 50 navigations, destroy and recreate the WebContents.
-    // Since we use a persistent session ('persist:browser-panel'), cookies/storage are retained,
+    // Since we use a persistent session ('persist:browser-panel-v2'), cookies/storage are retained,
     // but all detached DOM nodes, JS closures, and memory leaks are instantly garbage collected.
     // This provides world-class stability for agents running 1000+ step tasks.
     if (this.navigationCount > 50) {
@@ -1320,7 +1321,7 @@ export class BrowserViewManager {
       const snap = this.sessionSnapshots.get(id)!;
       
       // 1. Wipe current state clean
-      const browserSession = session.fromPartition('persist:browser-panel');
+      const browserSession = session.fromPartition('persist:browser-panel-v2');
       await browserSession.clearStorageData(); 
       
       // 2. Restore Cookies (Electron Native)
@@ -1382,7 +1383,7 @@ export class BrowserViewManager {
    * No browser extension can do this — they only get cookies for their own domain.
    */
   async exportCookies(): Promise<Electron.Cookie[]> {
-    const browserSession = session.fromPartition('persist:browser-panel');
+    const browserSession = session.fromPartition('persist:browser-panel-v2');
     return browserSession.cookies.get({});
   }
 
@@ -1390,7 +1391,7 @@ export class BrowserViewManager {
    * Export cookies for a specific URL (e.g. just Google or just 126.com).
    */
   async getCookiesForUrl(url: string): Promise<Electron.Cookie[]> {
-    const browserSession = session.fromPartition('persist:browser-panel');
+    const browserSession = session.fromPartition('persist:browser-panel-v2');
     return browserSession.cookies.get({ url });
   }
 
@@ -1399,7 +1400,7 @@ export class BrowserViewManager {
    * Agent can log in once, export cookies, and restore them next time.
    */
   async importCookies(cookies: Array<{ name: string; value: string; domain: string; path?: string; secure?: boolean; httpOnly?: boolean; expirationDate?: number }>): Promise<string> {
-    const browserSession = session.fromPartition('persist:browser-panel');
+    const browserSession = session.fromPartition('persist:browser-panel-v2');
     let imported = 0;
     for (const c of cookies) {
       try {
@@ -1427,7 +1428,7 @@ export class BrowserViewManager {
    * Clear all cookies and storage for the browser session.
    */
   async clearSession(): Promise<string> {
-    const browserSession = session.fromPartition('persist:browser-panel');
+    const browserSession = session.fromPartition('persist:browser-panel-v2');
     await browserSession.clearStorageData();
     return 'Session cleared (cookies, localStorage, cache)';
   }
@@ -1760,8 +1761,24 @@ export class BrowserViewManager {
 
         // 2. window.chrome
         if (!window.chrome) window.chrome = {};
+        if (!window.chrome.app) {
+          window.chrome.app = {
+            isInstalled: false,
+            InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+            RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
+          };
+        }
         if (!window.chrome.runtime) {
-          window.chrome.runtime = { connect: () => {}, sendMessage: () => {}, id: undefined };
+          window.chrome.runtime = { 
+            OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
+            OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
+            PlatformArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+            PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
+            RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' },
+            connect: () => {}, 
+            sendMessage: () => {}, 
+            id: undefined 
+          };
         }
         window.chrome.csi = () => ({});
         window.chrome.loadTimes = () => ({});
@@ -1770,9 +1787,9 @@ export class BrowserViewManager {
         try {
           Object.defineProperty(navigator, 'plugins', {
             get: () => [
-              { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-              { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-              { name: 'Native Client', filename: 'internal-nacl-plugin' }
+              { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+              { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: 'Portable Document Format' },
+              { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
             ]
           });
         } catch {}
@@ -1784,8 +1801,24 @@ export class BrowserViewManager {
         } catch {}
 
         // 5. navigator.webdriver
-        try { Object.defineProperty(navigator, 'webdriver', { get: () => false }); } catch {}
+        try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch {}
 
+        // 6. Eradicate CDP variables (cdc_...)
+        try {
+          let keys = Object.getOwnPropertyNames(window);
+          for (let i = 0; i < keys.length; i++) {
+            if (keys[i].startsWith('cdc_')) {
+              delete window[keys[i]];
+            }
+          }
+          let docKeys = Object.getOwnPropertyNames(document);
+          for (let i = 0; i < docKeys.length; i++) {
+            if (docKeys[i].startsWith('cdc_')) {
+              delete document[docKeys[i]];
+            }
+          }
+        } catch {}
+        // Cleaned up over-engineered proxies that Google BotGuard detects via iframe escapes.
       `;
 
       // Inject anti-bot evasion and dialog suppression into EVERY frame BEFORE page scripts run.

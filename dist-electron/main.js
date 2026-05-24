@@ -24574,13 +24574,13 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		/** Call once after the main BrowserWindow is created. */
 		init(mainWindow) {
 			this.mainWindow = mainWindow;
-			const browserSession = electron.session.fromPartition("persist:browser-panel");
+			const browserSession = electron.session.fromPartition("persist:browser-panel-v2");
 			this.view = new electron.WebContentsView({ webPreferences: {
 				sandbox: true,
 				session: browserSession,
 				nodeIntegration: false,
 				contextIsolation: true,
-				webSecurity: false
+				webSecurity: true
 			} });
 			const CHROME_VERSION = "131";
 			const CHROME_UA = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION}.0.0.0 Safari/537.36`;
@@ -24589,6 +24589,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				details.requestHeaders["sec-ch-ua"] = `"Google Chrome";v="${CHROME_VERSION}", "Chromium";v="${CHROME_VERSION}", "Not_A Brand";v="24"`;
 				details.requestHeaders["sec-ch-ua-mobile"] = "?0";
 				details.requestHeaders["sec-ch-ua-platform"] = "\"macOS\"";
+				details.requestHeaders["Accept-Language"] = "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7";
 				callback({ requestHeaders: details.requestHeaders });
 			});
 			const TELEMETRY_DOMAINS = /\b(google-analytics\.com|analytics\.google\.com|googletagmanager\.com|clarity\.ms|hotjar\.com|hotjar\.io|segment\.io|segment\.com|mixpanel\.com|amplitude\.com|sentry\.io|doubleclick\.net|googlesyndication\.com|facebook\.net|fbevents|bat\.bing\.com)\b/i;
@@ -25479,7 +25480,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			if (!this.ensureHealthyView()) return "Error: view not initialized";
 			try {
 				const snap = this.sessionSnapshots.get(id);
-				await electron.session.fromPartition("persist:browser-panel").clearStorageData();
+				await electron.session.fromPartition("persist:browser-panel-v2").clearStorageData();
 				await this.importCookies(snap.cookies);
 				let onNav = null;
 				const navDone = new Promise((resolve) => {
@@ -25521,20 +25522,20 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		* No browser extension can do this — they only get cookies for their own domain.
 		*/
 		async exportCookies() {
-			return electron.session.fromPartition("persist:browser-panel").cookies.get({});
+			return electron.session.fromPartition("persist:browser-panel-v2").cookies.get({});
 		}
 		/**
 		* Export cookies for a specific URL (e.g. just Google or just 126.com).
 		*/
 		async getCookiesForUrl(url) {
-			return electron.session.fromPartition("persist:browser-panel").cookies.get({ url });
+			return electron.session.fromPartition("persist:browser-panel-v2").cookies.get({ url });
 		}
 		/**
 		* Import cookies — restore a previously saved session.
 		* Agent can log in once, export cookies, and restore them next time.
 		*/
 		async importCookies(cookies) {
-			const browserSession = electron.session.fromPartition("persist:browser-panel");
+			const browserSession = electron.session.fromPartition("persist:browser-panel-v2");
 			let imported = 0;
 			for (const c of cookies) try {
 				const protocol = c.secure ? "https" : "http";
@@ -25559,7 +25560,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		* Clear all cookies and storage for the browser session.
 		*/
 		async clearSession() {
-			await electron.session.fromPartition("persist:browser-panel").clearStorageData();
+			await electron.session.fromPartition("persist:browser-panel-v2").clearStorageData();
 			return "Session cleared (cookies, localStorage, cache)";
 		}
 		/**
@@ -25834,8 +25835,24 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 
         // 2. window.chrome
         if (!window.chrome) window.chrome = {};
+        if (!window.chrome.app) {
+          window.chrome.app = {
+            isInstalled: false,
+            InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+            RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
+          };
+        }
         if (!window.chrome.runtime) {
-          window.chrome.runtime = { connect: () => {}, sendMessage: () => {}, id: undefined };
+          window.chrome.runtime = { 
+            OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
+            OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
+            PlatformArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+            PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
+            RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' },
+            connect: () => {}, 
+            sendMessage: () => {}, 
+            id: undefined 
+          };
         }
         window.chrome.csi = () => ({});
         window.chrome.loadTimes = () => ({});
@@ -25844,9 +25861,9 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
         try {
           Object.defineProperty(navigator, 'plugins', {
             get: () => [
-              { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-              { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-              { name: 'Native Client', filename: 'internal-nacl-plugin' }
+              { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+              { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: 'Portable Document Format' },
+              { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
             ]
           });
         } catch {}
@@ -25858,8 +25875,24 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
         } catch {}
 
         // 5. navigator.webdriver
-        try { Object.defineProperty(navigator, 'webdriver', { get: () => false }); } catch {}
+        try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch {}
 
+        // 6. Eradicate CDP variables (cdc_...)
+        try {
+          let keys = Object.getOwnPropertyNames(window);
+          for (let i = 0; i < keys.length; i++) {
+            if (keys[i].startsWith('cdc_')) {
+              delete window[keys[i]];
+            }
+          }
+          let docKeys = Object.getOwnPropertyNames(document);
+          for (let i = 0; i < docKeys.length; i++) {
+            if (docKeys[i].startsWith('cdc_')) {
+              delete document[docKeys[i]];
+            }
+          }
+        } catch {}
+        // Cleaned up over-engineered proxies that Google BotGuard detects via iframe escapes.
       `;
 				await send("Page.enable");
 				await send("Page.addScriptToEvaluateOnNewDocument", { source: EVASION_SCRIPT });
@@ -30954,6 +30987,9 @@ electron.app.on("before-quit", () => {
 	browserViewManager.destroy();
 	cdpProxy.close();
 });
+electron.app.userAgentFallback = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36`;
+electron.app.commandLine.appendSwitch("disable-features", "AutomationControlled");
+electron.app.commandLine.appendSwitch("disable-blink-features", "AutomationControlled");
 electron.app.whenReady().then(async () => {
 	if (process.platform === "darwin" && electron.app.dock) {
 		const { nativeImage } = require("electron");
@@ -30971,7 +31007,7 @@ electron.app.whenReady().then(async () => {
 			return true;
 		}
 	})()) {
-		const browserSession = electron.session.fromPartition("persist:browser-panel");
+		const browserSession = electron.session.fromPartition("persist:browser-panel-v2");
 		Promise.all([syncChromeCookies(electron.session.defaultSession), syncChromeCookies(browserSession)]).then(() => require("fs").writeFileSync(syncFlag, String(Date.now()))).catch(() => {});
 	}
 	createWindow();
@@ -31036,7 +31072,7 @@ electron.ipcMain.handle("sync-chrome-cookies", async (_, profileDirName) => {
 	};
 	try {
 		const profile = profileDirName || "Default";
-		const browserSession = electron.session.fromPartition("persist:browser-panel");
+		const browserSession = electron.session.fromPartition("persist:browser-panel-v2");
 		const [defaultCount, browserCount] = await Promise.all([syncChromeCookies(electron.session.defaultSession, profile), syncChromeCookies(browserSession, profile)]);
 		const syncFlag = (0, node_path.join)(electron.app.getPath("userData"), "cookie-sync-ts");
 		require("fs").writeFileSync(syncFlag, String(Date.now()));
@@ -31058,6 +31094,16 @@ electron.ipcMain.handle("browser-go-back", async () => {
 });
 electron.ipcMain.handle("browser-go-forward", async () => {
 	return browserViewManager.goForward();
+});
+electron.ipcMain.handle("browser-navigate-to", async (_, url) => {
+	try {
+		let target = url;
+		if (!target.startsWith("http://") && !target.startsWith("https://")) target = "https://" + target;
+		await browserViewManager.navigate(target);
+		return `Navigating to ${target}`;
+	} catch (e) {
+		return `Failed: ${e.message}`;
+	}
 });
 electron.ipcMain.handle("get-config", () => loadConfig());
 electron.ipcMain.handle("save-config", async (_, config) => {
