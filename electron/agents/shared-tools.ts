@@ -9,6 +9,8 @@
  */
 import * as fs from 'node:fs';
 import { createRequire } from 'node:module';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { getErrorMessage } from '../lib/errors';
 import {
   countSearchResultLines,
@@ -17,7 +19,21 @@ import {
 export { isCommandBlocked } from '../lib/command-guard';
 export { countSearchResultLines, formatWebSearchResult, hasUsableSearchResults } from './search-result-format';
 
-const customRequire = createRequire(import.meta.url);
+/** Works in Vite CJS bundle (import.meta.url is stripped) and in ESM dev. */
+function resolvePackageFile(specifier: string): string {
+  const tryRequire = (filename: string) => createRequire(filename).resolve(specifier);
+  if (typeof __filename !== 'undefined') {
+    try {
+      return tryRequire(__filename);
+    } catch { /* fall through */ }
+  }
+  if (typeof import.meta !== 'undefined' && import.meta.url) {
+    try {
+      return tryRequire(fileURLToPath(import.meta.url));
+    } catch { /* fall through */ }
+  }
+  return tryRequire(join(process.cwd(), 'package.json'));
+}
 
 // ── Mozilla Readability.js — industry gold-standard content extraction ──
 // Loaded once at startup, injected into WebContentsView page context on demand.
@@ -25,7 +41,7 @@ let _readabilitySource: string | null = null;
 function getReadabilitySource(): string {
   if (_readabilitySource) return _readabilitySource;
   try {
-    const readabilityPath = customRequire.resolve('@mozilla/readability/Readability.js');
+    const readabilityPath = resolvePackageFile('@mozilla/readability/Readability.js');
     _readabilitySource = fs.readFileSync(readabilityPath, 'utf8');
     console.log(`[SharedTools] Readability.js loaded (${(_readabilitySource.length / 1024).toFixed(0)}KB)`);
   } catch (loadErr: unknown) {
