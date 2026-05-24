@@ -44,20 +44,30 @@ export class BrowserViewManager {
   private lastMouseY = -1;
   /** When set, executeJS/insertText/pressKey operate on this subframe instead of mainFrame. */
   private targetFrame: WebFrameMain | null = null;
+  /** Counter for Process Recycling to prevent memory leaks in long-running tasks. */
+  private navigationCount = 0;
 
   // ── Electron Native state ──
   /** Timestamp of last network activity (request sent, response received, etc.) */
   private lastNetworkActivity = 0;
   /** Ring buffer of recent console errors/warnings from the page. */
-  private consoleErrors: { level: string; message: string; time: number }[] = [];
   private readonly MAX_CONSOLE_ERRORS = 10;
+  private consoleErrors: Array<{ level: string; message: string; time: number }> = [];
+
+  /** Centralized ring-buffer push for consoleErrors. Prevents unbounded growth. */
+  private pushConsoleError(level: string, message: string) {
+    this.consoleErrors.push({ level, message: message.slice(0, 200), time: Date.now() });
+    if (this.consoleErrors.length > this.MAX_CONSOLE_ERRORS) this.consoleErrors.shift();
+  }
   /** Live page title tracked via page-title-updated event (Electron Native). */
   private currentTitle = '';
 
   // ── CDP (read-only query layer) state ──
   private cdpAttached = false;
-  /** Maps short refs (e1, e2, ...) to CDP backendDOMNodeId for interaction. */
-  private refMap = new Map<string, number>();
+  /** Coalescing lock: if ensureCDP is already in-flight, concurrent callers await this. */
+  private cdpAttachingPromise: Promise<boolean> | null = null;
+  /** Maps short refs (e1, e2, ...) to CDP backendDOMNodeId and frameId for interaction. */
+  private refMap = new Map<string, { backendNodeId: number; frameId: string }>();
   /**
    * Maps short refs to human-readable labels from the AX snapshot.
    * Eliminates the extra DOM.describeNode round-trip in getElementCenterByCDP.
@@ -65,8 +75,17 @@ export class BrowserViewManager {
   private refLabels = new Map<string, string>();
   
   // ── Network Sniffing (CDP MITM) ──
-  private recentNetworkRequests = new Map<string, { url: string; method: string; mimeType: string; status: number; timestamp: number }>();
+  private recentNetworkRequests = new Map<string, { url: string; method: string; mimeType: string; status: number; timestamp: number; sessionId?: string }>();
   private networkListenerAttached = false;
+  /** Set of request IDs currently in flight. Set used to prevent redirect counting bugs. */
+  private inflightRequests = new Set<number>();
+  
+  // ── OOPIF Session Routing ──
+  /** Maps frameId/targetId to CDP sessionId for communicating with cross-origin iframes. */
+  private oopifSessions = new Map<string, string>();
+
+  // ── UI / Overlay ──
+  private highlightTimeout: NodeJS.Timeout | null = null;
 
   // ── Download Tracking ──
   private recentDownloads: { filename: string; path: string; state: string; time: number; size?: number }[] = [];
@@ -111,23 +130,65 @@ export class BrowserViewManager {
     // ── Network activity tracking (Electron Native — no CDP, no JS injection) ──
     // Pure observation listeners that track when any HTTP activity occurs.
     // Used by waitForIdle() to know when the network is truly quiet.
-    const trackNetworkActivity = () => { this.lastNetworkActivity = Date.now(); };
-    browserSession.webRequest.onSendHeaders(trackNetworkActivity);        // request sent
-    browserSession.webRequest.onResponseStarted(trackNetworkActivity);    // first byte received
-    browserSession.webRequest.onCompleted(trackNetworkActivity);          // request completed
-    browserSession.webRequest.onErrorOccurred(trackNetworkActivity);      // request failed
+    // Filter out telemetry/analytics to prevent false "busy" signals from heartbeats.
+    const TELEMETRY_DOMAINS = /\b(google-analytics\.com|analytics\.google\.com|googletagmanager\.com|clarity\.ms|hotjar\.com|hotjar\.io|segment\.io|segment\.com|mixpanel\.com|amplitude\.com|sentry\.io|doubleclick\.net|googlesyndication\.com|facebook\.net|fbevents|bat\.bing\.com)\b/i;
+    const TELEMETRY_PATHS = /\/(beacon|collect|pixel|telemetry|heartbeat|__utm|pageview|v1\/track)\b/i;
+
+    const isTelemetry = (url: string, type: string) => {
+      if (type === 'ping' || type === 'csp_report' || type === 'beacon') return true;
+      return TELEMETRY_DOMAINS.test(url) || TELEMETRY_PATHS.test(url);
+    };
+
+    const trackNetworkStart = (details: any) => {
+      if (isTelemetry(details.url, details.resourceType)) return;
+      this.inflightRequests.add(details.id);
+      this.lastNetworkActivity = Date.now();
+    };
+    
+    const trackNetworkEnd = (details: any) => {
+      // BUG FIX: Do NOT check isTelemetry here.
+      // A request might start as non-telemetry (/api/data) and get 302-redirected
+      // to a telemetry URL (google-analytics.com/collect). If we skip the delete
+      // for telemetry URLs, the request ID stays in inflightRequests forever,
+      // causing waitForIdle to think the network is permanently busy.
+      // Deleting a non-existent ID from a Set is a safe no-op.
+      this.inflightRequests.delete(details.id);
+      if (!isTelemetry(details.url, details.resourceType)) {
+        this.lastNetworkActivity = Date.now();
+      }
+    };
+
+    browserSession.webRequest.onSendHeaders(trackNetworkStart);        // request sent
+    browserSession.webRequest.onResponseStarted((details) => {
+      if (!isTelemetry(details.url, details.resourceType)) this.lastNetworkActivity = Date.now();
+    });    // first byte received
+    browserSession.webRequest.onCompleted(trackNetworkEnd);          // request completed
+    browserSession.webRequest.onErrorOccurred(trackNetworkEnd);      // request failed
 
     // Automatically handle downloads to prevent the system "Save As" dialog
     browserSession.removeAllListeners('will-download'); // Prevent leak on recreateView
     browserSession.on('will-download', (event, item, webContents) => {
+      const activeCount = this.recentDownloads.filter(d => d.state === 'progressing').length;
+      if (activeCount >= 3) {
+        console.warn(`[BrowserViewManager] SECURITY: Blocked concurrent download flooding (${item.getFilename()})`);
+        item.cancel();
+        return;
+      }
+
       const os = require('node:os');
       const path = require('node:path');
+      // Bug fix: Sanitize filename to prevent Directory Traversal via auto-download
+      // If a malicious site returns 'Content-Disposition: attachment; filename="../../.bashrc"',
+      // path.basename ensures it safely lands inside the Downloads folder as '.bashrc' or similar,
+      // rather than escaping into the user's home directory.
+      const safeFilename = path.basename(item.getFilename() || 'downloaded_file');
+      
       // Save directly to the user's Downloads folder
-      const downloadPath = path.join(os.homedir(), 'Downloads', item.getFilename());
+      const downloadPath = path.join(os.homedir(), 'Downloads', safeFilename);
       item.setSavePath(downloadPath);
       
       const downloadRecord = {
-        filename: item.getFilename(),
+        filename: safeFilename,
         path: downloadPath,
         state: 'progressing',
         time: Date.now(),
@@ -150,13 +211,19 @@ export class BrowserViewManager {
       });
     });
 
-    // ── Permission Auto-Grant (Electron Native) ──
-    // Browser permission dialogs (geolocation, camera, notifications, clipboard-read)
-    // would block the agent the same way alert() dialogs do.
-    // Auto-grant everything — the agent is an automation tool, not a human user.
+    // ── Permission Auto-Grant & Security (Electron Native) ──
+    // Browser permission dialogs would block the agent the same way alert() dialogs do.
+    // However, for SECURITY, we strictly DENY access to the host's camera, microphone,
+    // and clipboard. The agent has no eyes/ears and doesn't need them, but a malicious
+    // site the agent accidentally visits could use them to spy on the human user.
     browserSession.setPermissionRequestHandler((_wc, permission, callback) => {
-      console.log(`[BrowserViewManager] Auto-granted permission: ${permission}`);
-      callback(true);
+      if (permission === 'media' || permission === 'clipboard-read') {
+        console.warn(`[BrowserViewManager] SECURITY: Auto-denied dangerous permission: ${permission}`);
+        callback(false);
+      } else {
+        console.log(`[BrowserViewManager] Auto-granted safe permission: ${permission}`);
+        callback(true);
+      }
     });
 
     // ── Login State Monitoring (Electron Native) ──
@@ -173,11 +240,7 @@ export class BrowserViewManager {
         if (isAuthCookie) {
           const domain = cookie.domain || '';
           console.warn(`[BrowserViewManager] Auth cookie removed: ${cookie.name} @ ${domain} (cause: ${cause})`);
-          this.consoleErrors.push({
-            level: 'warn',
-            message: `Auth cookie "${cookie.name}" removed from ${domain} (${cause}) — possible logout/session expire`,
-            time: Date.now(),
-          });
+          this.pushConsoleError('warn', `Auth cookie "${cookie.name}" removed from ${domain} (${cause}) — possible logout/session expire`);
         }
       }
     });
@@ -190,84 +253,16 @@ export class BrowserViewManager {
     });
 
     // Full Chrome environment spoofing for Google sign-in compatibility.
-    // Google checks: userAgentData, window.chrome, navigator.plugins, Electron globals.
-    this.view.webContents.on('dom-ready', () => {
-      this.view?.webContents.executeJavaScript(`
-        // 1. navigator.userAgentData
-        try {
-          Object.defineProperty(navigator, 'userAgentData', {
-            value: {
-              brands: [
-                { brand: "Google Chrome", version: "${CHROME_VERSION}" },
-                { brand: "Chromium", version: "${CHROME_VERSION}" },
-                { brand: "Not_A Brand", version: "24" }
-              ],
-              mobile: false,
-              platform: "macOS",
-              getHighEntropyValues: () => Promise.resolve({
-                architecture: "arm",
-                model: "",
-                platform: "macOS",
-                platformVersion: "15.0.0",
-                uaFullVersion: "${CHROME_VERSION}.0.0.0",
-                fullVersionList: [
-                  { brand: "Google Chrome", version: "${CHROME_VERSION}.0.0.0" },
-                  { brand: "Chromium", version: "${CHROME_VERSION}.0.0.0" }
-                ]
-              })
-            },
-            configurable: true
-          });
-        } catch {}
-
-        // 2. window.chrome (Google checks its existence + shape)
-        if (!window.chrome) window.chrome = {};
-        if (!window.chrome.runtime) {
-          window.chrome.runtime = {
-            connect: () => {},
-            sendMessage: () => {},
-            id: undefined
-          };
-        }
-        window.chrome.csi = () => ({});
-        window.chrome.loadTimes = () => ({});
-
-        // 3. navigator.plugins — Chrome always has at least these
-        try {
-          Object.defineProperty(navigator, 'plugins', {
-            get: () => [
-              { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-              { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-              { name: 'Native Client', filename: 'internal-nacl-plugin' }
-            ]
-          });
-        } catch {}
-
-        // 4. Remove Electron fingerprints
-        try {
-          delete window.process;
-          delete window.require;
-          delete window.module;
-          delete window.exports;
-          delete window.__electron_preload;
-        } catch {}
-
-        // 5. navigator.webdriver (Google checks automation detection)
-        try {
-          Object.defineProperty(navigator, 'webdriver', { get: () => false });
-        } catch {}
-
-        // 6. Auto-handle JS dialogs — prevent alert/confirm/prompt from blocking Agent.
-        // These are intercepted at the page JS level, so no native dialog appears.
-        // The original messages are logged to console for debugging visibility.
-        window.alert = (msg) => { console.warn('[DSME] Suppressed alert:', msg); };
-        window.confirm = (msg) => { console.warn('[DSME] Auto-confirmed:', msg); return true; };
-        window.prompt = (msg, def) => { console.warn('[DSME] Auto-dismissed prompt:', msg); return def || ''; };
-      `).catch(() => {});
-    });
+    // MOVED to ensureCDP() via Page.addScriptToEvaluateOnNewDocument for ultimate stealth.
+    // The legacy dom-ready event was too late — anti-bot scripts in the <head>
+    // would execute before dom-ready and easily detect the lack of window.chrome.
 
     // DO NOT addChildView here — defer until first show/navigate.
     this.attached = false;
+    
+    // Eagerly attach CDP so our anti-bot addScriptToEvaluateOnNewDocument runs
+    // on the very first navigation.
+    this.ensureCDP().catch(e => console.warn('[BrowserViewManager] Eager CDP attach failed:', e.message));
 
     // Notify renderer on navigation events & invalidate CDP refs
     this.view.webContents.on('did-navigate', (_e, url) => {
@@ -275,9 +270,17 @@ export class BrowserViewManager {
       this.targetFrame = null;
       this.refMap.clear();   // Old backendDOMNodeIds are invalid after navigation
       this.refLabels.clear(); // Labels are stale too
+      this.oopifSessions.clear(); // Old OOPIF sessions are dead after cross-origin navigation
+      // BUG FIX: Old request IDs are meaningless after cross-origin nav. If not cleared,
+      // waitForIdle sees inflightRequests.size > 2 and stalls for up to 15s on ghost traffic.
+      this.inflightRequests.clear();
       // Cross-origin navigation may destroy the old renderer process,
       // silently invalidating CDP. Reset so ensureCDP() re-attaches on next use.
       this.cdpAttached = false;
+      // Immediately re-attach CDP and re-register evasion scripts
+      // BEFORE the new page's scripts execute. Without this, cross-origin
+      // navigations would lose addScriptToEvaluateOnNewDocument registration.
+      this.ensureCDP().catch(() => {});
       const title = this.view!.webContents.getTitle();
       this.currentTitle = title;
       this.notifyRenderer('browser-view-navigated', { url, title });
@@ -285,7 +288,8 @@ export class BrowserViewManager {
       // appear frozen over the new page content.
       this.clearOverlay().catch(() => {});
     });
-    this.view.webContents.on('did-navigate-in-page', (_e, url) => {
+    this.view.webContents.on('did-navigate-in-page', (_e, url, isMainFrame) => {
+      if (!isMainFrame) return; // Prevent iframe pushState from hijacking the main URL and clearing refs
       this.currentUrl = url;
       // SPA routing may change visible elements — stale refs could cause mis-clicks
       this.refMap.clear();
@@ -295,6 +299,22 @@ export class BrowserViewManager {
       this.notifyRenderer('browser-view-navigated', { url, title });
       // Clear overlay — SPA route change renders new content, old boxes are wrong
       this.clearOverlay().catch(() => {});
+    });
+
+    // ── Navigation Protocol Guard (Security) ──
+    // Because we disable webSecurity for CORS bypass, we MUST block arbitrary local file access.
+    // Otherwise a malicious site or prompt injection could force navigation to file:///etc/passwd.
+    this.view.webContents.on('will-navigate', (event, url) => {
+      const lowerUrl = url.toLowerCase();
+      // Only allow http/https, and file:// ONLY for our specific temp directory used by renderHTML
+      const isHttp = lowerUrl.startsWith('http://') || lowerUrl.startsWith('https://') || lowerUrl.startsWith('about:blank');
+      const isTempFile = lowerUrl.startsWith('file://') && lowerUrl.includes('dsme-render-');
+      
+      if (!isHttp && !isTempFile) {
+        event.preventDefault();
+        console.warn(`[BrowserViewManager] SECURITY: Blocked unauthorized navigation to: ${url}`);
+        this.pushConsoleError('error', `SECURITY: Prevented unauthorized navigation to local/system protocol: ${url}`);
+      }
     });
 
     // Track live page title updates (Electron Native — no polling needed)
@@ -310,6 +330,7 @@ export class BrowserViewManager {
         this.targetFrame = null;  // Reset frame — new page will destroy old iframes
         this.refMap.clear();      // Old refs invalid
         this.refLabels.clear();   // Labels are stale too (Bug fix: was missing)
+        this.oopifSessions.clear(); // OOPIF sessions die when page changes
         this.view!.webContents.loadURL(url);
       }
       return { action: 'deny' as const };
@@ -329,19 +350,14 @@ export class BrowserViewManager {
     });
 
     // ── Native dialog backstop (Electron Native) ──
-    // The JS override (window.alert = ...) in dom-ready covers most dialogs,
-    // but Electron can still fire native OS dialogs for very early page calls
-    // or from workers. This handler catches them at the engine level.
+    // Electron fires native OS dialogs for alert/confirm/prompt.
+    // This handler catches them at the engine level.
     // Confirm/prompt auto-accept; alert auto-dismiss.
     this.view.webContents.on('dialog', (event: any, dialogInfo: any) => {
       event.preventDefault();
       if (dialogInfo.type === 'confirm' || dialogInfo.type === 'beforeunload') {
         event.defaultPrevented = true;
-        this.consoleErrors.push({
-          level: 'warn',
-          message: `[DSME] Native ${dialogInfo.type} dialog suppressed: ${String(dialogInfo.message || '').slice(0, 100)}`,
-          time: Date.now(),
-        });
+        this.pushConsoleError('warn', `[DSME] Native ${dialogInfo.type} dialog suppressed: ${String(dialogInfo.message || '').slice(0, 100)}`);
       }
       console.warn(`[BrowserViewManager] Native dialog suppressed: ${dialogInfo.type} — ${dialogInfo.message || ''}`);
     });
@@ -359,15 +375,7 @@ export class BrowserViewManager {
     // Levels: 0=verbose, 1=info, 2=warning, 3=error
     this.view.webContents.on('console-message', (_event, level, message) => {
       if (level >= 2) { // warning or error
-        this.consoleErrors.push({
-          level: level === 2 ? 'warn' : 'error',
-          message: message.slice(0, 200),
-          time: Date.now(),
-        });
-        // Ring buffer — drop oldest when full
-        if (this.consoleErrors.length > this.MAX_CONSOLE_ERRORS) {
-          this.consoleErrors.shift();
-        }
+        this.pushConsoleError(level === 2 ? 'warn' : 'error', message.slice(0, 200));
       }
     });
 
@@ -377,11 +385,7 @@ export class BrowserViewManager {
     this.view.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
       if (errorCode === -3) return; // ERR_ABORTED — normal during redirects, not a real error
       console.warn(`[BrowserViewManager] Load failed: ${errorDescription} (${errorCode}) for ${validatedURL}`);
-      this.consoleErrors.push({
-        level: 'error',
-        message: `Page load failed: ${errorDescription} (code ${errorCode})`,
-        time: Date.now(),
-      });
+      this.pushConsoleError('error', `Page load failed: ${errorDescription} (code ${errorCode})`);
     });
 
     // ── Background Throttling Prevention (Electron Native) ──
@@ -399,11 +403,7 @@ export class BrowserViewManager {
     this.view.webContents.on('login', (event, authenticationResponseDetails, authInfo, callback) => {
       event.preventDefault();
       console.warn(`[BrowserViewManager] HTTP Basic Auth challenge from ${authInfo.host}:${authInfo.port} (realm: ${authInfo.realm})`);
-      this.consoleErrors.push({
-        level: 'warn',
-        message: `HTTP 401 Auth required: ${authInfo.host} (realm: "${authInfo.realm}") — use browser_eval to set credentials or import auth cookies`,
-        time: Date.now(),
-      });
+      this.pushConsoleError('warn', `HTTP 401 Auth required: ${authInfo.host} (realm: "${authInfo.realm}") — use browser_eval to set credentials or import auth cookies`);
       callback(); // cancel the auth dialog — agent will handle via tools
     });
 
@@ -413,19 +413,11 @@ export class BrowserViewManager {
     // These events give instant awareness: agent can wait or force-reload.
     this.view.webContents.on('unresponsive', () => {
       console.error('[BrowserViewManager] Page renderer is UNRESPONSIVE (possible hang)');
-      this.consoleErrors.push({
-        level: 'error',
-        message: 'Page is UNRESPONSIVE — renderer may be hung. Consider waiting or reloading.',
-        time: Date.now(),
-      });
+      this.pushConsoleError('error', 'Page is UNRESPONSIVE — renderer may be hung. Consider waiting or reloading.');
     });
     this.view.webContents.on('responsive', () => {
       console.log('[BrowserViewManager] Page renderer recovered — responsive again');
-      this.consoleErrors.push({
-        level: 'warn',
-        message: 'Page recovered from unresponsive state — now interactive again.',
-        time: Date.now(),
-      });
+      this.pushConsoleError('warn', 'Page recovered from unresponsive state — now interactive again.');
     });
 
     // ── CORS / CSP Bypass (Electron Native) ──
@@ -435,10 +427,8 @@ export class BrowserViewManager {
     // Strip these headers at the engine level — impossible for browser extensions.
     browserSession.webRequest.onHeadersReceived((details, callback) => {
       const headers = details.responseHeaders || {};
-      // Remove CORS restrictions
-      delete headers['access-control-allow-origin'];
-      delete headers['Access-Control-Allow-Origin'];
-      headers['Access-Control-Allow-Origin'] = ['*'];
+      // CORS restrictions are already bypassed by webSecurity: false.
+      // Modifying Access-Control-Allow-Origin to '*' breaks requests with credentials: 'include'.
       // Remove X-Frame-Options to allow embedding any iframe
       delete headers['x-frame-options'];
       delete headers['X-Frame-Options'];
@@ -484,6 +474,7 @@ export class BrowserViewManager {
     console.log('[BrowserViewManager] Recreating view...');
     // Reset ALL state before reinit — old debugger/refs/labels/errors are invalid after view destroy
     this.cdpAttached = false;
+    this.cdpAttachingPromise = null;
     this.networkListenerAttached = false;
     this.recentNetworkRequests.clear();
     this.recentDownloads = [];
@@ -491,8 +482,13 @@ export class BrowserViewManager {
     this.refLabels.clear();
     this.currentTitle = '';
     this.consoleErrors = [];
+    // Reset inflight tracking so waitForIdle doesn't hang after crash
     this.lastNetworkActivity = 0;
+    this.inflightRequests.clear();
+    this.oopifSessions.clear();
+    this.navigationCount = 0;
     this.targetFrame = null;
+    if (this.highlightTimeout) { clearTimeout(this.highlightTimeout); this.highlightTimeout = null; }
     this.view = null;
     this.attached = false;
     this.init(this.mainWindow);
@@ -500,6 +496,7 @@ export class BrowserViewManager {
 
   /** Clean up on app quit. */
   destroy() {
+    if (this.highlightTimeout) { clearTimeout(this.highlightTimeout); this.highlightTimeout = null; }
     if (this.view) {
       try { this.view.webContents.close(); } catch {}
       this.view = null;
@@ -535,8 +532,30 @@ export class BrowserViewManager {
   // ── Navigation ──
 
   async navigate(url: string, _retryCount = 0): Promise<string> {
+    // ── Security Guard ──
+    const lowerUrl = url.toLowerCase();
+    const isHttp = lowerUrl.startsWith('http://') || lowerUrl.startsWith('https://') || lowerUrl.startsWith('about:blank');
+    if (!isHttp) {
+      return `SECURITY ERROR: Navigation to local/system protocol "${url}" is forbidden. Agent is restricted to http/https.`;
+    }
+
+    // Proactive Process Recycling: Every 50 navigations, destroy and recreate the WebContents.
+    // Since we use a persistent session ('persist:browser-panel'), cookies/storage are retained,
+    // but all detached DOM nodes, JS closures, and memory leaks are instantly garbage collected.
+    // This provides world-class stability for agents running 1000+ step tasks.
+    if (this.navigationCount > 50) {
+      console.log('[BrowserViewManager] ♻️ Proactively recycling view to clear memory leaks (Process Recycling)');
+      this.recreateView();
+    }
+    this.navigationCount++;
+
     if (!this.ensureHealthyView()) return 'Error: view not initialized';
     this.ensureAttached();
+    // CRITICAL: Must await CDP attachment BEFORE loadURL, otherwise the first page load
+    // might execute scripts before our anti-bot evasion (addScriptToEvaluateOnNewDocument) is registered,
+    // immediately exposing navigator.webdriver = true to Cloudflare/Turnstile.
+    await this.ensureCDP().catch(e => console.warn('[BrowserViewManager] Eager CDP attach failed before nav:', e.message));
+
     try {
       this.targetFrame = null; // Clear any previously focused iframe on top-level navigation
       await this.view!.webContents.loadURL(url);
@@ -580,19 +599,30 @@ export class BrowserViewManager {
 
       // goBack() is async — wait for did-navigate to fire rather than sleeping
       // a fixed 1500ms (which might read the old URL if the nav is slow).
+      // Cleanup function is hoisted so the timeout path can also call it
+      // to prevent EventEmitter listener leaks.
+      this.targetFrame = null; // Reset frame — back nav may load different content
+      let cleanupFn: (() => void) | null = null;
       const navDone = new Promise<void>((resolve) => {
-        const cleanup = () => {
-          this.view?.webContents.removeListener('did-navigate', cleanup);
-          this.view?.webContents.removeListener('did-navigate-in-page', cleanup);
+        cleanupFn = () => {
+          this.view?.webContents.removeListener('did-navigate', cleanupFn!);
+          this.view?.webContents.removeListener('did-navigate-in-page', cleanupFn!);
           resolve();
         };
-        this.view!.webContents.once('did-navigate', cleanup);
-        this.view!.webContents.once('did-navigate-in-page', cleanup);
+        this.view!.webContents.once('did-navigate', cleanupFn);
+        this.view!.webContents.once('did-navigate-in-page', cleanupFn);
       });
 
       nav.goBack();
-      // Wait for navigation with a 5s timeout fallback
-      await Promise.race([navDone, new Promise<void>(r => setTimeout(r, 5000))]);
+      // Wait for navigation with a 5s timeout fallback.
+      // On timeout, remove the once-listeners to prevent accumulation.
+      await Promise.race([navDone, new Promise<void>(r => setTimeout(() => {
+        if (cleanupFn) {
+          this.view?.webContents.removeListener('did-navigate', cleanupFn);
+          this.view?.webContents.removeListener('did-navigate-in-page', cleanupFn);
+        }
+        r();
+      }, 5000))]);
 
       const url = this.view!.webContents.getURL();
       this.currentUrl = url;
@@ -609,18 +639,31 @@ export class BrowserViewManager {
       const nav = this.view!.webContents.navigationHistory;
       if (!nav.canGoForward()) return 'Cannot go forward — no forward history.';
 
+      this.targetFrame = null; // Reset frame — forward nav may load different content
+
+      // Cleanup function is hoisted so the timeout path can also call it
+      // to prevent EventEmitter listener leaks.
+      let cleanupFn: (() => void) | null = null;
       const navDone = new Promise<void>((resolve) => {
-        const cleanup = () => {
-          this.view?.webContents.removeListener('did-navigate', cleanup);
-          this.view?.webContents.removeListener('did-navigate-in-page', cleanup);
+        cleanupFn = () => {
+          this.view?.webContents.removeListener('did-navigate', cleanupFn!);
+          this.view?.webContents.removeListener('did-navigate-in-page', cleanupFn!);
           resolve();
         };
-        this.view!.webContents.once('did-navigate', cleanup);
-        this.view!.webContents.once('did-navigate-in-page', cleanup);
+        this.view!.webContents.once('did-navigate', cleanupFn);
+        this.view!.webContents.once('did-navigate-in-page', cleanupFn);
       });
 
       nav.goForward();
-      await Promise.race([navDone, new Promise<void>(r => setTimeout(r, 5000))]);
+      // Wait for navigation with a 5s timeout fallback.
+      // On timeout, remove the once-listeners to prevent accumulation.
+      await Promise.race([navDone, new Promise<void>(r => setTimeout(() => {
+        if (cleanupFn) {
+          this.view?.webContents.removeListener('did-navigate', cleanupFn);
+          this.view?.webContents.removeListener('did-navigate-in-page', cleanupFn);
+        }
+        r();
+      }, 5000))]);
 
       const url = this.view!.webContents.getURL();
       this.currentUrl = url;
@@ -688,6 +731,7 @@ export class BrowserViewManager {
       try {
         if (frameSubscriptionActive && this.view?.webContents && !this.view.webContents.isDestroyed()) {
           this.view.webContents.endFrameSubscription();
+          frameSubscriptionActive = false;
         }
       } catch {}
     };
@@ -708,9 +752,11 @@ export class BrowserViewManager {
         continue;
       }
 
-      // Layer 1: Network quiescence
+      // Layer 1: Network quiescence (True networkidle2)
+      // Allow up to 2 persistent background requests (like unclassified SSE/Long-polling).
+      // If inflight > 2, or the network was active within NETWORK_QUIET_MS, wait.
       const networkAge = Date.now() - this.lastNetworkActivity;
-      if (this.lastNetworkActivity > 0 && networkAge < NETWORK_QUIET_MS) {
+      if (this.inflightRequests.size > 2 || (this.lastNetworkActivity > 0 && networkAge < NETWORK_QUIET_MS)) {
         spinnerStableMs = 0;
         continue;
       }
@@ -751,7 +797,7 @@ export class BrowserViewManager {
 
       // Layer 4: Network deeply quiet fallback
       // If the page is continuously painting (e.g. a carousel or blinking cursor) but network is silent
-      if (networkAge >= NETWORK_QUIET_MS * 2) {
+      if (this.inflightRequests.size <= 2 && networkAge >= NETWORK_QUIET_MS * 2) {
          cleanup();
          const elapsed = Date.now() - start;
          return `idle: network deeply quiet (animations present) after ${elapsed}ms`;
@@ -967,6 +1013,11 @@ export class BrowserViewManager {
       
       // Generate Bezier path to simulate human movement
       const steps = 15 + Math.floor(Math.random() * 15);
+      // Clamp control points to view bounds — unclamped points can go negative or
+      // beyond viewport, causing Chromium to clip coordinates and producing an
+      // obviously non-human edge-sticking trajectory that anti-bot systems detect.
+      const clampX = (v: number) => Math.max(1, Math.min(Math.round(v), this.bounds.width - 1));
+      const clampY = (v: number) => Math.max(1, Math.min(Math.round(v), this.bounds.height - 1));
       const ctrl1X = startX + (cx - startX) * 0.3 + (Math.random() - 0.5) * 100;
       const ctrl1Y = startY + (cy - startY) * 0.3 + (Math.random() - 0.5) * 100;
       const ctrl2X = startX + (cx - startX) * 0.7 + (Math.random() - 0.5) * 100;
@@ -975,8 +1026,8 @@ export class BrowserViewManager {
       for (let i = 0; i <= steps; i++) {
         const t = i / steps;
         const u = 1 - t;
-        const ptX = Math.round(u*u*u*startX + 3*u*u*t*ctrl1X + 3*u*t*t*ctrl2X + t*t*t*cx);
-        const ptY = Math.round(u*u*u*startY + 3*u*u*t*ctrl1Y + 3*u*t*t*ctrl2Y + t*t*t*cy);
+        const ptX = clampX(u*u*u*startX + 3*u*u*t*ctrl1X + 3*u*t*t*ctrl2X + t*t*t*cx);
+        const ptY = clampY(u*u*u*startY + 3*u*u*t*ctrl1Y + 3*u*t*t*ctrl2Y + t*t*t*cy);
         wc.sendInputEvent({ type: 'mouseMove', x: ptX, y: ptY } as any);
         
         // Ease-out delay: slow down as it approaches target
@@ -1023,10 +1074,10 @@ export class BrowserViewManager {
     const currentY = this.lastMouseY >= 0 ? this.lastMouseY : cy;
     
     if (this.lastMouseX >= 0 && this.lastMouseY >= 0) {
-      // Interpolate 3 steps
+      // Interpolate 3 steps (round to integers — sub-pixel floats are a bot fingerprint)
       for (let i = 1; i <= 3; i++) {
-        const ptX = currentX + (cx - currentX) * (i / 3);
-        const ptY = currentY + (cy - currentY) * (i / 3);
+        const ptX = Math.round(currentX + (cx - currentX) * (i / 3));
+        const ptY = Math.round(currentY + (cy - currentY) * (i / 3));
         wc.sendInputEvent({ type: 'mouseMove', x: ptX, y: ptY } as any);
         await new Promise(r => setTimeout(r, 16));
       }
@@ -1064,24 +1115,25 @@ export class BrowserViewManager {
 
   /**
    * Insert text at the currently focused element using Chromium's native input path.
-   * This is equivalent to a human typing — all framework event listeners fire naturally.
-   * Works with contenteditable, input, textarea, and rich text editors (Quill, ProseMirror, etc.).
-   * Handles CJK (Chinese/Japanese/Korean) characters natively via IME passthrough.
+   * By inserting the entire string at once, this perfectly mimics a human "Paste" action
+   * (Cmd+V / Ctrl+V), which natively fires a single 'input' event without 'keydown'/'keyup'.
+   * This avoids the critical anti-bot fingerprint of "typing delays without keystroke events".
+   * Works with contenteditable, input, textarea, and rich text editors.
    */
   async insertText(text: string): Promise<string> {
     if (!this.ensureHealthyView()) return 'Error: view not initialized';
     try {
       const wc = this.view!.webContents;
-      // Convert to array of characters to handle surrogate pairs correctly (emojis)
-      const chars = Array.from(text);
-      for (const char of chars) {
-        await wc.insertText(char);
-        // Human typing delay: 30-100ms per char, occasional longer pauses
-        let delay = 30 + Math.random() * 70;
-        if (Math.random() < 0.1) delay += 100 + Math.random() * 150; // brief hesitation
-        await new Promise(r => setTimeout(r, delay));
-      }
-      return `Inserted ${text.length} characters with humanized typing delays`;
+      // Brief human hesitation before pasting
+      await new Promise(r => setTimeout(r, 100 + Math.random() * 200));
+      
+      // Insert the entire text at once (mimics Paste)
+      await wc.insertText(text);
+      
+      // Brief pause after pasting to let React/Vue state update
+      await new Promise(r => setTimeout(r, 50));
+      
+      return `Inserted (pasted) ${text.length} characters`;
     } catch (e: any) {
       return `insertText error: ${e.message}`;
     }
@@ -1242,6 +1294,14 @@ export class BrowserViewManager {
         localStorage: JSON.stringify(parsed.local),
         sessionStorage: JSON.stringify(parsed.session)
       });
+      
+      // Prevent memory leaks from accumulating snapshots
+      while (this.sessionSnapshots.size > 20) {
+        const oldest = this.sessionSnapshots.keys().next().value;
+        if (oldest) this.sessionSnapshots.delete(oldest);
+        else break;
+      }
+      
       return id;
     } catch (e: any) {
       return `Error creating snapshot: ${e.message}`;
@@ -1267,20 +1327,32 @@ export class BrowserViewManager {
       await this.importCookies(snap.cookies);
       
       // 3. Navigate back — wait for did-navigate event (not a fixed timeout)
+      // Cleanup function is hoisted so the timeout path can remove listeners.
+      let onNav: (() => void) | null = null;
       const navDone = new Promise<void>((resolve) => {
-        const onNav = () => {
-          this.view?.webContents.removeListener('did-navigate', onNav);
-          this.view?.webContents.removeListener('did-navigate-in-page', onNav);
+        onNav = () => {
+          this.view?.webContents.removeListener('did-navigate', onNav!);
+          this.view?.webContents.removeListener('did-navigate-in-page', onNav!);
           resolve();
         };
         this.view!.webContents.once('did-navigate', onNav);
         this.view!.webContents.once('did-navigate-in-page', onNav);
       });
       await this.view!.webContents.loadURL(snap.url);
-      // Wait for navigation with a 5s timeout fallback
-      await Promise.race([navDone, new Promise<void>(r => setTimeout(r, 5000))]);
+      // Wait for navigation with a 5s timeout fallback.
+      // On timeout, remove the once-listeners to prevent accumulation.
+      await Promise.race([navDone, new Promise<void>(r => setTimeout(() => {
+        if (onNav) {
+          this.view?.webContents.removeListener('did-navigate', onNav);
+          this.view?.webContents.removeListener('did-navigate-in-page', onNav);
+        }
+        r();
+      }, 5000))]);
 
       // 4. Restore Local/Session Storage
+      // snap.localStorage is a JSON string (e.g. '[["key","value"]]').
+      // Interpolating it directly into the script is safe because JSON is valid JS syntax,
+      // and JSON.stringify inherently escapes all quotes and backslashes properly.
       const frame = this.view!.webContents.mainFrame;
       await frame.executeJavaScriptInIsolatedWorld(999, [{ code: `
         try {
@@ -1372,6 +1444,10 @@ export class BrowserViewManager {
     if (!this.ensureHealthyView()) return { matches: 0, activeMatch: 0 };
     return new Promise((resolve) => {
       const wc = this.view!.webContents;
+      // Clear any pending search listeners to prevent race conditions
+      // from rapid successive calls resolving each other's promises.
+      wc.removeAllListeners('found-in-page');
+
       // found-in-page fires for each match found; finalUpdate=true means search is complete
       const handler = (_event: any, result: any) => {
         if (result.finalUpdate) {
@@ -1514,15 +1590,17 @@ export class BrowserViewManager {
    * @param filePaths Array of absolute file paths to upload
    */
   async setFileForUpload(ref: string, filePaths: string[]): Promise<string> {
-    const backendNodeId = this.refMap.get(ref);
-    if (!backendNodeId) return `Error: ref ${ref} not found. Run browser_snapshot first.`;
+    const refData = this.refMap.get(ref);
+    if (!refData) return `Error: ref ${ref} not found. Run browser_snapshot first.`;
     if (!await this.ensureCDP()) return 'Error: CDP not available';
+    const { backendNodeId, frameId } = refData;
+    const sessionId = frameId ? this.oopifSessions.get(frameId) : undefined;
 
     try {
       await this.cdpCommand('DOM.setFileInputFiles', {
         files: filePaths,
         backendNodeId,
-      });
+      }, 1, sessionId);
       return `Set ${filePaths.length} file(s) on [${ref}]: ${filePaths.map(f => f.split('/').pop()).join(', ')}`;
     } catch (e: any) {
       return `File upload error: ${e.message}`;
@@ -1556,20 +1634,30 @@ export class BrowserViewManager {
         let settled = false;
         let targetRequestId = '';
         let targetUrl = '';
+        let targetSessionId: string | undefined = undefined;
+        const viewRef = this.view!; // Capture ref to detect destruction
 
         const cleanup = () => {
           debugger_.removeListener('message', handler);
           clearTimeout(timer);
         };
 
-        const handler = async (_event: any, method: string, params: any) => {
+        const handler = async (_event: any, method: string, params: any, sessionId: string) => {
           if (settled) return;
+          // Guard: if view was destroyed (crash/recreate), clean up immediately
+          if (viewRef.webContents.isDestroyed()) {
+            settled = true;
+            cleanup();
+            resolve('Network capture aborted: view was destroyed.');
+            return;
+          }
 
           if (method === 'Network.responseReceived') {
             const url: string = params.response?.url || '';
             if (url.includes(urlPattern) && !targetRequestId) {
               targetRequestId = params.requestId;
               targetUrl = url;
+              targetSessionId = sessionId;
             }
           } else if (method === 'Network.loadingFinished' && targetRequestId === params.requestId) {
             settled = true;
@@ -1577,7 +1665,9 @@ export class BrowserViewManager {
             try {
               const { body, base64Encoded } = await this.cdpCommand(
                 'Network.getResponseBody',
-                { requestId: targetRequestId }
+                { requestId: targetRequestId },
+                1,
+                targetSessionId
               );
               const content = base64Encoded
                 ? Buffer.from(body, 'base64').toString('utf-8')
@@ -1616,15 +1706,141 @@ export class BrowserViewManager {
   async ensureCDP(): Promise<boolean> {
     if (!this.view || this.view.webContents.isDestroyed()) return false;
     if (this.cdpAttached) return true;
+    // Coalesce concurrent callers onto a single attach operation.
+    // Without this, did-navigate's ensureCDP() and navigate's ensureCDP()
+    // would race into debugger.attach() simultaneously, causing "Already attached" noise.
+    if (this.cdpAttachingPromise) return this.cdpAttachingPromise;
+    this.cdpAttachingPromise = this._doAttachCDP();
+    try {
+      return await this.cdpAttachingPromise;
+    } finally {
+      this.cdpAttachingPromise = null;
+    }
+  }
+
+  private async _doAttachCDP(): Promise<boolean> {
+    if (!this.view || this.view.webContents.isDestroyed()) return false;
     try {
       this.view.webContents.debugger.attach('1.3');
       this.cdpAttached = true;
       
-      this.cdpCommand('Network.enable').catch(() => {});
+      // Use raw sendCommand (not this.cdpCommand) to avoid
+      // ensureCDP → cdpCommand → ensureCDP recursion.
+      const send = (m: string, p?: any) => this.view!.webContents.debugger.sendCommand(m, p);
+      send('Network.enable').catch(() => {});
+      
+      const CHROME_VERSION = '131';
+      const EVASION_SCRIPT = `
+        // 1. navigator.userAgentData
+        try {
+          Object.defineProperty(navigator, 'userAgentData', {
+            value: {
+              brands: [
+                { brand: "Google Chrome", version: "${CHROME_VERSION}" },
+                { brand: "Chromium", version: "${CHROME_VERSION}" },
+                { brand: "Not_A Brand", version: "24" }
+              ],
+              mobile: false,
+              platform: "macOS",
+              getHighEntropyValues: () => Promise.resolve({
+                architecture: "arm",
+                model: "",
+                platform: "macOS",
+                platformVersion: "15.0.0",
+                uaFullVersion: "${CHROME_VERSION}.0.0.0",
+                fullVersionList: [
+                  { brand: "Google Chrome", version: "${CHROME_VERSION}.0.0.0" },
+                  { brand: "Chromium", version: "${CHROME_VERSION}.0.0.0" }
+                ]
+              })
+            },
+            configurable: true
+          });
+        } catch {}
+
+        // 2. window.chrome
+        if (!window.chrome) window.chrome = {};
+        if (!window.chrome.runtime) {
+          window.chrome.runtime = { connect: () => {}, sendMessage: () => {}, id: undefined };
+        }
+        window.chrome.csi = () => ({});
+        window.chrome.loadTimes = () => ({});
+
+        // 3. navigator.plugins
+        try {
+          Object.defineProperty(navigator, 'plugins', {
+            get: () => [
+              { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+              { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+              { name: 'Native Client', filename: 'internal-nacl-plugin' }
+            ]
+          });
+        } catch {}
+
+        // 4. Remove Electron fingerprints
+        try {
+          delete window.process; delete window.require; delete window.module;
+          delete window.exports; delete window.__electron_preload;
+        } catch {}
+
+        // 5. navigator.webdriver
+        try { Object.defineProperty(navigator, 'webdriver', { get: () => false }); } catch {}
+
+      `;
+
+      // Inject anti-bot evasion and dialog suppression into EVERY frame BEFORE page scripts run.
+      // We MUST await these to ensure the registry is armed before any navigation completes.
+      await send('Page.enable');
+      await send('Page.addScriptToEvaluateOnNewDocument', { source: EVASION_SCRIPT });
+      
+      // Handle cross-origin Out-of-Process Iframes (OOPIFs)
+      // Site Isolation means cross-origin iframes run in separate processes.
+      // To inject evasion into them, we MUST auto-attach and intercept their creation.
+      // NOTE: Isolated from Page.enable/addScript — if setAutoAttach fails (e.g. target
+      // doesn't support it), we still want ensureCDP to succeed since evasion IS registered.
+      await send('Target.setAutoAttach', {
+        autoAttach: true,
+        waitForDebuggerOnStart: true, // Pause child target to inject evasion before any JS runs
+        flatten: true
+      }).catch(e => console.warn('[DSME] Target.setAutoAttach failed (non-fatal):', e.message));
 
       if (!this.networkListenerAttached) {
         this.networkListenerAttached = true;
-        this.view.webContents.debugger.on('message', (_event, method, params) => {
+        this.view.webContents.debugger.on('message', (_event, method, params, sessionId) => {
+          if (method === 'Target.attachedToTarget') {
+            const childSid = params.sessionId;
+            const targetInfo = params.targetInfo || {};
+            const targetId = targetInfo.targetId;
+            const targetType = targetInfo.type; // "page", "iframe", "worker", "service_worker", etc.
+            
+            if (targetId) this.oopifSessions.set(targetId, childSid);
+
+            // In flatten mode, route commands to child via sessionId (3rd arg).
+            const childSend = (m: string, p?: any) =>
+              this.view!.webContents.debugger.sendCommand(m, p, childSid);
+            
+            // Only inject evasion scripts into DOM-bearing targets (page/iframe).
+            // Workers do not have a Page domain and would throw on Page.enable.
+            if (targetType === 'page' || targetType === 'iframe') {
+              childSend('Page.enable')
+                .then(() => childSend('Page.addScriptToEvaluateOnNewDocument', { source: EVASION_SCRIPT }))
+                .catch(e => console.warn(`[DSME] OOPIF injection failed for ${targetType}:`, e.message))
+                .finally(() => childSend('Runtime.runIfWaitingForDebugger').catch(() => {}));
+            } else {
+              // For all other targets (workers, etc.), just release the debugger pause immediately.
+              // Failing to do this permanently freezes all Web Workers on the site.
+              childSend('Runtime.runIfWaitingForDebugger').catch(() => {});
+            }
+          }
+          if (method === 'Target.detachedFromTarget') {
+            const targetId = params.targetId;
+            if (targetId) this.oopifSessions.delete(targetId);
+            else {
+              for (const [tId, sId] of this.oopifSessions.entries()) {
+                if (sId === params.sessionId) { this.oopifSessions.delete(tId); break; }
+              }
+            }
+          }
           if (method === 'Network.responseReceived') {
             const url = params.response?.url || '';
             const mimeType = params.response?.mimeType || '';
@@ -1635,12 +1851,13 @@ export class BrowserViewManager {
                 method: params.response?.requestHeaders?.[':method'] || params.response?.requestHeaders?.['Method'] || 'GET',
                 mimeType,
                 status: params.response?.status || 0,
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                sessionId
               });
               // Keep map size reasonable (last 50 requests)
               if (this.recentNetworkRequests.size > 50) {
-                const oldest = Array.from(this.recentNetworkRequests.keys())[0];
-                this.recentNetworkRequests.delete(oldest);
+                const oldest = this.recentNetworkRequests.keys().next().value;
+                if (oldest) this.recentNetworkRequests.delete(oldest);
               }
             }
           }
@@ -1667,7 +1884,7 @@ export class BrowserViewManager {
   }
 
   /** Send a CDP command. Auto-retries once if the target detached asynchronously (process swap). */
-  async cdpCommand(method: string, params?: Record<string, any>, retries = 1): Promise<any> {
+  async cdpCommand(method: string, params?: Record<string, any>, retries = 1, sessionId?: string): Promise<any> {
     if (!this.view || this.view.webContents.isDestroyed()) {
       throw new Error('CDP not attached: view destroyed');
     }
@@ -1676,15 +1893,26 @@ export class BrowserViewManager {
     await this.ensureCDP();
 
     try {
-      return await this.view.webContents.debugger.sendCommand(method, params);
+      // CRITICAL: Wrap sendCommand in a 30s timeout.
+      // If Chromium's renderer is hung or the OOPIF session is stale,
+      // sendCommand can await its internal Promise forever, deadlocking the Agent.
+      let timer: NodeJS.Timeout;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`CDP command '${method}' timed out after 30s`)), 30_000);
+      });
+      const result = await Promise.race([
+        this.view.webContents.debugger.sendCommand(method, params, sessionId),
+        timeoutPromise
+      ]).finally(() => clearTimeout(timer!));
+      return result;
     } catch (e: any) {
-      if (retries > 0 && e.message?.includes('not attached')) {
-        // Race condition: target detached asynchronously after ensureCDP (e.g. process swap).
+      if (retries > 0 && (e.message?.includes('not attached') || e.message?.includes('timed out'))) {
+        // Race condition or hang: target detached asynchronously after ensureCDP, or command hung.
         // Force state reset, wait a bit for Electron to settle, and retry.
         this.cdpAttached = false;
         try { this.view.webContents.debugger.detach(); } catch {}
         await new Promise(r => setTimeout(r, 100));
-        return this.cdpCommand(method, params, retries - 1);
+        return this.cdpCommand(method, params, retries - 1, sessionId);
       }
       throw e;
     }
@@ -1814,10 +2042,11 @@ export class BrowserViewManager {
   }
 
   async getNetworkResponseBody(requestId: string): Promise<string> {
-    if (!this.recentNetworkRequests.has(requestId)) return `Error: request ID ${requestId} not found or expired.`;
+    const req = this.recentNetworkRequests.get(requestId);
+    if (!req) return `Error: request ID ${requestId} not found or expired.`;
     if (!await this.ensureCDP()) return 'Error: CDP not attached';
     try {
-      const { body, base64Encoded } = await this.cdpCommand('Network.getResponseBody', { requestId });
+      const { body, base64Encoded } = await this.cdpCommand('Network.getResponseBody', { requestId }, 1, req.sessionId);
       const content = base64Encoded ? Buffer.from(body, 'base64').toString('utf-8') : body;
       return content.length > 50000 ? content.slice(0, 50000) + '\n...(truncated)' : content;
     } catch (e: any) {
@@ -1879,8 +2108,11 @@ export class BrowserViewManager {
 
     const framePromises = allFrameIds.map(async (frame) => {
       try {
-        const params: any = { depth: -1 };
-        if (frame.id) params.frameId = frame.id;
+        const sessionId = frame.id ? this.oopifSessions.get(frame.id) : undefined;
+        // When querying an OOPIF directly via its sessionId, we do not pass frameId.
+        // It acts as the main frame for that specific Target session.
+        const axParams: any = { depth: -1 };
+        if (!sessionId && frame.id) axParams.frameId = frame.id;
 
         let timer: NodeJS.Timeout;
         const timeoutPromise = new Promise<never>((_, reject) => {
@@ -1888,7 +2120,7 @@ export class BrowserViewManager {
         });
 
         const { nodes } = await Promise.race([
-          this.cdpCommand('Accessibility.getFullAXTree', params),
+          this.cdpCommand('Accessibility.getFullAXTree', axParams, 1, sessionId),
           timeoutPromise
         ]).finally(() => clearTimeout(timer));
         // Tag each node with its frame URL for output annotation
@@ -1915,7 +2147,7 @@ export class BrowserViewManager {
     // Step 3: Format into compact text with refs
     const lines: string[] = [];
     let refCounter = 0;
-    const newRefMap = new Map<string, number>();
+    const newRefMap = new Map<string, { backendNodeId: number; frameId: string }>();
     const newRefLabels = new Map<string, string>();
     const frameIds = new Set<string>();
     let currentFrameUrl = '';
@@ -1960,6 +2192,8 @@ export class BrowserViewManager {
       const props: any[] = node.properties || [];
       const isDisabled = props.some((p: any) => p.name === 'disabled' && p.value?.value === true);
       const isEditable = props.some((p: any) => p.name === 'editable' && p.value?.value);
+      const isFocused = props.some((p: any) => p.name === 'focused' && p.value?.value === true);
+      const description: string = (node.description?.value || '').trim();
 
       // Interactive elements get refs
       if (INTERACTIVE_ROLES.has(role) || isEditable) {
@@ -1967,14 +2201,16 @@ export class BrowserViewManager {
           interactiveWithBackendId++;
           refCounter++;
           const ref = `e${refCounter}`;
-          newRefMap.set(ref, backendId);
+          newRefMap.set(ref, { backendNodeId: backendId, frameId: node._frameId || '' });
           // Cache the label so getElementCenterByCDP doesn't need a DOM.describeNode round-trip
           const displayName = name || role;
           newRefLabels.set(ref, displayName);
 
           const disabledTag = isDisabled ? ' [DISABLED]' : '';
+          const focusedTag = isFocused ? ' [FOCUSED]' : '';
           const valueDisplay = value ? ` value="${value.slice(0, 40)}"` : '';
-          lines.push(`[${ref}] ${role} "${displayName.slice(0, 60)}"${valueDisplay}${disabledTag}`);
+          const descDisplay = description && description !== name ? ` (desc: "${description.slice(0, 40)}")` : '';
+          lines.push(`[${ref}] ${role} "${displayName.slice(0, 60)}"${valueDisplay}${descDisplay}${disabledTag}${focusedTag}`);
         } else {
           interactiveWithoutBackendId++;
         }
@@ -1983,15 +2219,16 @@ export class BrowserViewManager {
       else if (role === 'heading' && name) {
         lines.push(`heading: ${name.slice(0, 80)}`);
       }
-      // Static text (only substantial blocks)
-      else if (role === 'staticText' && name.length > 15 && name.length < 200) {
+      // Static text: keep all text > 1 char (crucial for short form labels like "Name:").
+      // Truncate ultra-long text instead of dropping it.
+      else if (role === 'staticText' && name.length > 1) {
         lines.push(`text: ${name.slice(0, 120)}`);
       }
       // Images
       else if (role === 'image' && name && backendId) {
         refCounter++;
         const ref = `e${refCounter}`;
-        newRefMap.set(ref, backendId);
+        newRefMap.set(ref, { backendNodeId: backendId, frameId: node._frameId || '' });
         newRefLabels.set(ref, name);
         lines.push(`[${ref}] img "${name.slice(0, 60)}"`);
       }
@@ -2042,23 +2279,35 @@ export class BrowserViewManager {
    * Works cross-frame — no need to compute iframe offsets manually.
    */
   async getElementCenterByCDP(ref: string): Promise<{ x: number; y: number; label: string } | null> {
-    const backendNodeId = this.refMap.get(ref);
-    if (!backendNodeId) {
+    const refData = this.refMap.get(ref);
+    if (!refData) {
       // Ref not found — could mean page state changed after last snapshot.
       // Caller should re-run browser_snapshot to refresh refs.
       return null;
     }
+    const { backendNodeId, frameId } = refData;
+    const sessionId = frameId ? this.oopifSessions.get(frameId) : undefined;
 
     try {
       if (!await this.ensureCDP()) return null;
 
-      // Scroll into view first
+      // Scroll into view first (using center alignment to avoid sticky headers/footers)
       try {
-        await this.cdpCommand('DOM.scrollIntoViewIfNeeded', { backendNodeId });
-      } catch { /* element might already be visible */ }
+        const { object } = await this.cdpCommand('DOM.resolveNode', { backendNodeId }, 1, sessionId);
+        if (object && object.objectId) {
+          await this.cdpCommand('Runtime.callFunctionOn', {
+            functionDeclaration: `function() { this.scrollIntoView({ block: 'center', inline: 'center' }); }`,
+            objectId: object.objectId
+          }, 1, sessionId);
+          // Release the JS object reference to prevent V8 heap accumulation
+          this.cdpCommand('Runtime.releaseObject', { objectId: object.objectId }, 0, sessionId).catch(() => {});
+          // Wait briefly for smooth scrolling to settle
+          await new Promise(r => setTimeout(r, 100));
+        }
+      } catch { /* element might already be visible or resolving failed */ }
 
       // Get content quads — returns viewport coordinates
-      const { quads } = await this.cdpCommand('DOM.getContentQuads', { backendNodeId });
+      const { quads } = await this.cdpCommand('DOM.getContentQuads', { backendNodeId }, 1, sessionId);
       if (!quads || quads.length === 0) return null;
 
       // First quad: [x1,y1, x2,y2, x3,y3, x4,y4]
@@ -2081,15 +2330,62 @@ export class BrowserViewManager {
    * Works cross-frame — CDP handles iframe context automatically.
    */
   async focusElementByCDP(ref: string): Promise<string> {
-    const backendNodeId = this.refMap.get(ref);
-    if (!backendNodeId) return `Error: ref ${ref} not found. Run browser_snapshot first.`;
+    const refData = this.refMap.get(ref);
+    if (!refData) return `Error: ref ${ref} not found. Run browser_snapshot first.`;
+    const { backendNodeId, frameId } = refData;
+    const sessionId = frameId ? this.oopifSessions.get(frameId) : undefined;
 
     try {
       if (!await this.ensureCDP()) return 'Error: CDP not available';
-      await this.cdpCommand('DOM.focus', { backendNodeId });
+      await this.cdpCommand('DOM.focus', { backendNodeId }, 1, sessionId);
       return `Focused [${ref}] via CDP`;
     } catch (e: any) {
       return `CDP focus error: ${e.message}`;
+    }
+  }
+
+  /**
+   * Clear the value of an input element using CDP.
+   * Solves the OOPIF cross-frame clearing bug: legacy JS executeJS() runs in the mainFrame,
+   * which fails to clear inputs inside cross-origin iframes.
+   *
+   * Handles both standard inputs (.value) and contenteditable elements (.textContent).
+   */
+  async clearInputByCDP(ref: string): Promise<string> {
+    const refData = this.refMap.get(ref);
+    if (!refData) return `Error: ref ${ref} not found.`;
+    const { backendNodeId, frameId } = refData;
+    const sessionId = frameId ? this.oopifSessions.get(frameId) : undefined;
+
+    try {
+      if (!await this.ensureCDP()) return 'Error: CDP not available';
+      // Resolve the backend node to a JS object in the correct frame context
+      const { object } = await this.cdpCommand('DOM.resolveNode', { backendNodeId }, 1, sessionId);
+      if (!object || !object.objectId) return 'Error: Could not resolve DOM node for clearing';
+
+      // Execute clear logic on the specific node, inside its correct frame context.
+      // `this` is automatically bound to the resolved object by callFunctionOn.
+      // Must handle BOTH standard inputs (have .value) and contenteditable (have .textContent).
+      const clearJS = `function() {
+        if ('value' in this && (this.tagName === 'INPUT' || this.tagName === 'TEXTAREA' || this.tagName === 'SELECT')) {
+          this.value = '';
+        } else if (this.isContentEditable) {
+          this.textContent = '';
+        }
+        this.dispatchEvent(new Event('input', { bubbles: true }));
+        this.dispatchEvent(new Event('change', { bubbles: true }));
+      }`;
+      await this.cdpCommand('Runtime.callFunctionOn', {
+        functionDeclaration: clearJS,
+        objectId: object.objectId,
+      }, 1, sessionId);
+
+      // Release the JS object reference to prevent V8 heap accumulation
+      this.cdpCommand('Runtime.releaseObject', { objectId: object.objectId }, 0, sessionId).catch(() => {});
+
+      return `Cleared input [${ref}] via CDP`;
+    } catch (e: any) {
+      return `CDP clear error: ${e.message}`;
     }
   }
 
@@ -2100,7 +2396,7 @@ export class BrowserViewManager {
 
   /** Get the backendDOMNodeId for a ref. */
   getRefBackendNodeId(ref: string): number | undefined {
-    return this.refMap.get(ref);
+    return this.refMap.get(ref)?.backendNodeId;
   }
 
   /**
@@ -2136,12 +2432,14 @@ export class BrowserViewManager {
    * Called automatically by browserClick and browserType for full transparency.
    */
   async highlightRef(ref: string, durationMs = 800): Promise<void> {
-    const backendNodeId = this.refMap.get(ref);
-    if (!backendNodeId) return;
+    const refData = this.refMap.get(ref);
+    if (!refData) return;
     if (!await this.ensureCDP()) return;
+    const { backendNodeId, frameId } = refData;
+    const sessionId = frameId ? this.oopifSessions.get(frameId) : undefined;
 
     try {
-      await this.cdpCommand('Overlay.enable');
+      await this.cdpCommand('Overlay.enable', undefined, 1, sessionId);
 
       await this.cdpCommand('Overlay.highlightNode', {
         highlightConfig: {
@@ -2154,11 +2452,13 @@ export class BrowserViewManager {
           marginColor:   { r: 0, g: 255, b: 204, a: 0.05 },
         },
         backendNodeId,
-      });
+      }, 1, sessionId);
 
       // Auto-clear after duration
-      setTimeout(() => {
+      if (this.highlightTimeout) clearTimeout(this.highlightTimeout);
+      this.highlightTimeout = setTimeout(() => {
         this.cdpCommand('Overlay.hideHighlight').catch(() => {});
+        this.highlightTimeout = null;
       }, durationMs);
     } catch {
       // Overlay may not be supported — non-fatal
@@ -2188,13 +2488,16 @@ export class BrowserViewManager {
 
     try {
       // Step 1: Collect viewport coordinates for all refs via CDP CONCURRENTLY
-      const quadPromises = Array.from(this.refMap.entries()).map(async ([ref, backendNodeId]) => {
+      const quadPromises = Array.from(this.refMap.entries()).map(async ([ref, refData]) => {
         try {
+          const { backendNodeId, frameId } = refData;
+          const sessionId = frameId ? this.oopifSessions.get(frameId) : undefined;
           // Ensure node is resolved in CDP's DOM tree
+          let timer: NodeJS.Timeout;
           const { quads } = await Promise.race([
-            this.cdpCommand('DOM.getContentQuads', { backendNodeId }),
-            new Promise<any>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2000))
-          ]);
+            this.cdpCommand('DOM.getContentQuads', { backendNodeId }, 1, sessionId),
+            new Promise<any>((_, reject) => { timer = setTimeout(() => reject(new Error('Timeout')), 2000); })
+          ]).finally(() => clearTimeout(timer!));
           if (!quads || quads.length === 0) return null;
 
           // First quad: [x1,y1, x2,y2, x3,y3, x4,y4] — compute bounding box
@@ -2228,7 +2531,10 @@ export class BrowserViewManager {
       // The entire overlay lives inside a Shadow DOM so it cannot be polluted
       // by page CSS, and the page cannot accidentally interact with it.
       const boxesJSON = JSON.stringify(boxes);
-      await this.executeJS(`
+      // Bug fix: Always inject overlay into the mainFrame.
+      // DOM.getContentQuads returns absolute viewport coordinates. If we inject into
+      // a targetFrame (OOPIF), the boxes will be offset incorrectly by the iframe's bounds.
+      await this.view!.webContents.mainFrame.executeJavaScriptInIsolatedWorld(999, [{ code: `
         (function() {
           // Remove any previous overlay
           const old = document.getElementById('dsme-overlay-root');
@@ -2331,7 +2637,7 @@ export class BrowserViewManager {
             shadow.appendChild(div);
           }
         })()
-      `);
+      `}]);
 
       return `X-ray: ${boxes.length} of ${this.refMap.size} refs highlighted with [eN] labels. Run browser_clear_overlay() to dismiss.`;
     } catch (e: any) {
@@ -2346,6 +2652,9 @@ export class BrowserViewManager {
    *   - Shadow DOM multi-node overlay (from highlightAllRefs)
    */
   async clearOverlay(): Promise<void> {
+    // Guard: view may be null during recreateView, or destroyed after crash
+    if (!this.view || this.view.webContents.isDestroyed()) return;
+
     // Clear CDP overlay
     if (this.cdpAttached) {
       try {
@@ -2356,12 +2665,14 @@ export class BrowserViewManager {
 
     // Clear Shadow DOM overlay
     try {
-      await this.executeJS(`
+      // Must use mainFrame + isolatedWorld 999 since highlightAllRefs creates in isolatedWorld 999.
+      // Using main world here would fail if the site hooks document.getElementById.
+      await this.view.webContents.mainFrame.executeJavaScriptInIsolatedWorld(999, [{ code: `
         (function() {
           const el = document.getElementById('dsme-overlay-root');
           if (el) el.remove();
         })()
-      `);
+      ` }]);
     } catch {}
   }
 

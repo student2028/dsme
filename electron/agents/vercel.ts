@@ -17,7 +17,6 @@ import { streamText, tool, stepCountIs } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { z } from 'zod';
 import type { IAgent, AgentConfig } from './base';
-import { RAGEngine } from './rag';
 import { browsePage } from './browser';
 import { shouldContinueModelText } from './continuation';
 import {
@@ -159,14 +158,12 @@ export class VercelAgent implements IAgent {
   private provider!: ReturnType<typeof createOpenAI>;
   private messages: Array<{ role: string; content: string }> = [];
   private abortController: AbortController | null = null;
-  private pendingChanges = new Map<string, { filepath: string; newContent: string; resolve: (v: string) => void }>();
-  private changeIdCounter = 0;
+
   private retryCount = 0;
   /** Retries when the provider ends the stream without pairing tool calls to results (MissingToolResults / similar). */
   private missingToolRecoveryAttempts = 0;
   private truncationCount = 0;
   private busy = false;
-  private rag = new RAGEngine();
   private currentTurnSearchResult: { query: string; result: string } | null = null;
   private assistantReasonings: string[] = [];
 
@@ -291,49 +288,6 @@ export class VercelAgent implements IAgent {
 
     console.log(`[VercelAgent] Initialized with Vercel AI SDK, model=${this.model}, baseUrl=${config.baseUrl}, maxOutputTokens=${this.maxOutputTokens}, maxContextTokens=${this.maxContextTokens}`);
 
-    // Index project files for RAG (non-blocking)
-    this.rag.index(config.cwd).then(count => {
-      console.log(`[VercelAgent] RAG indexed ${count} files`);
-      this.send('rag-status', count);
-    }).catch(() => {});
-
-    // Watch for file changes → auto re-index RAG (debounced)
-    this.setupFileWatcher(config.cwd);
-  }
-
-  private reindexTimer: ReturnType<typeof setTimeout> | null = null;
-  private fsWatcher: import('fs').FSWatcher | null = null;
-
-  private setupFileWatcher(cwd: string): void {
-    try {
-      const fsSync = require('fs');
-      this.fsWatcher = fsSync.watch(cwd, { recursive: true }, (_event: string, filename: string | null) => {
-        if (!filename) return;
-        // Ignore non-code directories
-        if (filename.includes('node_modules') || filename.includes('.git') || 
-            filename.includes('dist') || filename.includes('dist-electron')) return;
-        // Debounce: wait 5s after last change before re-indexing
-        if (this.reindexTimer) clearTimeout(this.reindexTimer);
-        this.reindexTimer = setTimeout(() => {
-          console.log(`[RAG] File change detected (${filename}), re-indexing...`);
-          this.reindex().catch(() => {});
-        }, 5000);
-      });
-      console.log(`[RAG] File watcher active on ${cwd}`);
-    } catch (e) {
-      console.log(`[RAG] File watcher unavailable:`, (e as Error).message);
-    }
-  }
-
-  getRagFileCount(): number { return this.rag.fileCount; }
-
-  async reindex(): Promise<number> {
-    // Use incremental update (mtime-based) instead of full rebuild
-    const { added, updated, removed } = await this.rag.update();
-    if (added > 0 || updated > 0 || removed > 0) {
-      this.send('rag-status', this.rag.fileCount);
-    }
-    return this.rag.fileCount;
   }
 
   private send(channel: string, ...args: any[]) {
@@ -435,15 +389,6 @@ export class VercelAgent implements IAgent {
   /** Clean up resources (file watcher, timers) before disposal */
   destroy(): void {
     this.abort();
-    if (this.fsWatcher) {
-      this.fsWatcher.close();
-      this.fsWatcher = null;
-      console.log('[VercelAgent] File watcher closed');
-    }
-    if (this.reindexTimer) {
-      clearTimeout(this.reindexTimer);
-      this.reindexTimer = null;
-    }
   }
 
   /** Keep message history within context window limits */
@@ -550,126 +495,12 @@ export class VercelAgent implements IAgent {
   private getToolResultCapChars(): number {
     return deriveToolResultCapChars(this.maxContextTokens);
   }
-
-  setupDiffHandlers(): void {
-    ipcMain.on('diff-accept', (_e, changeId: string) => {
-      const p = this.pendingChanges.get(changeId);
-      if (p) { this.pendingChanges.delete(changeId); p.resolve('accepted'); }
-    });
-    ipcMain.on('diff-reject', (_e, changeId: string) => {
-      const p = this.pendingChanges.get(changeId);
-      if (p) { this.pendingChanges.delete(changeId); p.resolve('rejected'); }
-    });
-  }
-
-  // ── Build Vercel AI SDK tools ──
   private getTools() {
     const cwd = this.cwd;
     const send = this.send.bind(this);
     const resolve = (p: string) => path.resolve(cwd, p);
 
     return {
-      read_file: tool({
-        description: 'Read a file.',
-        inputSchema: z.object({ filepath: z.string() }),
-        execute: async ({ filepath }) => {
-          try {
-            const content = await fs.readFile(resolve(filepath), 'utf-8');
-            if (content.length > 50000) {
-              return content.slice(0, 50000) + `\n\n...(truncated, ${content.length} total chars)`;
-            }
-            return content;
-          } catch (e: any) {
-            return `Error reading ${filepath}: ${e.code === 'ENOENT' ? 'File not found' : e.message}`;
-          }
-        },
-      }),
-
-      write_file: tool({
-        description: 'Create/overwrite a file.',
-        inputSchema: z.object({ filepath: z.string(), content: z.string() }),
-        execute: async ({ filepath, content }) => {
-          try {
-            const fp = resolve(filepath);
-            await fs.mkdir(path.dirname(fp), { recursive: true });
-            await fs.writeFile(fp, content, 'utf8');
-            send('file-changed', fp);
-            return `Written: ${filepath}`;
-          } catch (e: any) {
-            return `Error writing ${filepath}: ${e.message}`;
-          }
-        },
-      }),
-
-      replace_in_file: tool({
-        description: 'Replace exact substring in a file. Replaces the first occurrence.',
-        inputSchema: z.object({ filepath: z.string(), target: z.string(), replacement: z.string() }),
-        execute: async ({ filepath, target, replacement }) => {
-          try {
-            const fp = resolve(filepath);
-            const old = await fs.readFile(fp, 'utf8');
-            if (!old.includes(target)) return `Target not found in ${filepath}. Verify exact whitespace/indentation.`;
-            const occurrences = old.split(target).length - 1;
-            await fs.writeFile(fp, old.replace(target, replacement), 'utf8');
-            send('file-changed', fp);
-            return `Replaced in ${filepath}` + (occurrences > 1 ? ` (1 of ${occurrences} occurrences)` : '');
-          } catch (e: any) {
-            return `Error editing ${filepath}: ${e.code === 'ENOENT' ? 'File not found' : e.message}`;
-          }
-        },
-      }),
-
-      list_directory: tool({
-        description: 'List files in a directory.',
-        inputSchema: z.object({ dirpath: z.string() }),
-        execute: async ({ dirpath }) => {
-          try {
-            const entries = await fs.readdir(resolve(dirpath), { withFileTypes: true });
-            return entries.filter(e => !['node_modules', '.git'].includes(e.name))
-              .map(e => `${e.isDirectory() ? '[DIR]' : '[FILE]'} ${e.name}`).join('\n');
-          } catch (e: any) {
-            return `Error listing ${dirpath}: ${e.code === 'ENOENT' ? 'Directory not found' : e.message}`;
-          }
-        },
-      }),
-
-      search_codebase: tool({
-        description: 'Grep search across workspace.',
-        inputSchema: z.object({ query: z.string(), is_regex: z.boolean().optional() }),
-        execute: async ({ query, is_regex }) => {
-          return await searchCodebase(query, cwd, is_regex);
-        },
-      }),
-
-      run_command: tool({
-        description: 'Run shell command.',
-        inputSchema: z.object({ command: z.string() }),
-        execute: async ({ command }) => {
-          // Safety: block catastrophically destructive commands
-          const lower = command.toLowerCase().replace(/\s+/g, ' ');
-          const BANNED = [
-            /rm\s+-rf\s+\/(?!\w)/,     // rm -rf / (but allow /some/path)
-            /mkfs\./,                   // format filesystem
-            /dd\s+.*of=\/dev\//,        // disk overwrite
-            /:(){ :\|:& };:/,           // fork bomb
-            />\s*\/dev\/sd[a-z]/,       // raw disk write
-          ];
-          if (BANNED.some(re => re.test(lower))) {
-            return 'Error: Command blocked for safety. This command could cause catastrophic data loss.';
-          }
-          try {
-            const { stdout, stderr } = await execAsync(command, { cwd, timeout: 60000, maxBuffer: 2 * 1024 * 1024 });
-            send('terminal-output', `\r\n$ ${command}\r\n${stdout}`);
-            let result = stdout + (stderr ? `\nSTDERR:\n${stderr}` : '');
-            return result.length > 16000 ? result.slice(0, 16000) + '\n...(truncated)' : result;
-          } catch (e: any) {
-            const out = (e.stdout || '') + (e.stderr ? `\nSTDERR:\n${e.stderr}` : '');
-            send('terminal-output', `\r\n$ ${command}\r\n${out || e.message}`);
-            return out || `Command failed: ${e.message}`;
-          }
-        },
-      }),
-
       web_search: tool({
         description: 'Search the web for real-time information. Use this when you need current data, news, or anything beyond your training cutoff.',
         inputSchema: z.object({
@@ -717,6 +548,51 @@ export class VercelAgent implements IAgent {
               : `\n搜索完成（${seconds}s），但没有提取到可用摘要。\n`,
           );
           return result;
+        },
+      }),
+
+      run_command: tool({
+        description: 'Run a shell command on the user\'s local machine. This runs in the project directory by default. Used for running scripts (e.g. python, node), installing dependencies, or generic OS commands. Use responsibly.',
+        inputSchema: z.object({ command: z.string().describe('The shell command to execute') }),
+        execute: async ({ command }) => {
+          try {
+            const { stdout, stderr } = await execAsync(command, { cwd });
+            return `STDOUT:\n${stdout}\nSTDERR:\n${stderr}`;
+          } catch (e: any) {
+            return `ERROR: ${e.message}\nSTDOUT:\n${e.stdout}\nSTDERR:\n${e.stderr}`;
+          }
+        },
+      }),
+
+      read_file: tool({
+        description: 'Read the contents of a local file.',
+        inputSchema: z.object({ filepath: z.string().describe('Absolute or relative path to the file') }),
+        execute: async ({ filepath }) => {
+          try {
+            const fullPath = path.resolve(cwd, filepath);
+            const content = await fs.readFile(fullPath, 'utf8');
+            return content;
+          } catch (e: any) {
+            return `Error reading file: ${e.message}`;
+          }
+        },
+      }),
+
+      write_file: tool({
+        description: 'Write string content to a local file. This will overwrite the file if it exists.',
+        inputSchema: z.object({ 
+          filepath: z.string().describe('Absolute or relative path to the file'),
+          content: z.string().describe('The content to write') 
+        }),
+        execute: async ({ filepath, content }) => {
+          try {
+            const fullPath = path.resolve(cwd, filepath);
+            await fs.mkdir(path.dirname(fullPath), { recursive: true });
+            await fs.writeFile(fullPath, content, 'utf8');
+            return `Successfully wrote to ${fullPath}`;
+          } catch (e: any) {
+            return `Error writing file: ${e.message}`;
+          }
         },
       }),
 
@@ -1090,10 +966,7 @@ export class VercelAgent implements IAgent {
     try {
       const result = streamText({
         model: this.provider.chat(this.model),
-        system: getSystemPrompt(this.cwd) + this.rag.buildContext(
-          // Use last user message as RAG query (safely handle multimodal content)
-          this.extractTextContent(this.messages.filter(m => m.role === 'user').pop())
-        ),
+        system: getSystemPrompt(this.cwd),
         messages: this.messages as any,
         tools: forceNoTools ? undefined : this.getTools(),
         maxOutputTokens: this.maxOutputTokens,

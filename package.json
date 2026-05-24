@@ -38,10 +38,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.63",
-    "@monaco-editor/react": "^4.7.0",
     "@mozilla/readability": "^0.6.0",
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/xterm": "^6.0.0",
     "ai": "^6.0.177",
     "dompurify": "^3.4.3",
     "highlight.js": "^11.11.1",

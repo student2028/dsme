@@ -1,18 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useTheme } from '../ThemeContext';
 
-interface Props {
-  activePath: string;
-  language: string;
-  cursorPosition: { line: number; column: number };
-  gitBranch: string;
-}
+interface Props {}
 
-export const StatusBar: React.FC<Props> = ({ activePath, language, cursorPosition, gitBranch }) => {
+export const StatusBar: React.FC<Props> = () => {
   const [model, setModel] = useState('');
   const [connected, setConnected] = useState(false);
   const [agentStatus, setAgentStatus] = useState('idle');
-  const [ragFiles, setRagFiles] = useState(0);
   const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
@@ -34,10 +28,8 @@ export const StatusBar: React.FC<Props> = ({ activePath, language, cursorPositio
   useEffect(() => {
     if (!window.electronAPI) return;
     const unsubChat = window.electronAPI.onChatStatus((status: string) => setAgentStatus(status));
-    const unsubRag = window.electronAPI.onRagStatus((count: number) => setRagFiles(count));
     return () => {
       unsubChat();
-      unsubRag();
     };
   }, []);
 
@@ -57,20 +49,11 @@ export const StatusBar: React.FC<Props> = ({ activePath, language, cursorPositio
     return null;
   };
 
-  const fileName = activePath ? activePath.split('/').pop() || '' : 'No file';
   const statusText = getStatusText();
 
   return (
     <div className="status-bar">
       <div className="status-bar-left">
-        <span className="status-item status-branch" title="Git branch">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{verticalAlign: '-1px', marginRight: '4px'}}>
-            <circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/>
-            <path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/>
-          </svg>
-          {gitBranch || 'main'}
-        </span>
-        <span className="status-item" title={activePath}>{fileName}</span>
         {statusText && (
           <span className="status-item status-agent-active">
             <span className="status-pulse" />
@@ -79,9 +62,6 @@ export const StatusBar: React.FC<Props> = ({ activePath, language, cursorPositio
         )}
       </div>
       <div className="status-bar-right">
-        <span className="status-item">Ln {cursorPosition.line}, Col {cursorPosition.column}</span>
-        <span className="status-item status-lang">{language}</span>
-        <span className="status-item status-encoding">UTF-8</span>
         <button
           type="button"
           className="status-item status-theme"
@@ -105,11 +85,6 @@ export const StatusBar: React.FC<Props> = ({ activePath, language, cursorPositio
           <span className="status-dot" />
           {model || 'No model'}
         </button>
-        {ragFiles > 0 && (
-          <span className="status-item" title={`RAG: ${ragFiles} project files indexed for context retrieval`} style={{ opacity: 0.7 }}>
-            🧠 {ragFiles}
-          </span>
-        )}
         <span className="status-item status-version">🐬 DSME v2.1</span>
       </div>
     </div>

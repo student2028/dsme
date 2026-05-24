@@ -3608,3 +3608,85 @@ textarea:focus-visible {
   overflow: hidden;
   background: #fff;
 }
+
+/* ===== AUTOMATION LAYOUT & TITLEBAR ===== */
+.app-container.automation-layout {
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 38px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  padding: 0 16px;
+  -webkit-app-region: drag; /* allows dragging the window */
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.titlebar-left {
+  display: flex;
+  align-items: center;
+  /* Add padding to the left on macOS so window controls don't overlap the text */
+  padding-left: 70px; 
+}
+
+.app-title-text {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.3px;
+}
+
+.titlebar-right {
+  display: flex;
+  gap: 8px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: all var(--transition);
+  outline: none;
+}
+
+.titlebar-btn:hover {
+  background: var(--accent-subtle);
+  color: var(--accent-color);
+  border-color: var(--accent-color);
+}
+
+.main-content-split {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  position: relative;
+  background: var(--bg-primary);
+}
+
+.browser-pane {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.chat-pane {
+  flex-shrink: 0;
+  height: 100%;
+  display: flex;
+}

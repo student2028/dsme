@@ -1,18 +1,3 @@
-interface FileNode {
-  name: string;
-  path: string;
-  isDirectory: boolean;
-  gitStatus?: 'modified' | 'untracked' | 'clean';
-}
-
-interface DiffChange {
-  id: string;
-  filepath: string;
-  filename: string;
-  oldContent: string;
-  newContent: string;
-}
-
 interface ProviderConfig {
   name: string;
   apiKey: string;
@@ -26,6 +11,7 @@ interface AppConfig {
   baseUrl: string;
   maxOutputTokens: number;
   maxContextTokens: number;
+  maxToolSteps?: number;
   providers: ProviderConfig[];
   activeProvider: string;
 }
@@ -41,26 +27,8 @@ declare global {
       onChatStreamToken: (callback: (token: string) => void) => Unsubscribe;
       onChatStreamEnd: (callback: () => void) => Unsubscribe;
       onChatStatus: (callback: (status: string) => void) => Unsubscribe;
-      getFileTree: (dir?: string) => Promise<FileNode[]>;
-      openWorkspace: () => Promise<string | null>;
-      readFile: (filepath: string) => Promise<string>;
-      writeFile: (filepath: string, content: string) => Promise<boolean>;
-      renameFile: (oldPath: string, newPath: string) => Promise<boolean>;
-      searchFiles: (query: string) => Promise<{ name: string; path: string }[]>;
-      searchCodebase: (query: string) => Promise<string>;
-      getGitBranch: () => Promise<string>;
-      getGitStatus: () => Promise<{ status: string; path: string; staged: boolean }[]>;
-      gitCommit: (msg: string) => Promise<string>;
-      onTerminalOutput: (callback: (data: string) => void) => Unsubscribe;
-      sendTerminalInput: (data: string) => void;
       updateTitle: (title: string) => void;
       onMenuAction: (callback: (action: string) => void) => Unsubscribe;
-      showContextMenu: (path: string, isDir: boolean) => void;
-      onContextMenuAction: (callback: (action: string, path: string) => void) => Unsubscribe;
-      onFileChanged: (callback: (filepath: string) => void) => Unsubscribe;
-      onDiffPreview: (callback: (change: DiffChange) => void) => Unsubscribe;
-      acceptDiff: (changeId: string) => void;
-      rejectDiff: (changeId: string) => void;
       getConfig: () => Promise<AppConfig>;
       saveConfig: (config: Partial<AppConfig>) => Promise<AppConfig>;
       relaunchApp: () => void;
@@ -70,7 +38,6 @@ declare global {
       cancelChatRequest: () => void;
       resetConversation: () => void;
       syncHistory: (messages: any[]) => void;
-      onRagStatus: (callback: (count: number) => void) => Unsubscribe;
       onKernelChanged: (callback: (kernel: string) => void) => Unsubscribe;
       switchKernel: (kernel: string) => void;
       /** @deprecated No longer used — web_search uses BrowserViewManager directly */
@@ -91,6 +58,8 @@ declare global {
       moveWindowBy: (dx: number, dy: number) => void;
       getChromeProfiles: () => Promise<{ dirName: string; name: string; email: string; cookiesPath: string }[]>;
       syncChromeCookies: (profileDirName?: string) => Promise<{ success: boolean; count: number; profile?: string; error?: string }>;
+      browserGoBack: () => Promise<string>;
+      browserGoForward: () => Promise<string>;
     };
   }
 }

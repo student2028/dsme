@@ -9,7 +9,7 @@ export default defineConfig({
     port: 5173,
   },
   build: {
-    chunkSizeWarningLimit: 1000, // Monaco Editor is ~700KB, acceptable for desktop
+    chunkSizeWarningLimit: 1000,
   },
   plugins: [
     react(),

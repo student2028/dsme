@@ -602,10 +602,13 @@ export async function browserType(ref: string, text: string, _retry = false): Pr
     // CDP focus to ensure the element is focused (handles contenteditable in iframes)
     await browserViewManager.focusElementByCDP(ref);
     
-    // Select all existing content for replacement — engine-level Ctrl/Cmd+A.
-    // This works in any frame context (including cross-origin iframes) because
-    // it's dispatched at the Chromium input level, not as injected JS.
-    // The previous Runtime.callFunctionOn approach silently failed for cross-origin elements.
+    // ── Clear existing content ──
+    // 1. Precise clearing via CDP JS evaluation inside the exact frame context.
+    // This correctly triggers React/Vue onChange events.
+    await browserViewManager.clearInputByCDP(ref);
+    
+    // 2. Fallback: Select all existing content for replacement (engine-level Ctrl/Cmd+A).
+    // This catches contenteditable elements where .value doesn't apply.
     try {
       const modifier = process.platform === 'darwin' ? 4 : 2; // 4=Meta, 2=Ctrl
       await browserViewManager.cdpCommand('Input.dispatchKeyEvent', {

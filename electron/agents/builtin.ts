@@ -15,7 +15,6 @@ import { promisify } from 'node:util';
 import { BrowserWindow } from 'electron';
 import OpenAI from 'openai';
 import type { IAgent, AgentConfig } from './base';
-import { RAGEngine } from './rag';
 import { browsePage } from './browser';
 import {
   deriveHistoryBudgetTokens,
@@ -120,13 +119,10 @@ function getSystemPrompt(cwd: string): string {
 
 // ── Tool definitions (OpenAI function calling format) ──
 const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
-  { type: 'function', function: { name: 'read_file', description: 'Read a file.', parameters: { type: 'object', properties: { filepath: { type: 'string' } }, required: ['filepath'] } } },
-  { type: 'function', function: { name: 'write_file', description: 'Create/overwrite a file.', parameters: { type: 'object', properties: { filepath: { type: 'string' }, content: { type: 'string' } }, required: ['filepath', 'content'] } } },
-  { type: 'function', function: { name: 'replace_in_file', description: 'Replace exact substring in a file.', parameters: { type: 'object', properties: { filepath: { type: 'string' }, target: { type: 'string' }, replacement: { type: 'string' } }, required: ['filepath', 'target', 'replacement'] } } },
-  { type: 'function', function: { name: 'list_directory', description: 'List files in a directory.', parameters: { type: 'object', properties: { dirpath: { type: 'string' } }, required: ['dirpath'] } } },
-  { type: 'function', function: { name: 'search_codebase', description: 'Grep search across workspace.', parameters: { type: 'object', properties: { query: { type: 'string' }, is_regex: { type: 'boolean' } }, required: ['query'] } } },
-  { type: 'function', function: { name: 'run_command', description: 'Run shell command.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
   { type: 'function', function: { name: 'web_search', description: 'Search the web for real-time info.', parameters: { type: 'object', properties: { query: { type: 'string' }, engine: { type: 'string', enum: ['google', 'sogou', 'baidu', 'bing'], description: 'Search engine to use. Default: google.' } }, required: ['query'] } } },
+  { type: 'function', function: { name: 'run_command', description: 'Run a shell command on the user\'s local machine. Used for running scripts (e.g. python, node), installing dependencies, or generic OS commands. Use responsibly.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } } },
+  { type: 'function', function: { name: 'read_file', description: 'Read the contents of a local file.', parameters: { type: 'object', properties: { filepath: { type: 'string' } }, required: ['filepath'] } } },
+  { type: 'function', function: { name: 'write_file', description: 'Write string content to a local file. This will overwrite the file if it exists.', parameters: { type: 'object', properties: { filepath: { type: 'string' }, content: { type: 'string' } }, required: ['filepath', 'content'] } } },
   { type: 'function', function: { name: 'fetch_url', description: 'Fetch and read content from a URL (static HTML only, no JS rendering).', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },
   { type: 'function', function: { name: 'browse_page', description: 'Open a URL in a real browser with full JS rendering, then execute a custom script to interact with and extract data from the page. Use for SPAs, dynamic tables, clicking/scrolling. Script runs in page context, can use async/await, MUST return a string.', parameters: { type: 'object', properties: { url: { type: 'string', description: 'URL to open' }, script: { type: 'string', description: 'JavaScript to execute in page context. MUST return a string.' }, wait_before_script: { type: 'number', description: 'Ms to wait after page load. Default: 2000' }, timeout: { type: 'number', description: 'Total timeout ms. Default: 30000' } }, required: ['url', 'script'] } } },
   { type: 'function', function: { name: 'browser_task_start', description: 'Start a named multi-step browser session so all following browser_* steps appear under one timeline heading in the UI. Call once per complex browser workflow.', parameters: { type: 'object', properties: { goal: { type: 'string', description: 'Short user-visible goal, e.g. "Export CSV from dashboard"' } }, required: ['goal'] } } },
@@ -182,11 +178,8 @@ export class BuiltinAgent implements IAgent {
   private messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
   private abortController: AbortController | null = null;
   private busy = false;
-  private rag = new RAGEngine();
   private retryCount = 0;
   private truncationCount = 0;
-  private fsWatcher: import('fs').FSWatcher | null = null;
-  private reindexTimer: ReturnType<typeof setTimeout> | null = null;
   private currentTurnSearchResult: { query: string; result: string } | null = null;
 
   init(window: BrowserWindow, config: AgentConfig): void {
@@ -203,31 +196,6 @@ export class BuiltinAgent implements IAgent {
 
     console.log(`[BuiltinAgent] Initialized, model=${this.model}, apiKey=${config.apiKey ? config.apiKey.slice(0, 8) + '...' : 'EMPTY'}, baseUrl=${config.baseUrl}, maxOutputTokens=${this.maxOutputTokens}, maxContextTokens=${this.maxContextTokens}`);
 
-    // RAG index
-    this.rag.index(config.cwd).then(c => {
-      console.log(`[BuiltinAgent] RAG indexed ${c} files`);
-      this.send('rag-status', c);
-    }).catch(() => {});
-
-    this.setupFileWatcher(config.cwd);
-  }
-
-  private setupFileWatcher(cwd: string): void {
-    try {
-      const fsSync = require('fs');
-      this.fsWatcher = fsSync.watch(cwd, { recursive: true }, (_: string, filename: string | null) => {
-        if (!filename || filename.includes('node_modules') || filename.includes('.git') ||
-            filename.includes('dist') || filename.includes('dist-electron')) return;
-        if (this.reindexTimer) clearTimeout(this.reindexTimer);
-        this.reindexTimer = setTimeout(() => {
-          this.rag.update().then(({ added, updated, removed }) => {
-            if (added > 0 || updated > 0 || removed > 0) {
-              this.send('rag-status', this.rag.fileCount);
-            }
-          }).catch(() => {});
-        }, 5000);
-      });
-    } catch {}
   }
 
   private send(channel: string, ...args: any[]) {
@@ -292,8 +260,6 @@ export class BuiltinAgent implements IAgent {
   abort(): void { this.abortController?.abort(); this.abortController = null; }
   destroy(): void {
     this.abort();
-    if (this.fsWatcher) { this.fsWatcher.close(); this.fsWatcher = null; }
-    if (this.reindexTimer) { clearTimeout(this.reindexTimer); this.reindexTimer = null; }
   }
   setupDiffHandlers(): void {
     // Diff handlers managed by VercelAgent; builtin uses the same IPC channels
@@ -315,10 +281,8 @@ export class BuiltinAgent implements IAgent {
         this.abortController?.abort();
       }, LOOP_TIMEOUT_MS);
       try {
-        // Build system prompt with RAG context
-        const userQuery = this.messages.filter(m => m.role === 'user').pop();
-        const queryText = typeof userQuery?.content === 'string' ? userQuery.content : '';
-        const systemPrompt = getSystemPrompt(this.cwd) + this.rag.buildContext(queryText);
+        // Build system prompt
+        const systemPrompt = getSystemPrompt(this.cwd);
 
         const allMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
           { role: 'system', content: systemPrompt },
@@ -623,44 +587,6 @@ export class BuiltinAgent implements IAgent {
 
     try {
       switch (name) {
-        case 'read_file': {
-          const content = await fs.readFile(resolve(args.filepath), 'utf-8');
-          return content.length > 50000 ? content.slice(0, 50000) + '\n...(truncated)' : content;
-        }
-        case 'write_file': {
-          const fp = resolve(args.filepath);
-          await fs.mkdir(path.dirname(fp), { recursive: true });
-          await fs.writeFile(fp, args.content, 'utf8');
-          this.send('file-changed', fp);
-          return `Written: ${args.filepath}`;
-        }
-        case 'replace_in_file': {
-          const fp = resolve(args.filepath);
-          const old = await fs.readFile(fp, 'utf8');
-          if (!old.includes(args.target)) return `Target not found in ${args.filepath}.`;
-          await fs.writeFile(fp, old.replace(args.target, args.replacement), 'utf8');
-          this.send('file-changed', fp);
-          return `Replaced in ${args.filepath}`;
-        }
-        case 'list_directory': {
-          const entries = await fs.readdir(resolve(args.dirpath), { withFileTypes: true });
-          return entries.filter(e => !['node_modules', '.git'].includes(e.name))
-            .map(e => `${e.isDirectory() ? '[DIR]' : '[FILE]'} ${e.name}`).join('\n');
-        }
-        case 'search_codebase': {
-          return await searchCodebase(args.query, this.cwd, args.is_regex);
-        }
-        case 'run_command': {
-          // Safety: block catastrophically destructive commands
-          const lower = args.command.toLowerCase().replace(/\s+/g, ' ');
-          const BANNED = [/rm\s+-rf\s+\/(?!\w)/, /mkfs\./, /dd\s+.*of=\/dev\//, /:(){ :\|:& };:/, />\s*\/dev\/sd[a-z]/];
-          if (BANNED.some((re: RegExp) => re.test(lower))) {
-            return 'Error: Command blocked for safety.';
-          }
-          const { stdout, stderr } = await execAsync(args.command, { cwd: this.cwd, timeout: 60000, maxBuffer: 2 * 1024 * 1024 });
-          this.send('terminal-output', `\r\n$ ${args.command}\r\n${stdout}`);
-          return (stdout + (stderr ? `\nSTDERR:\n${stderr}` : '')).slice(0, 16000);
-        }
         case 'web_search': {
           if (this.currentTurnSearchResult && hasUsableSearchResults(this.currentTurnSearchResult.result)) {
             const reused = [
@@ -694,6 +620,32 @@ export class BuiltinAgent implements IAgent {
         case 'fetch_url': {
           if (!args.url) return 'Error: url is required for fetch_url. Please provide the URL to fetch.';
           return await fetchUrl(args.url);
+        }
+        case 'run_command': {
+          try {
+            const { stdout, stderr } = await execAsync(args.command, { cwd });
+            return `STDOUT:\n${stdout}\nSTDERR:\n${stderr}`;
+          } catch (e: any) {
+            return `ERROR: ${e.message}\nSTDOUT:\n${e.stdout}\nSTDERR:\n${e.stderr}`;
+          }
+        }
+        case 'read_file': {
+          try {
+            const fullPath = path.resolve(cwd, args.filepath);
+            return await fs.readFile(fullPath, 'utf8');
+          } catch (e: any) {
+            return `Error reading file: ${e.message}`;
+          }
+        }
+        case 'write_file': {
+          try {
+            const fullPath = path.resolve(cwd, args.filepath);
+            await fs.mkdir(path.dirname(fullPath), { recursive: true });
+            await fs.writeFile(fullPath, args.content, 'utf8');
+            return `Successfully wrote to ${fullPath}`;
+          } catch (e: any) {
+            return `Error writing file: ${e.message}`;
+          }
         }
         case 'browse_page': {
           this.send('chat-stream-token', `\n正在打开浏览器页面：${args.url}\n`);

@@ -8,17 +8,13 @@ const shortcuts = [
   {
     group: 'General',
     items: [
-      { keys: ['⌘', 'P'], desc: 'Quick Open (file)' },
       { keys: ['⌘', ','], desc: 'Settings' },
-      { keys: ['⌘', 'B'], desc: 'Toggle sidebar' },
-      { keys: ['⌃', '`'], desc: 'Toggle terminal' },
-      { keys: ['⌘', 'O'], desc: 'Open workspace' },
       { keys: ['⇧', '⌘', 'L'], desc: 'Toggle theme' },
       { keys: ['⌘', '?'], desc: 'This help panel' },
     ],
   },
   {
-    group: 'Chat',
+    group: 'Chat & Web Automation',
     items: [
       { keys: ['⌘', 'N'], desc: 'New conversation' },
       { keys: ['⌘', 'L'], desc: 'Focus chat input' },
@@ -28,16 +24,7 @@ const shortcuts = [
       { keys: ['⌘', 'V'], desc: 'Paste image' },
       { keys: ['Esc'], desc: 'Close search bar' },
     ],
-  },
-  {
-    group: 'Editor',
-    items: [
-      { keys: ['⌘', 'S'], desc: 'Save file' },
-      { keys: ['⌘', 'W'], desc: 'Close tab' },
-      { keys: ['⇧', '⌘', 'F'], desc: 'Find in files' },
-      { keys: ['Middle Click'], desc: 'Close tab' },
-    ],
-  },
+  }
 ];
 
 export const ShortcutsHelp: React.FC<Props> = ({ onClose }) => {

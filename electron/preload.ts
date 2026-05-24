@@ -47,30 +47,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onChatStreamEnd: createMultiSubscriberChannel('chat-stream-end'),
   onChatStatus: createMultiSubscriberChannel('chat-status'),
 
-  getFileTree: (dir?: string) => ipcRenderer.invoke('get-file-tree', dir),
-  openWorkspace: () => ipcRenderer.invoke('open-workspace'),
-  readFile: (filepath: string) => ipcRenderer.invoke('read-file', filepath),
-  writeFile: (filepath: string, content: string) => ipcRenderer.invoke('write-file', filepath, content),
-  renameFile: (oldPath: string, newPath: string) => ipcRenderer.invoke('rename-file', oldPath, newPath),
-  searchFiles: (query: string) => ipcRenderer.invoke('search-files', query),
-  searchCodebase: (query: string) => ipcRenderer.invoke('search-codebase', query),
-
-  getGitBranch: () => ipcRenderer.invoke('get-git-branch'),
-  getGitStatus: () => ipcRenderer.invoke('get-git-status'),
-  gitCommit: (msg: string) => ipcRenderer.invoke('git-commit', msg),
   moveWindowBy: (dx: number, dy: number) => ipcRenderer.send('move-window-by', dx, dy),
-
-  onTerminalOutput: createSingleListenerChannel('terminal-output'),
-  sendTerminalInput: (data: string) => ipcRenderer.send('terminal-input', data),
   updateTitle: (title: string) => ipcRenderer.send('update-title', title),
   onMenuAction: createSingleListenerChannel('menu-action'),
-  showContextMenu: (path: string, isDir: boolean) => ipcRenderer.send('show-context-menu', path, isDir),
-  onContextMenuAction: createMultiSubscriberChannel('context-menu-action'),
-
-  onFileChanged: createMultiSubscriberChannel('file-changed'),
-  onDiffPreview: createSingleListenerChannel('diff-preview'),
-  acceptDiff: (changeId: string) => ipcRenderer.send('diff-accept', changeId),
-  rejectDiff: (changeId: string) => ipcRenderer.send('diff-reject', changeId),
 
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config: any) => ipcRenderer.invoke('save-config', config),
@@ -80,8 +59,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveConversations: (data: string) => ipcRenderer.invoke('save-conversations', data),
   loadConversations: () => ipcRenderer.invoke('load-conversations'),
   syncHistory: (messages: any[]) => ipcRenderer.send('sync-history', messages),
-
-  onRagStatus: createSingleListenerChannel('rag-status'),
 
   switchKernel: (kernel: string) => ipcRenderer.send('switch-kernel', kernel),
   onKernelChanged: createExclusiveListenerChannel('kernel-changed'),

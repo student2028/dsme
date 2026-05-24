@@ -40,9 +40,7 @@ interface Conversation {
   createdAt: number;
 }
 
-interface Props {
-  currentFileContext?: { path: string; content: string } | null;
-}
+interface Props {}
 
 // ── Helpers ──
 let msgId = 0;
@@ -58,10 +56,10 @@ function formatTime(ts: number): string {
 }
 
 // ── Component ──
-export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
+export const ChatPanel: React.FC<Props> = () => {
   const [conversations, setConversations] = useState<Conversation[]>([{
     id: 'conv_0', title: 'New Session',
-    messages: [{ id: newId(), role: 'assistant' as const, content: '你好！有什么我可以帮你的？\n\n我能**搜索网络**、**读写文件**、**运行命令**，还能帮你写代码和调试。', timestamp: Date.now() }],
+    messages: [{ id: newId(), role: 'assistant' as const, content: '你好！我是 Web 自动化助手。\n\n我能为你**操作浏览器网页**、**抓取网页数据**、**同步 Cookie 免登录**、**捕获 API 请求**，实现各种复杂的自动化交互任务。', timestamp: Date.now() }],
     createdAt: Date.now()
   }]);
   const [activeConvId, setActiveConvId] = useState('conv_0');
@@ -291,13 +289,6 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
       }
     }
 
-    if (currentFileContext?.content) {
-      const snippet = currentFileContext.content.length > 3000
-        ? currentFileContext.content.slice(0, 3000) + '\n...(truncated)'
-        : currentFileContext.content;
-      msg = `[CONTEXT: ${currentFileContext.path}]\n\`\`\`\n${snippet}\n\`\`\`\n\n${msg}`;
-    }
-
     if (attachContext) msg = attachContext + '\n' + msg;
 
     const userDisplay = input.trim() + (attachments.length > 0 ? '\n' + attachments.map(a => `[${a.name}]`).join(' ') : '');
@@ -321,7 +312,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
         window.electronAPI.sendChatMessage(msg);
       }
     }
-  }, [input, isLoading, activeConvId, currentFileContext, attachments]);
+  }, [input, isLoading, activeConvId, attachments]);
 
   const handleStop = useCallback(() => {
     if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
@@ -342,7 +333,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
   const handleNewConversation = () => {
     const c: Conversation = {
       id: `conv_${Date.now()}`, title: 'New Session',
-      messages: [{ id: newId(), role: 'assistant' as const, content: '你好！有什么我可以帮你的？\n\n我能**搜索网络**、**读写文件**、**运行命令**，还能帮你写代码和调试。', timestamp: Date.now() }],
+      messages: [{ id: newId(), role: 'assistant' as const, content: '你好！我是 Web 自动化助手。\n\n我能为你**操作浏览器网页**、**抓取网页数据**、**同步 Cookie 免登录**、**捕获 API 请求**，实现各种复杂的自动化交互任务。', timestamp: Date.now() }],
       createdAt: Date.now()
     };
     setConversations(prev => [...prev, c]);
@@ -466,8 +457,6 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
       const tool = agentStatus.replace('tool:', '');
       const labels: Record<string, string> = {
         web_search: '🔍 Searching...', fetch_url: '🌐 Reading page...', browse_page: '🖥️ Browsing...',
-        read_file: '📖 Reading file...', write_file: '✏️ Writing file...', replace_in_file: '🔧 Editing file...',
-        list_directory: '📁 Listing files...', search_codebase: '🔎 Searching code...', run_command: '⚡ Running command...',
       };
       return labels[tool] || `⚙️ ${tool}`;
     }
@@ -512,9 +501,7 @@ export const ChatPanel: React.FC<Props> = ({ currentFileContext }) => {
           )}
         </div>
         <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-          {currentFileContext && (
-            <span className="ctx-indicator" title={currentFileContext.path}>{currentFileContext.path.split('/').pop()}</span>
-          )}
+
           {getStatusLabel() && <span className="agent-status-badge">{getStatusLabel()}</span>}
           <button className={`chat-history-btn ${showHistory ? 'active' : ''}`} onClick={() => setShowHistory(!showHistory)} title={`会话历史 (${conversations.length})`} aria-label="Conversation history">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>

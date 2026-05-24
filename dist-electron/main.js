@@ -16,9 +16,6 @@ node_fs_promises = require_token_util$1.__toESM(node_fs_promises);
 let node_child_process = require("node:child_process");
 node_child_process = require_token_util$1.__toESM(node_child_process);
 let node_util = require("node:util");
-let fs_promises = require("fs/promises");
-let node_os = require("node:os");
-node_os = require_token_util$1.__toESM(node_os);
 let node_fs = require("node:fs");
 node_fs = require_token_util$1.__toESM(node_fs);
 let node_crypto = require("node:crypto");
@@ -20608,7 +20605,7 @@ var shellArgsSchema = lazySchema(() => zodSchema(object$1({ environment: union([
 		})).optional()
 	})
 ]).optional() })));
-var shell$1 = createProviderToolFactoryWithOutputSchema({
+var shell = createProviderToolFactoryWithOutputSchema({
 	id: "openai.shell",
 	inputSchema: shellInputSchema,
 	outputSchema: shellOutputSchema
@@ -20814,7 +20811,7 @@ var openaiTools = {
 	* execution or add strict allow-/deny-lists before forwarding a command to
 	* the system shell.
 	*/
-	shell: shell$1,
+	shell,
 	/**
 	* Web search allows models to access up-to-date information from the internet
 	* and provide answers with sourced citations.
@@ -24472,300 +24469,6 @@ function createOpenAI(options = {}) {
 }
 createOpenAI();
 //#endregion
-//#region electron/agents/rag.ts
-/**
-* DSME RAG Engine — Lightweight project-aware context retrieval
-* 
-* Uses TF-IDF cosine similarity for fast, zero-dependency code search.
-* Indexes project files on startup and provides relevant code snippets
-* to inject into the AI system prompt for every query.
-*/
-var CODE_EXTENSIONS = new Set([
-	".ts",
-	".tsx",
-	".js",
-	".jsx",
-	".py",
-	".go",
-	".rs",
-	".java",
-	".kt",
-	".swift",
-	".c",
-	".cpp",
-	".h",
-	".css",
-	".html",
-	".json",
-	".yaml",
-	".yml",
-	".md",
-	".toml",
-	".sh",
-	".sql",
-	".vue",
-	".svelte"
-]);
-var IGNORE_DIRS = new Set([
-	"node_modules",
-	".git",
-	"dist",
-	"dist-electron",
-	"build",
-	".next",
-	".vscode",
-	".idea",
-	"__pycache__",
-	".cache",
-	"coverage"
-]);
-var MAX_FILE_SIZE = 100 * 1024;
-var MAX_FILES = 500;
-var SNIPPET_LINES = 30;
-var RAGEngine = class {
-	constructor() {
-		this.files = [];
-		this.idf = /* @__PURE__ */ new Map();
-		this.indexed = false;
-		this.indexing = false;
-		this.cwd = "";
-	}
-	/**
-	* Index all project files (call once on startup or workspace change)
-	*/
-	async index(cwd) {
-		if (this.indexing) return this.files.length;
-		this.indexing = true;
-		this.cwd = cwd;
-		this.files = [];
-		this.idf.clear();
-		try {
-			const allFiles = await this.walkDir(cwd);
-			const docFreq = /* @__PURE__ */ new Map();
-			for (const filePath of allFiles.slice(0, MAX_FILES)) try {
-				const content = await (0, fs_promises.readFile)(filePath, "utf-8");
-				const s = await (0, fs_promises.stat)(filePath);
-				const relPath = (0, path.relative)(cwd, filePath);
-				const tokens = this.tokenize(content + " " + relPath);
-				const tf = this.computeTF(tokens);
-				const uniqueTokens = new Set(tokens);
-				for (const token of uniqueTokens) docFreq.set(token, (docFreq.get(token) || 0) + 1);
-				this.files.push({
-					path: relPath,
-					content,
-					tokens,
-					tfidf: tf,
-					mtime: s.mtimeMs
-				});
-			} catch {}
-			const N = this.files.length;
-			for (const [term, df] of docFreq) this.idf.set(term, Math.log((N + 1) / (df + 1)) + 1);
-			for (const file of this.files) for (const [term, tf] of file.tfidf) file.tfidf.set(term, tf * (this.idf.get(term) || 1));
-			this.indexed = true;
-			console.log(`[RAG] Indexed ${this.files.length} files from ${cwd}`);
-			return this.files.length;
-		} finally {
-			this.indexing = false;
-		}
-	}
-	/**
-	* Incremental update — only re-index files that changed since last index.
-	* Much faster than full re-index for typical edit-compile-test cycles.
-	*/
-	async update() {
-		if (!this.indexed || this.indexing || !this.cwd) return {
-			added: 0,
-			updated: 0,
-			removed: 0
-		};
-		this.indexing = true;
-		let added = 0, updated = 0, removed = 0;
-		try {
-			const currentFiles = await this.walkDir(this.cwd);
-			const currentSet = new Set(currentFiles.map((f) => (0, path.relative)(this.cwd, f)));
-			const existingMap = new Map(this.files.map((f) => [f.path, f]));
-			const beforeCount = this.files.length;
-			this.files = this.files.filter((f) => currentSet.has(f.path));
-			removed = beforeCount - this.files.length;
-			for (const filePath of currentFiles.slice(0, MAX_FILES)) {
-				const relPath = (0, path.relative)(this.cwd, filePath);
-				try {
-					const s = await (0, fs_promises.stat)(filePath);
-					const existing = existingMap.get(relPath);
-					if (existing && s.mtimeMs <= existing.mtime) continue;
-					const content = await (0, fs_promises.readFile)(filePath, "utf-8");
-					const tokens = this.tokenize(content + " " + relPath);
-					const tf = this.computeTF(tokens);
-					if (existing) {
-						existing.content = content;
-						existing.tokens = tokens;
-						existing.tfidf = tf;
-						existing.mtime = s.mtimeMs;
-						updated++;
-					} else {
-						this.files.push({
-							path: relPath,
-							content,
-							tokens,
-							tfidf: tf,
-							mtime: s.mtimeMs
-						});
-						added++;
-					}
-				} catch {}
-			}
-			if (added > 0 || removed > 0 || updated > 0) {
-				this.recomputeIDF();
-				console.log(`[RAG] Incremental update: +${added} ~${updated} -${removed} (total: ${this.files.length})`);
-			}
-			return {
-				added,
-				updated,
-				removed
-			};
-		} finally {
-			this.indexing = false;
-		}
-	}
-	/** Recompute IDF and TF-IDF weights for all files */
-	recomputeIDF() {
-		const docFreq = /* @__PURE__ */ new Map();
-		for (const file of this.files) {
-			const uniqueTokens = new Set(file.tokens);
-			for (const token of uniqueTokens) docFreq.set(token, (docFreq.get(token) || 0) + 1);
-		}
-		this.idf.clear();
-		const N = this.files.length;
-		for (const [term, df] of docFreq) this.idf.set(term, Math.log((N + 1) / (df + 1)) + 1);
-		for (const file of this.files) {
-			const tf = this.computeTF(file.tokens);
-			for (const [term, v] of tf) file.tfidf.set(term, v * (this.idf.get(term) || 1));
-		}
-	}
-	/**
-	* Retrieve relevant code snippets for a query
-	*/
-	search(query, topK = 5) {
-		if (!this.indexed || this.files.length === 0) return [];
-		const queryTokens = this.tokenize(query);
-		const queryTF = this.computeTF(queryTokens);
-		const queryVec = /* @__PURE__ */ new Map();
-		for (const [term, tf] of queryTF) queryVec.set(term, tf * (this.idf.get(term) || 1));
-		const scores = [];
-		for (let i = 0; i < this.files.length; i++) {
-			const score = this.cosineSimilarity(queryVec, this.files[i].tfidf);
-			if (score > .01) scores.push({
-				idx: i,
-				score
-			});
-		}
-		scores.sort((a, b) => b.score - a.score);
-		return scores.slice(0, topK).map(({ idx, score }) => {
-			const file = this.files[idx];
-			const snippet = this.extractSnippet(file.content, queryTokens);
-			return {
-				path: file.path,
-				score,
-				snippet
-			};
-		});
-	}
-	/**
-	* Build context string for injection into system prompt
-	*/
-	buildContext(query) {
-		const results = this.search(query, 5);
-		if (results.length === 0) return "";
-		let context = "\n\n## Relevant Project Code (auto-retrieved)\n";
-		for (const r of results) {
-			context += `\n### ${r.path} (relevance: ${(r.score * 100).toFixed(0)}%)\n`;
-			context += "```\n" + r.snippet + "\n```\n";
-		}
-		return context;
-	}
-	get fileCount() {
-		return this.files.length;
-	}
-	get isReady() {
-		return this.indexed;
-	}
-	async walkDir(dir, depth = 0) {
-		if (depth > 10) return [];
-		const results = [];
-		try {
-			const entries = await (0, fs_promises.readdir)(dir, { withFileTypes: true });
-			for (const entry of entries) {
-				if (entry.name.startsWith(".") && entry.name !== ".env.example") continue;
-				const fullPath = (0, path.join)(dir, entry.name);
-				if (entry.isDirectory()) {
-					if (!IGNORE_DIRS.has(entry.name)) {
-						const sub = await this.walkDir(fullPath, depth + 1);
-						results.push(...sub);
-					}
-				} else if (entry.isFile()) {
-					const ext = (0, path.extname)(entry.name).toLowerCase();
-					if (CODE_EXTENSIONS.has(ext)) try {
-						if ((await (0, fs_promises.stat)(fullPath)).size <= MAX_FILE_SIZE) results.push(fullPath);
-					} catch {}
-				}
-			}
-		} catch {}
-		return results;
-	}
-	tokenize(text) {
-		return text.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").toLowerCase().replace(/[^a-z0-9_\u4e00-\u9fff]+/g, " ").split(/[_\s]+/).filter((t) => t.length >= 2 && t.length <= 50);
-	}
-	computeTF(tokens) {
-		const freq = /* @__PURE__ */ new Map();
-		for (const t of tokens) freq.set(t, (freq.get(t) || 0) + 1);
-		let maxFreq = 1;
-		for (const c of freq.values()) if (c > maxFreq) maxFreq = c;
-		const tf = /* @__PURE__ */ new Map();
-		for (const [term, count] of freq) tf.set(term, .5 + .5 * (count / maxFreq));
-		return tf;
-	}
-	cosineSimilarity(a, b) {
-		let dot = 0, normA = 0, normB = 0;
-		for (const [term, va] of a) {
-			const vb = b.get(term) || 0;
-			dot += va * vb;
-			normA += va * va;
-		}
-		for (const [, vb] of b) normB += vb * vb;
-		const denom = Math.sqrt(normA) * Math.sqrt(normB);
-		return denom === 0 ? 0 : dot / denom;
-	}
-	extractSnippet(content, queryTokens) {
-		const lines = content.split("\n");
-		if (lines.length <= SNIPPET_LINES) return content;
-		const querySet = new Set(queryTokens);
-		const lineScores = lines.map((line) => {
-			let s = 0;
-			for (const t of this.tokenize(line)) if (querySet.has(t)) s++;
-			return s;
-		});
-		let bestStart = 0, bestScore = -1;
-		let windowScore = 0;
-		for (let i = 0; i < SNIPPET_LINES && i < lines.length; i++) windowScore += lineScores[i];
-		if (windowScore > bestScore) {
-			bestScore = windowScore;
-			bestStart = 0;
-		}
-		for (let i = 1; i <= lines.length - SNIPPET_LINES; i++) {
-			windowScore -= lineScores[i - 1];
-			windowScore += lineScores[i + SNIPPET_LINES - 1];
-			if (windowScore > bestScore) {
-				bestScore = windowScore;
-				bestStart = i;
-			}
-		}
-		const snippet = lines.slice(bestStart, bestStart + SNIPPET_LINES).join("\n");
-		const prefix = bestStart > 0 ? `// ... (line ${bestStart + 1})\n` : "";
-		const suffix = bestStart + SNIPPET_LINES < lines.length ? "\n// ..." : "";
-		return prefix + snippet + suffix;
-	}
-};
-//#endregion
 //#region electron/browser-view-manager.ts
 /**
 * DSME BrowserViewManager — AI Agent as the Browser Itself
@@ -24821,17 +24524,31 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			this.lastMouseX = -1;
 			this.lastMouseY = -1;
 			this.targetFrame = null;
+			this.navigationCount = 0;
 			this.lastNetworkActivity = 0;
-			this.consoleErrors = [];
 			this.MAX_CONSOLE_ERRORS = 10;
+			this.consoleErrors = [];
 			this.currentTitle = "";
 			this.cdpAttached = false;
+			this.cdpAttachingPromise = null;
 			this.refMap = /* @__PURE__ */ new Map();
 			this.refLabels = /* @__PURE__ */ new Map();
 			this.recentNetworkRequests = /* @__PURE__ */ new Map();
 			this.networkListenerAttached = false;
+			this.inflightRequests = /* @__PURE__ */ new Set();
+			this.oopifSessions = /* @__PURE__ */ new Map();
+			this.highlightTimeout = null;
 			this.recentDownloads = [];
 			this.sessionSnapshots = /* @__PURE__ */ new Map();
+		}
+		/** Centralized ring-buffer push for consoleErrors. Prevents unbounded growth. */
+		pushConsoleError(level, message) {
+			this.consoleErrors.push({
+				level,
+				message: message.slice(0, 200),
+				time: Date.now()
+			});
+			if (this.consoleErrors.length > this.MAX_CONSOLE_ERRORS) this.consoleErrors.shift();
 		}
 		static {
 			this.INTERACTIVE_ROLES = new Set([
@@ -24874,20 +24591,41 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				details.requestHeaders["sec-ch-ua-platform"] = "\"macOS\"";
 				callback({ requestHeaders: details.requestHeaders });
 			});
-			const trackNetworkActivity = () => {
+			const TELEMETRY_DOMAINS = /\b(google-analytics\.com|analytics\.google\.com|googletagmanager\.com|clarity\.ms|hotjar\.com|hotjar\.io|segment\.io|segment\.com|mixpanel\.com|amplitude\.com|sentry\.io|doubleclick\.net|googlesyndication\.com|facebook\.net|fbevents|bat\.bing\.com)\b/i;
+			const TELEMETRY_PATHS = /\/(beacon|collect|pixel|telemetry|heartbeat|__utm|pageview|v1\/track)\b/i;
+			const isTelemetry = (url, type) => {
+				if (type === "ping" || type === "csp_report" || type === "beacon") return true;
+				return TELEMETRY_DOMAINS.test(url) || TELEMETRY_PATHS.test(url);
+			};
+			const trackNetworkStart = (details) => {
+				if (isTelemetry(details.url, details.resourceType)) return;
+				this.inflightRequests.add(details.id);
 				this.lastNetworkActivity = Date.now();
 			};
-			browserSession.webRequest.onSendHeaders(trackNetworkActivity);
-			browserSession.webRequest.onResponseStarted(trackNetworkActivity);
-			browserSession.webRequest.onCompleted(trackNetworkActivity);
-			browserSession.webRequest.onErrorOccurred(trackNetworkActivity);
+			const trackNetworkEnd = (details) => {
+				this.inflightRequests.delete(details.id);
+				if (!isTelemetry(details.url, details.resourceType)) this.lastNetworkActivity = Date.now();
+			};
+			browserSession.webRequest.onSendHeaders(trackNetworkStart);
+			browserSession.webRequest.onResponseStarted((details) => {
+				if (!isTelemetry(details.url, details.resourceType)) this.lastNetworkActivity = Date.now();
+			});
+			browserSession.webRequest.onCompleted(trackNetworkEnd);
+			browserSession.webRequest.onErrorOccurred(trackNetworkEnd);
 			browserSession.removeAllListeners("will-download");
 			browserSession.on("will-download", (event, item, webContents) => {
+				if (this.recentDownloads.filter((d) => d.state === "progressing").length >= 3) {
+					console.warn(`[BrowserViewManager] SECURITY: Blocked concurrent download flooding (${item.getFilename()})`);
+					item.cancel();
+					return;
+				}
 				const os = require("node:os");
-				const downloadPath = require("node:path").join(os.homedir(), "Downloads", item.getFilename());
+				const path = require("node:path");
+				const safeFilename = path.basename(item.getFilename() || "downloaded_file");
+				const downloadPath = path.join(os.homedir(), "Downloads", safeFilename);
 				item.setSavePath(downloadPath);
 				const downloadRecord = {
-					filename: item.getFilename(),
+					filename: safeFilename,
 					path: downloadPath,
 					state: "progressing",
 					time: Date.now(),
@@ -24904,8 +24642,13 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				});
 			});
 			browserSession.setPermissionRequestHandler((_wc, permission, callback) => {
-				console.log(`[BrowserViewManager] Auto-granted permission: ${permission}`);
-				callback(true);
+				if (permission === "media" || permission === "clipboard-read") {
+					console.warn(`[BrowserViewManager] SECURITY: Auto-denied dangerous permission: ${permission}`);
+					callback(false);
+				} else {
+					console.log(`[BrowserViewManager] Auto-granted safe permission: ${permission}`);
+					callback(true);
+				}
 			});
 			browserSession.cookies.removeAllListeners("changed");
 			browserSession.cookies.on("changed", (_event, cookie, cause, removed) => {
@@ -24914,98 +24657,24 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 					if (/sess|token|auth|login|sid|jwt|csrf|_id|account/i.test(name)) {
 						const domain = cookie.domain || "";
 						console.warn(`[BrowserViewManager] Auth cookie removed: ${cookie.name} @ ${domain} (cause: ${cause})`);
-						this.consoleErrors.push({
-							level: "warn",
-							message: `Auth cookie "${cookie.name}" removed from ${domain} (${cause}) — possible logout/session expire`,
-							time: Date.now()
-						});
+						this.pushConsoleError("warn", `Auth cookie "${cookie.name}" removed from ${domain} (${cause}) — possible logout/session expire`);
 					}
 				}
 			});
 			browserSession.setCertificateVerifyProc((_request, callback) => {
 				callback(0);
 			});
-			this.view.webContents.on("dom-ready", () => {
-				this.view?.webContents.executeJavaScript(`
-        // 1. navigator.userAgentData
-        try {
-          Object.defineProperty(navigator, 'userAgentData', {
-            value: {
-              brands: [
-                { brand: "Google Chrome", version: "${CHROME_VERSION}" },
-                { brand: "Chromium", version: "${CHROME_VERSION}" },
-                { brand: "Not_A Brand", version: "24" }
-              ],
-              mobile: false,
-              platform: "macOS",
-              getHighEntropyValues: () => Promise.resolve({
-                architecture: "arm",
-                model: "",
-                platform: "macOS",
-                platformVersion: "15.0.0",
-                uaFullVersion: "${CHROME_VERSION}.0.0.0",
-                fullVersionList: [
-                  { brand: "Google Chrome", version: "${CHROME_VERSION}.0.0.0" },
-                  { brand: "Chromium", version: "${CHROME_VERSION}.0.0.0" }
-                ]
-              })
-            },
-            configurable: true
-          });
-        } catch {}
-
-        // 2. window.chrome (Google checks its existence + shape)
-        if (!window.chrome) window.chrome = {};
-        if (!window.chrome.runtime) {
-          window.chrome.runtime = {
-            connect: () => {},
-            sendMessage: () => {},
-            id: undefined
-          };
-        }
-        window.chrome.csi = () => ({});
-        window.chrome.loadTimes = () => ({});
-
-        // 3. navigator.plugins — Chrome always has at least these
-        try {
-          Object.defineProperty(navigator, 'plugins', {
-            get: () => [
-              { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-              { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-              { name: 'Native Client', filename: 'internal-nacl-plugin' }
-            ]
-          });
-        } catch {}
-
-        // 4. Remove Electron fingerprints
-        try {
-          delete window.process;
-          delete window.require;
-          delete window.module;
-          delete window.exports;
-          delete window.__electron_preload;
-        } catch {}
-
-        // 5. navigator.webdriver (Google checks automation detection)
-        try {
-          Object.defineProperty(navigator, 'webdriver', { get: () => false });
-        } catch {}
-
-        // 6. Auto-handle JS dialogs — prevent alert/confirm/prompt from blocking Agent.
-        // These are intercepted at the page JS level, so no native dialog appears.
-        // The original messages are logged to console for debugging visibility.
-        window.alert = (msg) => { console.warn('[DSME] Suppressed alert:', msg); };
-        window.confirm = (msg) => { console.warn('[DSME] Auto-confirmed:', msg); return true; };
-        window.prompt = (msg, def) => { console.warn('[DSME] Auto-dismissed prompt:', msg); return def || ''; };
-      `).catch(() => {});
-			});
 			this.attached = false;
+			this.ensureCDP().catch((e) => console.warn("[BrowserViewManager] Eager CDP attach failed:", e.message));
 			this.view.webContents.on("did-navigate", (_e, url) => {
 				this.currentUrl = url;
 				this.targetFrame = null;
 				this.refMap.clear();
 				this.refLabels.clear();
+				this.oopifSessions.clear();
+				this.inflightRequests.clear();
 				this.cdpAttached = false;
+				this.ensureCDP().catch(() => {});
 				const title = this.view.webContents.getTitle();
 				this.currentTitle = title;
 				this.notifyRenderer("browser-view-navigated", {
@@ -25014,7 +24683,8 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				});
 				this.clearOverlay().catch(() => {});
 			});
-			this.view.webContents.on("did-navigate-in-page", (_e, url) => {
+			this.view.webContents.on("did-navigate-in-page", (_e, url, isMainFrame) => {
+				if (!isMainFrame) return;
 				this.currentUrl = url;
 				this.refMap.clear();
 				this.refLabels.clear();
@@ -25025,6 +24695,16 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 					title
 				});
 				this.clearOverlay().catch(() => {});
+			});
+			this.view.webContents.on("will-navigate", (event, url) => {
+				const lowerUrl = url.toLowerCase();
+				const isHttp = lowerUrl.startsWith("http://") || lowerUrl.startsWith("https://") || lowerUrl.startsWith("about:blank");
+				const isTempFile = lowerUrl.startsWith("file://") && lowerUrl.includes("dsme-render-");
+				if (!isHttp && !isTempFile) {
+					event.preventDefault();
+					console.warn(`[BrowserViewManager] SECURITY: Blocked unauthorized navigation to: ${url}`);
+					this.pushConsoleError("error", `SECURITY: Prevented unauthorized navigation to local/system protocol: ${url}`);
+				}
 			});
 			this.view.webContents.on("page-title-updated", (_e, title) => {
 				this.currentTitle = title;
@@ -25034,6 +24714,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 					this.targetFrame = null;
 					this.refMap.clear();
 					this.refLabels.clear();
+					this.oopifSessions.clear();
 					this.view.webContents.loadURL(url);
 				}
 				return { action: "deny" };
@@ -25049,11 +24730,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				event.preventDefault();
 				if (dialogInfo.type === "confirm" || dialogInfo.type === "beforeunload") {
 					event.defaultPrevented = true;
-					this.consoleErrors.push({
-						level: "warn",
-						message: `[DSME] Native ${dialogInfo.type} dialog suppressed: ${String(dialogInfo.message || "").slice(0, 100)}`,
-						time: Date.now()
-					});
+					this.pushConsoleError("warn", `[DSME] Native ${dialogInfo.type} dialog suppressed: ${String(dialogInfo.message || "").slice(0, 100)}`);
 				}
 				console.warn(`[BrowserViewManager] Native dialog suppressed: ${dialogInfo.type} — ${dialogInfo.message || ""}`);
 			});
@@ -25062,56 +24739,30 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				this.recreateView();
 			});
 			this.view.webContents.on("console-message", (_event, level, message) => {
-				if (level >= 2) {
-					this.consoleErrors.push({
-						level: level === 2 ? "warn" : "error",
-						message: message.slice(0, 200),
-						time: Date.now()
-					});
-					if (this.consoleErrors.length > this.MAX_CONSOLE_ERRORS) this.consoleErrors.shift();
-				}
+				if (level >= 2) this.pushConsoleError(level === 2 ? "warn" : "error", message.slice(0, 200));
 			});
 			this.view.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
 				if (errorCode === -3) return;
 				console.warn(`[BrowserViewManager] Load failed: ${errorDescription} (${errorCode}) for ${validatedURL}`);
-				this.consoleErrors.push({
-					level: "error",
-					message: `Page load failed: ${errorDescription} (code ${errorCode})`,
-					time: Date.now()
-				});
+				this.pushConsoleError("error", `Page load failed: ${errorDescription} (code ${errorCode})`);
 			});
 			this.view.webContents.setBackgroundThrottling(false);
 			this.view.webContents.on("login", (event, authenticationResponseDetails, authInfo, callback) => {
 				event.preventDefault();
 				console.warn(`[BrowserViewManager] HTTP Basic Auth challenge from ${authInfo.host}:${authInfo.port} (realm: ${authInfo.realm})`);
-				this.consoleErrors.push({
-					level: "warn",
-					message: `HTTP 401 Auth required: ${authInfo.host} (realm: "${authInfo.realm}") — use browser_eval to set credentials or import auth cookies`,
-					time: Date.now()
-				});
+				this.pushConsoleError("warn", `HTTP 401 Auth required: ${authInfo.host} (realm: "${authInfo.realm}") — use browser_eval to set credentials or import auth cookies`);
 				callback();
 			});
 			this.view.webContents.on("unresponsive", () => {
 				console.error("[BrowserViewManager] Page renderer is UNRESPONSIVE (possible hang)");
-				this.consoleErrors.push({
-					level: "error",
-					message: "Page is UNRESPONSIVE — renderer may be hung. Consider waiting or reloading.",
-					time: Date.now()
-				});
+				this.pushConsoleError("error", "Page is UNRESPONSIVE — renderer may be hung. Consider waiting or reloading.");
 			});
 			this.view.webContents.on("responsive", () => {
 				console.log("[BrowserViewManager] Page renderer recovered — responsive again");
-				this.consoleErrors.push({
-					level: "warn",
-					message: "Page recovered from unresponsive state — now interactive again.",
-					time: Date.now()
-				});
+				this.pushConsoleError("warn", "Page recovered from unresponsive state — now interactive again.");
 			});
 			browserSession.webRequest.onHeadersReceived((details, callback) => {
 				const headers = details.responseHeaders || {};
-				delete headers["access-control-allow-origin"];
-				delete headers["Access-Control-Allow-Origin"];
-				headers["Access-Control-Allow-Origin"] = ["*"];
 				delete headers["x-frame-options"];
 				delete headers["X-Frame-Options"];
 				delete headers["content-security-policy"];
@@ -25153,6 +24804,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			} catch {}
 			console.log("[BrowserViewManager] Recreating view...");
 			this.cdpAttached = false;
+			this.cdpAttachingPromise = null;
 			this.networkListenerAttached = false;
 			this.recentNetworkRequests.clear();
 			this.recentDownloads = [];
@@ -25161,13 +24813,24 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			this.currentTitle = "";
 			this.consoleErrors = [];
 			this.lastNetworkActivity = 0;
+			this.inflightRequests.clear();
+			this.oopifSessions.clear();
+			this.navigationCount = 0;
 			this.targetFrame = null;
+			if (this.highlightTimeout) {
+				clearTimeout(this.highlightTimeout);
+				this.highlightTimeout = null;
+			}
 			this.view = null;
 			this.attached = false;
 			this.init(this.mainWindow);
 		}
 		/** Clean up on app quit. */
 		destroy() {
+			if (this.highlightTimeout) {
+				clearTimeout(this.highlightTimeout);
+				this.highlightTimeout = null;
+			}
 			if (this.view) {
 				try {
 					this.view.webContents.close();
@@ -25200,8 +24863,16 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			}
 		}
 		async navigate(url, _retryCount = 0) {
+			const lowerUrl = url.toLowerCase();
+			if (!(lowerUrl.startsWith("http://") || lowerUrl.startsWith("https://") || lowerUrl.startsWith("about:blank"))) return `SECURITY ERROR: Navigation to local/system protocol "${url}" is forbidden. Agent is restricted to http/https.`;
+			if (this.navigationCount > 50) {
+				console.log("[BrowserViewManager] ♻️ Proactively recycling view to clear memory leaks (Process Recycling)");
+				this.recreateView();
+			}
+			this.navigationCount++;
 			if (!this.ensureHealthyView()) return "Error: view not initialized";
 			this.ensureAttached();
+			await this.ensureCDP().catch((e) => console.warn("[BrowserViewManager] Eager CDP attach failed before nav:", e.message));
 			try {
 				this.targetFrame = null;
 				await this.view.webContents.loadURL(url);
@@ -25239,17 +24910,25 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			try {
 				const nav = this.view.webContents.navigationHistory;
 				if (!nav.canGoBack()) return "Cannot go back — no history.";
+				this.targetFrame = null;
+				let cleanupFn = null;
 				const navDone = new Promise((resolve) => {
-					const cleanup = () => {
-						this.view?.webContents.removeListener("did-navigate", cleanup);
-						this.view?.webContents.removeListener("did-navigate-in-page", cleanup);
+					cleanupFn = () => {
+						this.view?.webContents.removeListener("did-navigate", cleanupFn);
+						this.view?.webContents.removeListener("did-navigate-in-page", cleanupFn);
 						resolve();
 					};
-					this.view.webContents.once("did-navigate", cleanup);
-					this.view.webContents.once("did-navigate-in-page", cleanup);
+					this.view.webContents.once("did-navigate", cleanupFn);
+					this.view.webContents.once("did-navigate-in-page", cleanupFn);
 				});
 				nav.goBack();
-				await Promise.race([navDone, new Promise((r) => setTimeout(r, 5e3))]);
+				await Promise.race([navDone, new Promise((r) => setTimeout(() => {
+					if (cleanupFn) {
+						this.view?.webContents.removeListener("did-navigate", cleanupFn);
+						this.view?.webContents.removeListener("did-navigate-in-page", cleanupFn);
+					}
+					r();
+				}, 5e3))]);
 				const url = this.view.webContents.getURL();
 				this.currentUrl = url;
 				this.notifyRenderer("browser-view-navigated", {
@@ -25266,17 +24945,25 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			try {
 				const nav = this.view.webContents.navigationHistory;
 				if (!nav.canGoForward()) return "Cannot go forward — no forward history.";
+				this.targetFrame = null;
+				let cleanupFn = null;
 				const navDone = new Promise((resolve) => {
-					const cleanup = () => {
-						this.view?.webContents.removeListener("did-navigate", cleanup);
-						this.view?.webContents.removeListener("did-navigate-in-page", cleanup);
+					cleanupFn = () => {
+						this.view?.webContents.removeListener("did-navigate", cleanupFn);
+						this.view?.webContents.removeListener("did-navigate-in-page", cleanupFn);
 						resolve();
 					};
-					this.view.webContents.once("did-navigate", cleanup);
-					this.view.webContents.once("did-navigate-in-page", cleanup);
+					this.view.webContents.once("did-navigate", cleanupFn);
+					this.view.webContents.once("did-navigate-in-page", cleanupFn);
 				});
 				nav.goForward();
-				await Promise.race([navDone, new Promise((r) => setTimeout(r, 5e3))]);
+				await Promise.race([navDone, new Promise((r) => setTimeout(() => {
+					if (cleanupFn) {
+						this.view?.webContents.removeListener("did-navigate", cleanupFn);
+						this.view?.webContents.removeListener("did-navigate-in-page", cleanupFn);
+					}
+					r();
+				}, 5e3))]);
 				const url = this.view.webContents.getURL();
 				this.currentUrl = url;
 				this.notifyRenderer("browser-view-navigated", {
@@ -25334,7 +25021,10 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			}
 			const cleanup = () => {
 				try {
-					if (frameSubscriptionActive && this.view?.webContents && !this.view.webContents.isDestroyed()) this.view.webContents.endFrameSubscription();
+					if (frameSubscriptionActive && this.view?.webContents && !this.view.webContents.isDestroyed()) {
+						this.view.webContents.endFrameSubscription();
+						frameSubscriptionActive = false;
+					}
 				} catch {}
 			};
 			const SPINNER_JS = `(()=>{
@@ -25350,7 +25040,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 					continue;
 				}
 				const networkAge = Date.now() - this.lastNetworkActivity;
-				if (this.lastNetworkActivity > 0 && networkAge < NETWORK_QUIET_MS) {
+				if (this.inflightRequests.size > 2 || this.lastNetworkActivity > 0 && networkAge < NETWORK_QUIET_MS) {
 					spinnerStableMs = 0;
 					continue;
 				}
@@ -25377,7 +25067,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 					}
 					continue;
 				}
-				if (networkAge >= NETWORK_QUIET_MS * 2) {
+				if (this.inflightRequests.size <= 2 && networkAge >= NETWORK_QUIET_MS * 2) {
 					cleanup();
 					return `idle: network deeply quiet (animations present) after ${Date.now() - start}ms`;
 				}
@@ -25527,6 +25217,8 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				const startX = this.lastMouseX;
 				const startY = this.lastMouseY;
 				const steps = 15 + Math.floor(Math.random() * 15);
+				const clampX = (v) => Math.max(1, Math.min(Math.round(v), this.bounds.width - 1));
+				const clampY = (v) => Math.max(1, Math.min(Math.round(v), this.bounds.height - 1));
 				const ctrl1X = startX + (cx - startX) * .3 + (Math.random() - .5) * 100;
 				const ctrl1Y = startY + (cy - startY) * .3 + (Math.random() - .5) * 100;
 				const ctrl2X = startX + (cx - startX) * .7 + (Math.random() - .5) * 100;
@@ -25534,8 +25226,8 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				for (let i = 0; i <= steps; i++) {
 					const t = i / steps;
 					const u = 1 - t;
-					const ptX = Math.round(u * u * u * startX + 3 * u * u * t * ctrl1X + 3 * u * t * t * ctrl2X + t * t * t * cx);
-					const ptY = Math.round(u * u * u * startY + 3 * u * u * t * ctrl1Y + 3 * u * t * t * ctrl2Y + t * t * t * cy);
+					const ptX = clampX(u * u * u * startX + 3 * u * u * t * ctrl1X + 3 * u * t * t * ctrl2X + t * t * t * cx);
+					const ptY = clampY(u * u * u * startY + 3 * u * u * t * ctrl1Y + 3 * u * t * t * ctrl2Y + t * t * t * cy);
 					wc.sendInputEvent({
 						type: "mouseMove",
 						x: ptX,
@@ -25588,8 +25280,8 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			const currentX = this.lastMouseX >= 0 ? this.lastMouseX : cx;
 			const currentY = this.lastMouseY >= 0 ? this.lastMouseY : cy;
 			if (this.lastMouseX >= 0 && this.lastMouseY >= 0) for (let i = 1; i <= 3; i++) {
-				const ptX = currentX + (cx - currentX) * (i / 3);
-				const ptY = currentY + (cy - currentY) * (i / 3);
+				const ptX = Math.round(currentX + (cx - currentX) * (i / 3));
+				const ptY = Math.round(currentY + (cy - currentY) * (i / 3));
 				wc.sendInputEvent({
 					type: "mouseMove",
 					x: ptX,
@@ -25626,22 +25318,19 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		}
 		/**
 		* Insert text at the currently focused element using Chromium's native input path.
-		* This is equivalent to a human typing — all framework event listeners fire naturally.
-		* Works with contenteditable, input, textarea, and rich text editors (Quill, ProseMirror, etc.).
-		* Handles CJK (Chinese/Japanese/Korean) characters natively via IME passthrough.
+		* By inserting the entire string at once, this perfectly mimics a human "Paste" action
+		* (Cmd+V / Ctrl+V), which natively fires a single 'input' event without 'keydown'/'keyup'.
+		* This avoids the critical anti-bot fingerprint of "typing delays without keystroke events".
+		* Works with contenteditable, input, textarea, and rich text editors.
 		*/
 		async insertText(text) {
 			if (!this.ensureHealthyView()) return "Error: view not initialized";
 			try {
 				const wc = this.view.webContents;
-				const chars = Array.from(text);
-				for (const char of chars) {
-					await wc.insertText(char);
-					let delay = 30 + Math.random() * 70;
-					if (Math.random() < .1) delay += 100 + Math.random() * 150;
-					await new Promise((r) => setTimeout(r, delay));
-				}
-				return `Inserted ${text.length} characters with humanized typing delays`;
+				await new Promise((r) => setTimeout(r, 100 + Math.random() * 200));
+				await wc.insertText(text);
+				await new Promise((r) => setTimeout(r, 50));
+				return `Inserted (pasted) ${text.length} characters`;
 			} catch (e) {
 				return `insertText error: ${e.message}`;
 			}
@@ -25771,6 +25460,11 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 					localStorage: JSON.stringify(parsed.local),
 					sessionStorage: JSON.stringify(parsed.session)
 				});
+				while (this.sessionSnapshots.size > 20) {
+					const oldest = this.sessionSnapshots.keys().next().value;
+					if (oldest) this.sessionSnapshots.delete(oldest);
+					else break;
+				}
 				return id;
 			} catch (e) {
 				return `Error creating snapshot: ${e.message}`;
@@ -25787,8 +25481,9 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				const snap = this.sessionSnapshots.get(id);
 				await electron.session.fromPartition("persist:browser-panel").clearStorageData();
 				await this.importCookies(snap.cookies);
+				let onNav = null;
 				const navDone = new Promise((resolve) => {
-					const onNav = () => {
+					onNav = () => {
 						this.view?.webContents.removeListener("did-navigate", onNav);
 						this.view?.webContents.removeListener("did-navigate-in-page", onNav);
 						resolve();
@@ -25797,7 +25492,13 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 					this.view.webContents.once("did-navigate-in-page", onNav);
 				});
 				await this.view.webContents.loadURL(snap.url);
-				await Promise.race([navDone, new Promise((r) => setTimeout(r, 5e3))]);
+				await Promise.race([navDone, new Promise((r) => setTimeout(() => {
+					if (onNav) {
+						this.view?.webContents.removeListener("did-navigate", onNav);
+						this.view?.webContents.removeListener("did-navigate-in-page", onNav);
+					}
+					r();
+				}, 5e3))]);
 				await this.view.webContents.mainFrame.executeJavaScriptInIsolatedWorld(999, [{ code: `
         try {
           const local = ${snap.localStorage};
@@ -25874,6 +25575,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			};
 			return new Promise((resolve) => {
 				const wc = this.view.webContents;
+				wc.removeAllListeners("found-in-page");
 				const handler = (_event, result) => {
 					if (result.finalUpdate) {
 						clearTimeout(timeout);
@@ -25992,14 +25694,16 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		* @param filePaths Array of absolute file paths to upload
 		*/
 		async setFileForUpload(ref, filePaths) {
-			const backendNodeId = this.refMap.get(ref);
-			if (!backendNodeId) return `Error: ref ${ref} not found. Run browser_snapshot first.`;
+			const refData = this.refMap.get(ref);
+			if (!refData) return `Error: ref ${ref} not found. Run browser_snapshot first.`;
 			if (!await this.ensureCDP()) return "Error: CDP not available";
+			const { backendNodeId, frameId } = refData;
+			const sessionId = frameId ? this.oopifSessions.get(frameId) : void 0;
 			try {
 				await this.cdpCommand("DOM.setFileInputFiles", {
 					files: filePaths,
 					backendNodeId
-				});
+				}, 1, sessionId);
 				return `Set ${filePaths.length} file(s) on [${ref}]: ${filePaths.map((f) => f.split("/").pop()).join(", ")}`;
 			} catch (e) {
 				return `File upload error: ${e.message}`;
@@ -26028,23 +25732,32 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 					let settled = false;
 					let targetRequestId = "";
 					let targetUrl = "";
+					let targetSessionId = void 0;
+					const viewRef = this.view;
 					const cleanup = () => {
 						debugger_.removeListener("message", handler);
 						clearTimeout(timer);
 					};
-					const handler = async (_event, method, params) => {
+					const handler = async (_event, method, params, sessionId) => {
 						if (settled) return;
+						if (viewRef.webContents.isDestroyed()) {
+							settled = true;
+							cleanup();
+							resolve("Network capture aborted: view was destroyed.");
+							return;
+						}
 						if (method === "Network.responseReceived") {
 							const url = params.response?.url || "";
 							if (url.includes(urlPattern) && !targetRequestId) {
 								targetRequestId = params.requestId;
 								targetUrl = url;
+								targetSessionId = sessionId;
 							}
 						} else if (method === "Network.loadingFinished" && targetRequestId === params.requestId) {
 							settled = true;
 							cleanup();
 							try {
-								const { body, base64Encoded } = await this.cdpCommand("Network.getResponseBody", { requestId: targetRequestId });
+								const { body, base64Encoded } = await this.cdpCommand("Network.getResponseBody", { requestId: targetRequestId }, 1, targetSessionId);
 								const content = base64Encoded ? Buffer.from(body, "base64").toString("utf-8") : body;
 								const preview = content.length > 5e4 ? content.slice(0, 5e4) + "\n...(truncated)" : content;
 								resolve(`Captured response from ${targetUrl} (${content.length} chars):\n${preview}`);
@@ -26075,13 +25788,107 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		async ensureCDP() {
 			if (!this.view || this.view.webContents.isDestroyed()) return false;
 			if (this.cdpAttached) return true;
+			if (this.cdpAttachingPromise) return this.cdpAttachingPromise;
+			this.cdpAttachingPromise = this._doAttachCDP();
+			try {
+				return await this.cdpAttachingPromise;
+			} finally {
+				this.cdpAttachingPromise = null;
+			}
+		}
+		async _doAttachCDP() {
+			if (!this.view || this.view.webContents.isDestroyed()) return false;
 			try {
 				this.view.webContents.debugger.attach("1.3");
 				this.cdpAttached = true;
-				this.cdpCommand("Network.enable").catch(() => {});
+				const send = (m, p) => this.view.webContents.debugger.sendCommand(m, p);
+				send("Network.enable").catch(() => {});
+				const CHROME_VERSION = "131";
+				const EVASION_SCRIPT = `
+        // 1. navigator.userAgentData
+        try {
+          Object.defineProperty(navigator, 'userAgentData', {
+            value: {
+              brands: [
+                { brand: "Google Chrome", version: "${CHROME_VERSION}" },
+                { brand: "Chromium", version: "${CHROME_VERSION}" },
+                { brand: "Not_A Brand", version: "24" }
+              ],
+              mobile: false,
+              platform: "macOS",
+              getHighEntropyValues: () => Promise.resolve({
+                architecture: "arm",
+                model: "",
+                platform: "macOS",
+                platformVersion: "15.0.0",
+                uaFullVersion: "${CHROME_VERSION}.0.0.0",
+                fullVersionList: [
+                  { brand: "Google Chrome", version: "${CHROME_VERSION}.0.0.0" },
+                  { brand: "Chromium", version: "${CHROME_VERSION}.0.0.0" }
+                ]
+              })
+            },
+            configurable: true
+          });
+        } catch {}
+
+        // 2. window.chrome
+        if (!window.chrome) window.chrome = {};
+        if (!window.chrome.runtime) {
+          window.chrome.runtime = { connect: () => {}, sendMessage: () => {}, id: undefined };
+        }
+        window.chrome.csi = () => ({});
+        window.chrome.loadTimes = () => ({});
+
+        // 3. navigator.plugins
+        try {
+          Object.defineProperty(navigator, 'plugins', {
+            get: () => [
+              { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+              { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+              { name: 'Native Client', filename: 'internal-nacl-plugin' }
+            ]
+          });
+        } catch {}
+
+        // 4. Remove Electron fingerprints
+        try {
+          delete window.process; delete window.require; delete window.module;
+          delete window.exports; delete window.__electron_preload;
+        } catch {}
+
+        // 5. navigator.webdriver
+        try { Object.defineProperty(navigator, 'webdriver', { get: () => false }); } catch {}
+
+      `;
+				await send("Page.enable");
+				await send("Page.addScriptToEvaluateOnNewDocument", { source: EVASION_SCRIPT });
+				await send("Target.setAutoAttach", {
+					autoAttach: true,
+					waitForDebuggerOnStart: true,
+					flatten: true
+				}).catch((e) => console.warn("[DSME] Target.setAutoAttach failed (non-fatal):", e.message));
 				if (!this.networkListenerAttached) {
 					this.networkListenerAttached = true;
-					this.view.webContents.debugger.on("message", (_event, method, params) => {
+					this.view.webContents.debugger.on("message", (_event, method, params, sessionId) => {
+						if (method === "Target.attachedToTarget") {
+							const childSid = params.sessionId;
+							const targetInfo = params.targetInfo || {};
+							const targetId = targetInfo.targetId;
+							const targetType = targetInfo.type;
+							if (targetId) this.oopifSessions.set(targetId, childSid);
+							const childSend = (m, p) => this.view.webContents.debugger.sendCommand(m, p, childSid);
+							if (targetType === "page" || targetType === "iframe") childSend("Page.enable").then(() => childSend("Page.addScriptToEvaluateOnNewDocument", { source: EVASION_SCRIPT })).catch((e) => console.warn(`[DSME] OOPIF injection failed for ${targetType}:`, e.message)).finally(() => childSend("Runtime.runIfWaitingForDebugger").catch(() => {}));
+							else childSend("Runtime.runIfWaitingForDebugger").catch(() => {});
+						}
+						if (method === "Target.detachedFromTarget") {
+							const targetId = params.targetId;
+							if (targetId) this.oopifSessions.delete(targetId);
+							else for (const [tId, sId] of this.oopifSessions.entries()) if (sId === params.sessionId) {
+								this.oopifSessions.delete(tId);
+								break;
+							}
+						}
 						if (method === "Network.responseReceived") {
 							const url = params.response?.url || "";
 							const mimeType = params.response?.mimeType || "";
@@ -26091,11 +25898,12 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 									method: params.response?.requestHeaders?.[":method"] || params.response?.requestHeaders?.["Method"] || "GET",
 									mimeType,
 									status: params.response?.status || 0,
-									timestamp: Date.now()
+									timestamp: Date.now(),
+									sessionId
 								});
 								if (this.recentNetworkRequests.size > 50) {
-									const oldest = Array.from(this.recentNetworkRequests.keys())[0];
-									this.recentNetworkRequests.delete(oldest);
+									const oldest = this.recentNetworkRequests.keys().next().value;
+									if (oldest) this.recentNetworkRequests.delete(oldest);
 								}
 							}
 						}
@@ -26118,19 +25926,23 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			}
 		}
 		/** Send a CDP command. Auto-retries once if the target detached asynchronously (process swap). */
-		async cdpCommand(method, params, retries = 1) {
+		async cdpCommand(method, params, retries = 1, sessionId) {
 			if (!this.view || this.view.webContents.isDestroyed()) throw new Error("CDP not attached: view destroyed");
 			await this.ensureCDP();
 			try {
-				return await this.view.webContents.debugger.sendCommand(method, params);
+				let timer;
+				const timeoutPromise = new Promise((_, reject) => {
+					timer = setTimeout(() => reject(/* @__PURE__ */ new Error(`CDP command '${method}' timed out after 30s`)), 3e4);
+				});
+				return await Promise.race([this.view.webContents.debugger.sendCommand(method, params, sessionId), timeoutPromise]).finally(() => clearTimeout(timer));
 			} catch (e) {
-				if (retries > 0 && e.message?.includes("not attached")) {
+				if (retries > 0 && (e.message?.includes("not attached") || e.message?.includes("timed out"))) {
 					this.cdpAttached = false;
 					try {
 						this.view.webContents.debugger.detach();
 					} catch {}
 					await new Promise((r) => setTimeout(r, 100));
-					return this.cdpCommand(method, params, retries - 1);
+					return this.cdpCommand(method, params, retries - 1, sessionId);
 				}
 				throw e;
 			}
@@ -26250,10 +26062,11 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			return list.length ? list.join("\n") : "No recent API/JSON requests found.";
 		}
 		async getNetworkResponseBody(requestId) {
-			if (!this.recentNetworkRequests.has(requestId)) return `Error: request ID ${requestId} not found or expired.`;
+			const req = this.recentNetworkRequests.get(requestId);
+			if (!req) return `Error: request ID ${requestId} not found or expired.`;
 			if (!await this.ensureCDP()) return "Error: CDP not attached";
 			try {
-				const { body, base64Encoded } = await this.cdpCommand("Network.getResponseBody", { requestId });
+				const { body, base64Encoded } = await this.cdpCommand("Network.getResponseBody", { requestId }, 1, req.sessionId);
 				const content = base64Encoded ? Buffer.from(body, "base64").toString("utf-8") : body;
 				return content.length > 5e4 ? content.slice(0, 5e4) + "\n...(truncated)" : content;
 			} catch (e) {
@@ -26304,13 +26117,14 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			const frameUrlMap = /* @__PURE__ */ new Map();
 			const framePromises = allFrameIds.map(async (frame) => {
 				try {
-					const params = { depth: -1 };
-					if (frame.id) params.frameId = frame.id;
+					const sessionId = frame.id ? this.oopifSessions.get(frame.id) : void 0;
+					const axParams = { depth: -1 };
+					if (!sessionId && frame.id) axParams.frameId = frame.id;
 					let timer;
 					const timeoutPromise = new Promise((_, reject) => {
 						timer = setTimeout(() => reject(/* @__PURE__ */ new Error("AXTree timeout")), 15e3);
 					});
-					const { nodes } = await Promise.race([this.cdpCommand("Accessibility.getFullAXTree", params), timeoutPromise]).finally(() => clearTimeout(timer));
+					const { nodes } = await Promise.race([this.cdpCommand("Accessibility.getFullAXTree", axParams, 1, sessionId), timeoutPromise]).finally(() => clearTimeout(timer));
 					for (const node of nodes) {
 						node._frameUrl = frame.url;
 						node._frameId = frame.id;
@@ -26376,23 +26190,33 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				const props = node.properties || [];
 				const isDisabled = props.some((p) => p.name === "disabled" && p.value?.value === true);
 				const isEditable = props.some((p) => p.name === "editable" && p.value?.value);
+				const isFocused = props.some((p) => p.name === "focused" && p.value?.value === true);
+				const description = (node.description?.value || "").trim();
 				if (INTERACTIVE_ROLES.has(role) || isEditable) if (backendId) {
 					interactiveWithBackendId++;
 					refCounter++;
 					const ref = `e${refCounter}`;
-					newRefMap.set(ref, backendId);
+					newRefMap.set(ref, {
+						backendNodeId: backendId,
+						frameId: node._frameId || ""
+					});
 					const displayName = name || role;
 					newRefLabels.set(ref, displayName);
 					const disabledTag = isDisabled ? " [DISABLED]" : "";
+					const focusedTag = isFocused ? " [FOCUSED]" : "";
 					const valueDisplay = value ? ` value="${value.slice(0, 40)}"` : "";
-					lines.push(`[${ref}] ${role} "${displayName.slice(0, 60)}"${valueDisplay}${disabledTag}`);
+					const descDisplay = description && description !== name ? ` (desc: "${description.slice(0, 40)}")` : "";
+					lines.push(`[${ref}] ${role} "${displayName.slice(0, 60)}"${valueDisplay}${descDisplay}${disabledTag}${focusedTag}`);
 				} else interactiveWithoutBackendId++;
 				else if (role === "heading" && name) lines.push(`heading: ${name.slice(0, 80)}`);
-				else if (role === "staticText" && name.length > 15 && name.length < 200) lines.push(`text: ${name.slice(0, 120)}`);
+				else if (role === "staticText" && name.length > 1) lines.push(`text: ${name.slice(0, 120)}`);
 				else if (role === "image" && name && backendId) {
 					refCounter++;
 					const ref = `e${refCounter}`;
-					newRefMap.set(ref, backendId);
+					newRefMap.set(ref, {
+						backendNodeId: backendId,
+						frameId: node._frameId || ""
+					});
 					newRefLabels.set(ref, name);
 					lines.push(`[${ref}] img "${name.slice(0, 60)}"`);
 				}
@@ -26423,14 +26247,24 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		* Works cross-frame — no need to compute iframe offsets manually.
 		*/
 		async getElementCenterByCDP(ref) {
-			const backendNodeId = this.refMap.get(ref);
-			if (!backendNodeId) return null;
+			const refData = this.refMap.get(ref);
+			if (!refData) return null;
+			const { backendNodeId, frameId } = refData;
+			const sessionId = frameId ? this.oopifSessions.get(frameId) : void 0;
 			try {
 				if (!await this.ensureCDP()) return null;
 				try {
-					await this.cdpCommand("DOM.scrollIntoViewIfNeeded", { backendNodeId });
+					const { object } = await this.cdpCommand("DOM.resolveNode", { backendNodeId }, 1, sessionId);
+					if (object && object.objectId) {
+						await this.cdpCommand("Runtime.callFunctionOn", {
+							functionDeclaration: `function() { this.scrollIntoView({ block: 'center', inline: 'center' }); }`,
+							objectId: object.objectId
+						}, 1, sessionId);
+						this.cdpCommand("Runtime.releaseObject", { objectId: object.objectId }, 0, sessionId).catch(() => {});
+						await new Promise((r) => setTimeout(r, 100));
+					}
 				} catch {}
-				const { quads } = await this.cdpCommand("DOM.getContentQuads", { backendNodeId });
+				const { quads } = await this.cdpCommand("DOM.getContentQuads", { backendNodeId }, 1, sessionId);
 				if (!quads || quads.length === 0) return null;
 				const q = quads[0];
 				return {
@@ -26448,14 +26282,50 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		* Works cross-frame — CDP handles iframe context automatically.
 		*/
 		async focusElementByCDP(ref) {
-			const backendNodeId = this.refMap.get(ref);
-			if (!backendNodeId) return `Error: ref ${ref} not found. Run browser_snapshot first.`;
+			const refData = this.refMap.get(ref);
+			if (!refData) return `Error: ref ${ref} not found. Run browser_snapshot first.`;
+			const { backendNodeId, frameId } = refData;
+			const sessionId = frameId ? this.oopifSessions.get(frameId) : void 0;
 			try {
 				if (!await this.ensureCDP()) return "Error: CDP not available";
-				await this.cdpCommand("DOM.focus", { backendNodeId });
+				await this.cdpCommand("DOM.focus", { backendNodeId }, 1, sessionId);
 				return `Focused [${ref}] via CDP`;
 			} catch (e) {
 				return `CDP focus error: ${e.message}`;
+			}
+		}
+		/**
+		* Clear the value of an input element using CDP.
+		* Solves the OOPIF cross-frame clearing bug: legacy JS executeJS() runs in the mainFrame,
+		* which fails to clear inputs inside cross-origin iframes.
+		*
+		* Handles both standard inputs (.value) and contenteditable elements (.textContent).
+		*/
+		async clearInputByCDP(ref) {
+			const refData = this.refMap.get(ref);
+			if (!refData) return `Error: ref ${ref} not found.`;
+			const { backendNodeId, frameId } = refData;
+			const sessionId = frameId ? this.oopifSessions.get(frameId) : void 0;
+			try {
+				if (!await this.ensureCDP()) return "Error: CDP not available";
+				const { object } = await this.cdpCommand("DOM.resolveNode", { backendNodeId }, 1, sessionId);
+				if (!object || !object.objectId) return "Error: Could not resolve DOM node for clearing";
+				await this.cdpCommand("Runtime.callFunctionOn", {
+					functionDeclaration: `function() {
+        if ('value' in this && (this.tagName === 'INPUT' || this.tagName === 'TEXTAREA' || this.tagName === 'SELECT')) {
+          this.value = '';
+        } else if (this.isContentEditable) {
+          this.textContent = '';
+        }
+        this.dispatchEvent(new Event('input', { bubbles: true }));
+        this.dispatchEvent(new Event('change', { bubbles: true }));
+      }`,
+					objectId: object.objectId
+				}, 1, sessionId);
+				this.cdpCommand("Runtime.releaseObject", { objectId: object.objectId }, 0, sessionId).catch(() => {});
+				return `Cleared input [${ref}] via CDP`;
+			} catch (e) {
+				return `CDP clear error: ${e.message}`;
 			}
 		}
 		/** Check if CDP-based refs are available (i.e., a CDP snapshot was taken). */
@@ -26464,7 +26334,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		}
 		/** Get the backendDOMNodeId for a ref. */
 		getRefBackendNodeId(ref) {
-			return this.refMap.get(ref);
+			return this.refMap.get(ref)?.backendNodeId;
 		}
 		/**
 		* Get the human-readable label for a ref (from the last AX snapshot).
@@ -26482,11 +26352,13 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		* Called automatically by browserClick and browserType for full transparency.
 		*/
 		async highlightRef(ref, durationMs = 800) {
-			const backendNodeId = this.refMap.get(ref);
-			if (!backendNodeId) return;
+			const refData = this.refMap.get(ref);
+			if (!refData) return;
 			if (!await this.ensureCDP()) return;
+			const { backendNodeId, frameId } = refData;
+			const sessionId = frameId ? this.oopifSessions.get(frameId) : void 0;
 			try {
-				await this.cdpCommand("Overlay.enable");
+				await this.cdpCommand("Overlay.enable", void 0, 1, sessionId);
 				await this.cdpCommand("Overlay.highlightNode", {
 					highlightConfig: {
 						showInfo: true,
@@ -26513,9 +26385,11 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 						}
 					},
 					backendNodeId
-				});
-				setTimeout(() => {
+				}, 1, sessionId);
+				if (this.highlightTimeout) clearTimeout(this.highlightTimeout);
+				this.highlightTimeout = setTimeout(() => {
 					this.cdpCommand("Overlay.hideHighlight").catch(() => {});
+					this.highlightTimeout = null;
 				}, durationMs);
 			} catch {}
 		}
@@ -26540,9 +26414,14 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 			if (this.refMap.size === 0) return "No refs — run browser_snapshot first.";
 			if (!await this.ensureCDP()) return "Error: CDP not available";
 			try {
-				const quadPromises = Array.from(this.refMap.entries()).map(async ([ref, backendNodeId]) => {
+				const quadPromises = Array.from(this.refMap.entries()).map(async ([ref, refData]) => {
 					try {
-						const { quads } = await Promise.race([this.cdpCommand("DOM.getContentQuads", { backendNodeId }), new Promise((_, reject) => setTimeout(() => reject(/* @__PURE__ */ new Error("Timeout")), 2e3))]);
+						const { backendNodeId, frameId } = refData;
+						const sessionId = frameId ? this.oopifSessions.get(frameId) : void 0;
+						let timer;
+						const { quads } = await Promise.race([this.cdpCommand("DOM.getContentQuads", { backendNodeId }, 1, sessionId), new Promise((_, reject) => {
+							timer = setTimeout(() => reject(/* @__PURE__ */ new Error("Timeout")), 2e3);
+						})]).finally(() => clearTimeout(timer));
 						if (!quads || quads.length === 0) return null;
 						const q = quads[0];
 						const xs = [
@@ -26579,7 +26458,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 				const boxes = (await Promise.all(quadPromises)).filter(Boolean);
 				if (boxes.length === 0) return "No visible elements to highlight.";
 				const boxesJSON = JSON.stringify(boxes);
-				await this.executeJS(`
+				await this.view.webContents.mainFrame.executeJavaScriptInIsolatedWorld(999, [{ code: `
         (function() {
           // Remove any previous overlay
           const old = document.getElementById('dsme-overlay-root');
@@ -26682,7 +26561,7 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
             shadow.appendChild(div);
           }
         })()
-      `);
+      ` }]);
 				return `X-ray: ${boxes.length} of ${this.refMap.size} refs highlighted with [eN] labels. Run browser_clear_overlay() to dismiss.`;
 			} catch (e) {
 				return `Overlay error: ${e.message}`;
@@ -26695,17 +26574,18 @@ var init_browser_view_manager = require_token_util$1.__esmMin((() => {
 		*   - Shadow DOM multi-node overlay (from highlightAllRefs)
 		*/
 		async clearOverlay() {
+			if (!this.view || this.view.webContents.isDestroyed()) return;
 			if (this.cdpAttached) try {
 				await this.cdpCommand("Overlay.hideHighlight");
 				await this.cdpCommand("Overlay.disable");
 			} catch {}
 			try {
-				await this.executeJS(`
+				await this.view.webContents.mainFrame.executeJavaScriptInIsolatedWorld(999, [{ code: `
         (function() {
           const el = document.getElementById('dsme-overlay-root');
           if (el) el.remove();
         })()
-      `);
+      ` }]);
 			} catch {}
 		}
 		notifyRenderer(channel, data) {
@@ -27160,6 +27040,7 @@ async function browserType(ref, text, _retry = false) {
 		await browserViewManager.nativeMouseClick(cdpCenter.x, cdpCenter.y);
 		await new Promise((r) => setTimeout(r, 100));
 		await browserViewManager.focusElementByCDP(ref);
+		await browserViewManager.clearInputByCDP(ref);
 		try {
 			const modifier = process.platform === "darwin" ? 4 : 2;
 			await browserViewManager.cdpCommand("Input.dispatchKeyEvent", {
@@ -27777,29 +27658,6 @@ function formatWebSearchResult(query, result) {
 		result
 	].join("\n");
 }
-function searchCodebase(query, cwd, isRegex = false) {
-	return new Promise((resolve) => {
-		const proc = (0, node_child_process.spawn)("grep", [
-			isRegex ? "-rnE" : "-rn",
-			"--exclude-dir=node_modules",
-			"--exclude-dir=.git",
-			"--exclude-dir=dist",
-			"--",
-			query,
-			"."
-		], { cwd });
-		let stdout = "";
-		proc.stdout.on("data", (d) => {
-			stdout += d;
-			if (stdout.length > 1024 * 1024) proc.kill();
-		});
-		proc.stderr.on("data", () => {});
-		proc.on("close", () => {
-			resolve(stdout || "No matches.");
-		});
-		proc.on("error", () => resolve("No matches."));
-	});
-}
 async function webSearch(query, engine) {
 	if (!query) return "Error: query is required";
 	const { browserViewManager } = (init_browser_view_manager(), require_token_util$1.__toCommonJS(browser_view_manager_exports));
@@ -27942,29 +27800,24 @@ function buildSystemPromptBase(cwd) {
 		hour: "2-digit",
 		minute: "2-digit"
 	});
-	return `You are DSME (DeepSeek Matrix Engine), an autonomous AI coding assistant built for pair programming.
-You work inside an Electron-based IDE with full system access. Always prioritize the user's latest request.
+	return `You are DSME (DeepSeek Matrix Engine), an autonomous AI agent built for web automation.
+You work inside an Electron-based environment with access to a native browser. Always prioritize the user's latest request.
 
 ## Environment
 - OS: ${process.platform === "darwin" ? "macOS" : process.platform}
-- Shell: zsh
 - Current Time: ${dateStr} ${timeStr} (CRITICAL: Strictly use this time. NEVER fall back to your training cutoff date.)
-- Workspace: ${cwd}
 
 ## Operating Principles
 - Be concise, direct, and action-oriented. Lead with the answer, not the reasoning.
 - Respond in the same language as the user.
-- Prefer action over description. If a task requires reading, running, or changing something, use tools.
+- Prefer action over description. If a task requires browser operations, use tools.
 - Never fabricate tool execution or claim you ran something you did not.
 - If you can say it in one sentence, don't use three. Skip filler words and preamble.
-- For data extraction or list compilation, provide the exhaustive, complete set. Never truncate.
+- For data extraction, provide the exhaustive, complete set. Never truncate.
 
 ## Tool Usage Rules
-- Tool calls are your primary way to interact with the world.
+- Tool calls are your primary way to interact with the web.
 - A text-only response is acceptable ONLY for simple conversation or when prior tool results already answer the question.
-- Always read a file before editing it. Prefer minimal, surgical edits.
-- If multiple independent tool calls are needed, batch them in parallel.
-- Prefer specialized tools over generic shell commands.
 
 ### Web Search (CRITICAL — Most Important Tool)
 - **AUTO-TRIGGER**: You MUST call web_search automatically whenever:
@@ -28036,7 +27889,6 @@ Use browser_* tools for complex, multi-step browser tasks on a **persistent visi
 #### ⚠️ MANDATORY: Binary Data Handling
 1. **NEVER return base64 image data directly** — it will flood and destroy the context window.
 2. If you need to extract an image from a page, use browser_eval with a script that calls Canvas + toDataURL. The system will **automatically save it to disk** and return a file path.
-3. To download an image, prefer using \`fetch(url).then(r => r.blob())\` + saving to disk via a run_command, or simply provide the image URL to the user.
 
 #### ⚠️ MANDATORY: iframe Awareness (Anti-Blind-Navigation Protocol)
 Many sites (126/163 email, banking, payment, CAPTCHA) put their login forms or key UI inside **cross-origin iframes**. The system handles this automatically:
@@ -28067,16 +27919,8 @@ Many sites (126/163 email, banking, payment, CAPTCHA) put their login forms or k
 - **NEVER re-do completed work** — do not click "再次编辑", "重新发送", or similar buttons after confirming success.
 - If you are unsure whether the task succeeded, verify ONCE (e.g. check the sent folder), then finish.
 
-### File Editing (replace_in_file)
-- The 'target' parameter must be an EXACT character-for-character match including whitespace, indentation, and newlines.
-- Copy-paste from the read_file output to ensure exact match. Never type from memory.
-- If a replacement fails with "Target not found", re-read the file and try again with the exact text.
-
 ## Safety
-- Ask before destructive, irreversible, or externally visible actions.
-- Do not modify files outside the workspace unless explicitly asked.
-- Never expose API keys, tokens, or credentials.
-- **CRITICAL**: Never create temporary, test, or isolated files directly in the workspace root. ALWAYS place unrelated scripts or generated standalone documents inside a \`scratch/\` folder (create it if missing).`;
+- Never expose API keys, tokens, or credentials.`;
 }
 //#endregion
 //#region electron/agents/stream-output.ts
@@ -28137,7 +27981,7 @@ function shouldWatchdogVisibleTool(toolName) {
 * - Automatic multi-step tool call loops (stopWhen)
 * - Built-in abort, retry, and lifecycle callbacks
 */
-var execAsync$2 = (0, node_util.promisify)(node_child_process.exec);
+var execAsync$1 = (0, node_util.promisify)(node_child_process.exec);
 /** Model-specific fenced blocks — slice offsets MUST match full delimiter length (historically caused leaked tags / stray text). */
 var REDACTED_THINK_OPEN = "<think>";
 var REDACTED_THINK_CLOSE = "</think>";
@@ -28201,17 +28045,12 @@ var VercelAgent = class {
 		this.apiKey = "";
 		this.messages = [];
 		this.abortController = null;
-		this.pendingChanges = /* @__PURE__ */ new Map();
-		this.changeIdCounter = 0;
 		this.retryCount = 0;
 		this.missingToolRecoveryAttempts = 0;
 		this.truncationCount = 0;
 		this.busy = false;
-		this.rag = new RAGEngine();
 		this.currentTurnSearchResult = null;
 		this.assistantReasonings = [];
-		this.reindexTimer = null;
-		this.fsWatcher = null;
 	}
 	init(window, config) {
 		this.window = window;
@@ -28309,36 +28148,6 @@ var VercelAgent = class {
 			}
 		});
 		console.log(`[VercelAgent] Initialized with Vercel AI SDK, model=${this.model}, baseUrl=${config.baseUrl}, maxOutputTokens=${this.maxOutputTokens}, maxContextTokens=${this.maxContextTokens}`);
-		this.rag.index(config.cwd).then((count) => {
-			console.log(`[VercelAgent] RAG indexed ${count} files`);
-			this.send("rag-status", count);
-		}).catch(() => {});
-		this.setupFileWatcher(config.cwd);
-	}
-	setupFileWatcher(cwd) {
-		try {
-			const fsSync = require("fs");
-			this.fsWatcher = fsSync.watch(cwd, { recursive: true }, (_event, filename) => {
-				if (!filename) return;
-				if (filename.includes("node_modules") || filename.includes(".git") || filename.includes("dist") || filename.includes("dist-electron")) return;
-				if (this.reindexTimer) clearTimeout(this.reindexTimer);
-				this.reindexTimer = setTimeout(() => {
-					console.log(`[RAG] File change detected (${filename}), re-indexing...`);
-					this.reindex().catch(() => {});
-				}, 5e3);
-			});
-			console.log(`[RAG] File watcher active on ${cwd}`);
-		} catch (e) {
-			console.log(`[RAG] File watcher unavailable:`, e.message);
-		}
-	}
-	getRagFileCount() {
-		return this.rag.fileCount;
-	}
-	async reindex() {
-		const { added, updated, removed } = await this.rag.update();
-		if (added > 0 || updated > 0 || removed > 0) this.send("rag-status", this.rag.fileCount);
-		return this.rag.fileCount;
 	}
 	send(channel, ...args) {
 		try {
@@ -28444,15 +28253,6 @@ var VercelAgent = class {
 	/** Clean up resources (file watcher, timers) before disposal */
 	destroy() {
 		this.abort();
-		if (this.fsWatcher) {
-			this.fsWatcher.close();
-			this.fsWatcher = null;
-			console.log("[VercelAgent] File watcher closed");
-		}
-		if (this.reindexTimer) {
-			clearTimeout(this.reindexTimer);
-			this.reindexTimer = null;
-		}
 	}
 	/** Keep message history within context window limits */
 	pruneHistory() {
@@ -28515,128 +28315,10 @@ var VercelAgent = class {
 	getToolResultCapChars() {
 		return deriveToolResultCapChars(this.maxContextTokens);
 	}
-	setupDiffHandlers() {
-		electron.ipcMain.on("diff-accept", (_e, changeId) => {
-			const p = this.pendingChanges.get(changeId);
-			if (p) {
-				this.pendingChanges.delete(changeId);
-				p.resolve("accepted");
-			}
-		});
-		electron.ipcMain.on("diff-reject", (_e, changeId) => {
-			const p = this.pendingChanges.get(changeId);
-			if (p) {
-				this.pendingChanges.delete(changeId);
-				p.resolve("rejected");
-			}
-		});
-	}
 	getTools() {
 		const cwd = this.cwd;
 		const send = this.send.bind(this);
-		const resolve = (p) => node_path.resolve(cwd, p);
 		return {
-			read_file: tool({
-				description: "Read a file.",
-				inputSchema: object$1({ filepath: string() }),
-				execute: async ({ filepath }) => {
-					try {
-						const content = await node_fs_promises.readFile(resolve(filepath), "utf-8");
-						if (content.length > 5e4) return content.slice(0, 5e4) + `\n\n...(truncated, ${content.length} total chars)`;
-						return content;
-					} catch (e) {
-						return `Error reading ${filepath}: ${e.code === "ENOENT" ? "File not found" : e.message}`;
-					}
-				}
-			}),
-			write_file: tool({
-				description: "Create/overwrite a file.",
-				inputSchema: object$1({
-					filepath: string(),
-					content: string()
-				}),
-				execute: async ({ filepath, content }) => {
-					try {
-						const fp = resolve(filepath);
-						await node_fs_promises.mkdir(node_path.dirname(fp), { recursive: true });
-						await node_fs_promises.writeFile(fp, content, "utf8");
-						send("file-changed", fp);
-						return `Written: ${filepath}`;
-					} catch (e) {
-						return `Error writing ${filepath}: ${e.message}`;
-					}
-				}
-			}),
-			replace_in_file: tool({
-				description: "Replace exact substring in a file. Replaces the first occurrence.",
-				inputSchema: object$1({
-					filepath: string(),
-					target: string(),
-					replacement: string()
-				}),
-				execute: async ({ filepath, target, replacement }) => {
-					try {
-						const fp = resolve(filepath);
-						const old = await node_fs_promises.readFile(fp, "utf8");
-						if (!old.includes(target)) return `Target not found in ${filepath}. Verify exact whitespace/indentation.`;
-						const occurrences = old.split(target).length - 1;
-						await node_fs_promises.writeFile(fp, old.replace(target, replacement), "utf8");
-						send("file-changed", fp);
-						return `Replaced in ${filepath}` + (occurrences > 1 ? ` (1 of ${occurrences} occurrences)` : "");
-					} catch (e) {
-						return `Error editing ${filepath}: ${e.code === "ENOENT" ? "File not found" : e.message}`;
-					}
-				}
-			}),
-			list_directory: tool({
-				description: "List files in a directory.",
-				inputSchema: object$1({ dirpath: string() }),
-				execute: async ({ dirpath }) => {
-					try {
-						return (await node_fs_promises.readdir(resolve(dirpath), { withFileTypes: true })).filter((e) => !["node_modules", ".git"].includes(e.name)).map((e) => `${e.isDirectory() ? "[DIR]" : "[FILE]"} ${e.name}`).join("\n");
-					} catch (e) {
-						return `Error listing ${dirpath}: ${e.code === "ENOENT" ? "Directory not found" : e.message}`;
-					}
-				}
-			}),
-			search_codebase: tool({
-				description: "Grep search across workspace.",
-				inputSchema: object$1({
-					query: string(),
-					is_regex: boolean().optional()
-				}),
-				execute: async ({ query, is_regex }) => {
-					return await searchCodebase(query, cwd, is_regex);
-				}
-			}),
-			run_command: tool({
-				description: "Run shell command.",
-				inputSchema: object$1({ command: string() }),
-				execute: async ({ command }) => {
-					const lower = command.toLowerCase().replace(/\s+/g, " ");
-					if ([
-						/rm\s+-rf\s+\/(?!\w)/,
-						/mkfs\./,
-						/dd\s+.*of=\/dev\//,
-						/:(){ :\|:& };:/,
-						/>\s*\/dev\/sd[a-z]/
-					].some((re) => re.test(lower))) return "Error: Command blocked for safety. This command could cause catastrophic data loss.";
-					try {
-						const { stdout, stderr } = await execAsync$2(command, {
-							cwd,
-							timeout: 6e4,
-							maxBuffer: 2 * 1024 * 1024
-						});
-						send("terminal-output", `\r\n$ ${command}\r\n${stdout}`);
-						let result = stdout + (stderr ? `\nSTDERR:\n${stderr}` : "");
-						return result.length > 16e3 ? result.slice(0, 16e3) + "\n...(truncated)" : result;
-					} catch (e) {
-						const out = (e.stdout || "") + (e.stderr ? `\nSTDERR:\n${e.stderr}` : "");
-						send("terminal-output", `\r\n$ ${command}\r\n${out || e.message}`);
-						return out || `Command failed: ${e.message}`;
-					}
-				}
-			}),
 			web_search: tool({
 				description: "Search the web for real-time information. Use this when you need current data, news, or anything beyond your training cutoff.",
 				inputSchema: object$1({
@@ -28677,6 +28359,47 @@ var VercelAgent = class {
 					const preview = rawResult.split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 5).join("\n");
 					send("chat-stream-token", preview ? `\n搜索解析完成（${seconds}s），已提取到：\n\`\`\`search-snippet\n${preview}\n\`\`\`\n` : `\n搜索完成（${seconds}s），但没有提取到可用摘要。\n`);
 					return result;
+				}
+			}),
+			run_command: tool({
+				description: "Run a shell command on the user's local machine. This runs in the project directory by default. Used for running scripts (e.g. python, node), installing dependencies, or generic OS commands. Use responsibly.",
+				inputSchema: object$1({ command: string().describe("The shell command to execute") }),
+				execute: async ({ command }) => {
+					try {
+						const { stdout, stderr } = await execAsync$1(command, { cwd });
+						return `STDOUT:\n${stdout}\nSTDERR:\n${stderr}`;
+					} catch (e) {
+						return `ERROR: ${e.message}\nSTDOUT:\n${e.stdout}\nSTDERR:\n${e.stderr}`;
+					}
+				}
+			}),
+			read_file: tool({
+				description: "Read the contents of a local file.",
+				inputSchema: object$1({ filepath: string().describe("Absolute or relative path to the file") }),
+				execute: async ({ filepath }) => {
+					try {
+						const fullPath = node_path.resolve(cwd, filepath);
+						return await node_fs_promises.readFile(fullPath, "utf8");
+					} catch (e) {
+						return `Error reading file: ${e.message}`;
+					}
+				}
+			}),
+			write_file: tool({
+				description: "Write string content to a local file. This will overwrite the file if it exists.",
+				inputSchema: object$1({
+					filepath: string().describe("Absolute or relative path to the file"),
+					content: string().describe("The content to write")
+				}),
+				execute: async ({ filepath, content }) => {
+					try {
+						const fullPath = node_path.resolve(cwd, filepath);
+						await node_fs_promises.mkdir(node_path.dirname(fullPath), { recursive: true });
+						await node_fs_promises.writeFile(fullPath, content, "utf8");
+						return `Successfully wrote to ${fullPath}`;
+					} catch (e) {
+						return `Error writing file: ${e.message}`;
+					}
 				}
 			}),
 			fetch_url: tool({
@@ -28992,7 +28715,7 @@ var VercelAgent = class {
 			try {
 				const result = streamText({
 					model: this.provider.chat(this.model),
-					system: getSystemPrompt$1(this.cwd) + this.rag.buildContext(this.extractTextContent(this.messages.filter((m) => m.role === "user").pop())),
+					system: getSystemPrompt$1(this.cwd),
 					messages: this.messages,
 					tools: forceNoTools ? void 0 : this.getTools(),
 					maxOutputTokens: this.maxOutputTokens,
@@ -29491,7 +29214,7 @@ var VercelAgent = class {
 * - Manual tool call loop with iteration guard
 * - Zero framework overhead — lightweight and transparent
 */
-var execAsync$1 = (0, node_util.promisify)(node_child_process.exec);
+var execAsync = (0, node_util.promisify)(node_child_process.exec);
 function safeJsonParse(raw, fallback = null) {
 	if (!raw || typeof raw !== "string") return fallback;
 	raw = raw.trim();
@@ -29527,92 +29250,6 @@ var TOOLS = [
 	{
 		type: "function",
 		function: {
-			name: "read_file",
-			description: "Read a file.",
-			parameters: {
-				type: "object",
-				properties: { filepath: { type: "string" } },
-				required: ["filepath"]
-			}
-		}
-	},
-	{
-		type: "function",
-		function: {
-			name: "write_file",
-			description: "Create/overwrite a file.",
-			parameters: {
-				type: "object",
-				properties: {
-					filepath: { type: "string" },
-					content: { type: "string" }
-				},
-				required: ["filepath", "content"]
-			}
-		}
-	},
-	{
-		type: "function",
-		function: {
-			name: "replace_in_file",
-			description: "Replace exact substring in a file.",
-			parameters: {
-				type: "object",
-				properties: {
-					filepath: { type: "string" },
-					target: { type: "string" },
-					replacement: { type: "string" }
-				},
-				required: [
-					"filepath",
-					"target",
-					"replacement"
-				]
-			}
-		}
-	},
-	{
-		type: "function",
-		function: {
-			name: "list_directory",
-			description: "List files in a directory.",
-			parameters: {
-				type: "object",
-				properties: { dirpath: { type: "string" } },
-				required: ["dirpath"]
-			}
-		}
-	},
-	{
-		type: "function",
-		function: {
-			name: "search_codebase",
-			description: "Grep search across workspace.",
-			parameters: {
-				type: "object",
-				properties: {
-					query: { type: "string" },
-					is_regex: { type: "boolean" }
-				},
-				required: ["query"]
-			}
-		}
-	},
-	{
-		type: "function",
-		function: {
-			name: "run_command",
-			description: "Run shell command.",
-			parameters: {
-				type: "object",
-				properties: { command: { type: "string" } },
-				required: ["command"]
-			}
-		}
-	},
-	{
-		type: "function",
-		function: {
 			name: "web_search",
 			description: "Search the web for real-time info.",
 			parameters: {
@@ -29631,6 +29268,45 @@ var TOOLS = [
 					}
 				},
 				required: ["query"]
+			}
+		}
+	},
+	{
+		type: "function",
+		function: {
+			name: "run_command",
+			description: "Run a shell command on the user's local machine. Used for running scripts (e.g. python, node), installing dependencies, or generic OS commands. Use responsibly.",
+			parameters: {
+				type: "object",
+				properties: { command: { type: "string" } },
+				required: ["command"]
+			}
+		}
+	},
+	{
+		type: "function",
+		function: {
+			name: "read_file",
+			description: "Read the contents of a local file.",
+			parameters: {
+				type: "object",
+				properties: { filepath: { type: "string" } },
+				required: ["filepath"]
+			}
+		}
+	},
+	{
+		type: "function",
+		function: {
+			name: "write_file",
+			description: "Write string content to a local file. This will overwrite the file if it exists.",
+			parameters: {
+				type: "object",
+				properties: {
+					filepath: { type: "string" },
+					content: { type: "string" }
+				},
+				required: ["filepath", "content"]
 			}
 		}
 	},
@@ -30165,11 +29841,8 @@ var BuiltinAgent = class {
 		this.messages = [];
 		this.abortController = null;
 		this.busy = false;
-		this.rag = new RAGEngine();
 		this.retryCount = 0;
 		this.truncationCount = 0;
-		this.fsWatcher = null;
-		this.reindexTimer = null;
 		this.currentTurnSearchResult = null;
 	}
 	init(window, config) {
@@ -30183,25 +29856,6 @@ var BuiltinAgent = class {
 			apiKey: config.apiKey || "sk-placeholder"
 		});
 		console.log(`[BuiltinAgent] Initialized, model=${this.model}, apiKey=${config.apiKey ? config.apiKey.slice(0, 8) + "..." : "EMPTY"}, baseUrl=${config.baseUrl}, maxOutputTokens=${this.maxOutputTokens}, maxContextTokens=${this.maxContextTokens}`);
-		this.rag.index(config.cwd).then((c) => {
-			console.log(`[BuiltinAgent] RAG indexed ${c} files`);
-			this.send("rag-status", c);
-		}).catch(() => {});
-		this.setupFileWatcher(config.cwd);
-	}
-	setupFileWatcher(cwd) {
-		try {
-			const fsSync = require("fs");
-			this.fsWatcher = fsSync.watch(cwd, { recursive: true }, (_, filename) => {
-				if (!filename || filename.includes("node_modules") || filename.includes(".git") || filename.includes("dist") || filename.includes("dist-electron")) return;
-				if (this.reindexTimer) clearTimeout(this.reindexTimer);
-				this.reindexTimer = setTimeout(() => {
-					this.rag.update().then(({ added, updated, removed }) => {
-						if (added > 0 || updated > 0 || removed > 0) this.send("rag-status", this.rag.fileCount);
-					}).catch(() => {});
-				}, 5e3);
-			});
-		} catch {}
 	}
 	send(channel, ...args) {
 		try {
@@ -30286,14 +29940,6 @@ var BuiltinAgent = class {
 	}
 	destroy() {
 		this.abort();
-		if (this.fsWatcher) {
-			this.fsWatcher.close();
-			this.fsWatcher = null;
-		}
-		if (this.reindexTimer) {
-			clearTimeout(this.reindexTimer);
-			this.reindexTimer = null;
-		}
 	}
 	setupDiffHandlers() {}
 	async runLoop() {
@@ -30308,11 +29954,9 @@ var BuiltinAgent = class {
 				this.abortController?.abort();
 			}, LOOP_TIMEOUT_MS);
 			try {
-				const userQuery = this.messages.filter((m) => m.role === "user").pop();
-				const queryText = typeof userQuery?.content === "string" ? userQuery.content : "";
 				const allMessages = [{
 					role: "system",
-					content: getSystemPrompt(this.cwd) + this.rag.buildContext(queryText)
+					content: getSystemPrompt(this.cwd)
 				}, ...this.messages];
 				this.send("chat-status", "thinking");
 				const stream = await this.openai.chat.completions.create({
@@ -30546,48 +30190,9 @@ var BuiltinAgent = class {
 		return result.slice(0, cap) + `\n\n[DISPLAY_TRUNCATED: Output was ${result.length} chars / ${totalLines} lines. Only the first ${cap} chars are shown above, but the full data was successfully collected. Do NOT retry this tool call — the data is complete.]`;
 	}
 	async executeTool(name, args) {
-		const resolve = (p) => node_path.resolve(this.cwd, p);
 		args = this.normalizeToolArgs(name, args);
 		try {
 			switch (name) {
-				case "read_file": {
-					const content = await node_fs_promises.readFile(resolve(args.filepath), "utf-8");
-					return content.length > 5e4 ? content.slice(0, 5e4) + "\n...(truncated)" : content;
-				}
-				case "write_file": {
-					const fp = resolve(args.filepath);
-					await node_fs_promises.mkdir(node_path.dirname(fp), { recursive: true });
-					await node_fs_promises.writeFile(fp, args.content, "utf8");
-					this.send("file-changed", fp);
-					return `Written: ${args.filepath}`;
-				}
-				case "replace_in_file": {
-					const fp = resolve(args.filepath);
-					const old = await node_fs_promises.readFile(fp, "utf8");
-					if (!old.includes(args.target)) return `Target not found in ${args.filepath}.`;
-					await node_fs_promises.writeFile(fp, old.replace(args.target, args.replacement), "utf8");
-					this.send("file-changed", fp);
-					return `Replaced in ${args.filepath}`;
-				}
-				case "list_directory": return (await node_fs_promises.readdir(resolve(args.dirpath), { withFileTypes: true })).filter((e) => !["node_modules", ".git"].includes(e.name)).map((e) => `${e.isDirectory() ? "[DIR]" : "[FILE]"} ${e.name}`).join("\n");
-				case "search_codebase": return await searchCodebase(args.query, this.cwd, args.is_regex);
-				case "run_command": {
-					const lower = args.command.toLowerCase().replace(/\s+/g, " ");
-					if ([
-						/rm\s+-rf\s+\/(?!\w)/,
-						/mkfs\./,
-						/dd\s+.*of=\/dev\//,
-						/:(){ :\|:& };:/,
-						/>\s*\/dev\/sd[a-z]/
-					].some((re) => re.test(lower))) return "Error: Command blocked for safety.";
-					const { stdout, stderr } = await execAsync$1(args.command, {
-						cwd: this.cwd,
-						timeout: 6e4,
-						maxBuffer: 2 * 1024 * 1024
-					});
-					this.send("terminal-output", `\r\n$ ${args.command}\r\n${stdout}`);
-					return (stdout + (stderr ? `\nSTDERR:\n${stderr}` : "")).slice(0, 16e3);
-				}
 				case "web_search": {
 					if (this.currentTurnSearchResult && hasUsableSearchResults(this.currentTurnSearchResult.result)) {
 						const reused = [
@@ -30617,6 +30222,26 @@ var BuiltinAgent = class {
 				case "fetch_url":
 					if (!args.url) return "Error: url is required for fetch_url. Please provide the URL to fetch.";
 					return await fetchUrl(args.url);
+				case "run_command": try {
+					const { stdout, stderr } = await execAsync(args.command, { cwd });
+					return `STDOUT:\n${stdout}\nSTDERR:\n${stderr}`;
+				} catch (e) {
+					return `ERROR: ${e.message}\nSTDOUT:\n${e.stdout}\nSTDERR:\n${e.stderr}`;
+				}
+				case "read_file": try {
+					const fullPath = node_path.resolve(cwd, args.filepath);
+					return await node_fs_promises.readFile(fullPath, "utf8");
+				} catch (e) {
+					return `Error reading file: ${e.message}`;
+				}
+				case "write_file": try {
+					const fullPath = node_path.resolve(cwd, args.filepath);
+					await node_fs_promises.mkdir(node_path.dirname(fullPath), { recursive: true });
+					await node_fs_promises.writeFile(fullPath, args.content, "utf8");
+					return `Successfully wrote to ${fullPath}`;
+				} catch (e) {
+					return `Error writing file: ${e.message}`;
+				}
 				case "browse_page": {
 					this.send("chat-stream-token", `\n正在打开浏览器页面：${args.url}\n`);
 					const started = Date.now();
@@ -30928,7 +30553,7 @@ var BuiltinAgent = class {
 //#endregion
 //#region electron/main.ts
 init_browser_view_manager();
-var execAsync = (0, node_util.promisify)(node_child_process.exec);
+(0, node_util.promisify)(node_child_process.exec);
 process.stdout.on("error", (e) => {
 	if (e.code !== "EPIPE") throw e;
 });
@@ -30961,7 +30586,6 @@ cdpProxy.on("error", (e) => {
 });
 var win;
 var agent = null;
-var ptyProcess = null;
 var currentKernel = "vercel";
 var currentWorkspacePath = node_path.resolve(__dirname, "..");
 var CONFIG_PATH = (0, node_path.join)(electron.app.getPath("userData"), "dsme-config.json");
@@ -31170,32 +30794,6 @@ function buildMenu() {
 			]
 		},
 		{
-			label: "File",
-			submenu: [
-				{
-					label: "Open Workspace...",
-					accelerator: "CmdOrCtrl+O",
-					click: () => win?.webContents.send("menu-action", "open-workspace")
-				},
-				{
-					label: "Quick Open",
-					accelerator: "CmdOrCtrl+P",
-					click: () => win?.webContents.send("menu-action", "quick-open")
-				},
-				{ type: "separator" },
-				{
-					label: "Save",
-					accelerator: "CmdOrCtrl+S",
-					click: () => win?.webContents.send("menu-action", "save")
-				},
-				{
-					label: "Close Tab",
-					accelerator: "CmdOrCtrl+W",
-					click: () => win?.webContents.send("menu-action", "close-tab")
-				}
-			]
-		},
-		{
 			label: "Edit",
 			submenu: [
 				{ role: "undo" },
@@ -31210,11 +30808,6 @@ function buildMenu() {
 					label: "Find in Conversation",
 					accelerator: "CmdOrCtrl+F",
 					click: () => win?.webContents.send("menu-action", "find")
-				},
-				{
-					label: "Find in Files",
-					accelerator: "CmdOrCtrl+Shift+F",
-					click: () => win?.webContents.send("menu-action", "search")
 				},
 				{ type: "separator" },
 				{
@@ -31232,17 +30825,6 @@ function buildMenu() {
 		{
 			label: "View",
 			submenu: [
-				{
-					label: "Toggle Sidebar",
-					accelerator: "CmdOrCtrl+B",
-					click: () => win?.webContents.send("menu-action", "toggle-sidebar")
-				},
-				{
-					label: "Toggle Terminal",
-					accelerator: "CmdOrCtrl+`",
-					click: () => win?.webContents.send("menu-action", "toggle-terminal")
-				},
-				{ type: "separator" },
 				{ role: "toggleDevTools" },
 				{ role: "togglefullscreen" },
 				{ role: "zoomIn" },
@@ -31331,7 +30913,6 @@ async function createWindow() {
 		browserViewManager.hide();
 	});
 	initAgent();
-	startPty();
 }
 async function initAgent() {
 	if (!win) return;
@@ -31353,43 +30934,19 @@ async function initAgent() {
 		console.log("[Agent] Initializing Built-in kernel");
 		const ba = new BuiltinAgent();
 		ba.init(win, agentConfig);
-		ba.setupDiffHandlers();
 		agent = ba;
 	} else {
 		console.log("[Agent] Initializing Vercel AI SDK kernel");
 		const va = new VercelAgent();
 		va.init(win, agentConfig);
-		va.setupDiffHandlers();
 		agent = va;
 	}
 	win.webContents.send("kernel-changed", currentKernel);
-}
-function startPty() {
-	if (ptyProcess) {
-		ptyProcess.kill();
-		ptyProcess = null;
-	}
-	const shell = node_os.platform() === "win32" ? "powershell.exe" : "zsh";
-	ptyProcess = node_child_process.spawn(shell, [], {
-		env: process.env,
-		cwd: currentWorkspacePath
-	});
-	ptyProcess.stdout.on("data", (d) => win?.webContents.send("terminal-output", d.toString()));
-	ptyProcess.stderr.on("data", (d) => win?.webContents.send("terminal-output", d.toString()));
-	ptyProcess.on("error", (err) => console.error("[PTY] Process error:", err.message));
-	ptyProcess.on("close", (code) => {
-		console.log(`[PTY] Exited with code ${code}`);
-		ptyProcess = null;
-	});
 }
 electron.app.on("window-all-closed", () => {
 	if (process.platform !== "darwin") electron.app.quit();
 });
 electron.app.on("before-quit", () => {
-	if (ptyProcess) {
-		ptyProcess.kill();
-		ptyProcess = null;
-	}
 	if (agent) {
 		agent.destroy();
 		agent = null;
@@ -31433,9 +30990,6 @@ electron.ipcMain.on("chat-message-images", async (_, msg, imageDataUrls) => {
 	if (!agent) return;
 	agent.handleMessageWithImages(msg, imageDataUrls);
 });
-electron.ipcMain.on("terminal-input", (_, data) => {
-	if (ptyProcess) ptyProcess.stdin.write(data);
-});
 electron.ipcMain.on("cancel-chat-request", () => agent?.abort());
 electron.ipcMain.on("reset-conversation", () => agent?.resetConversation());
 electron.ipcMain.on("sync-history", (_, messages) => agent?.loadHistory(messages));
@@ -31444,14 +30998,10 @@ electron.ipcMain.on("switch-kernel", async (_, kernel) => {
 	if (k === currentKernel) return;
 	console.log(`[Main] Switching kernel: ${currentKernel} → ${k}`);
 	currentKernel = k;
-	electron.ipcMain.removeAllListeners("diff-accept");
-	electron.ipcMain.removeAllListeners("diff-reject");
 	await initAgent();
 });
 electron.ipcMain.on("relaunch-app", async () => {
 	console.log("[Main] Reinitializing agent...");
-	electron.ipcMain.removeAllListeners("diff-accept");
-	electron.ipcMain.removeAllListeners("diff-reject");
 	agent?.destroy();
 	agent = null;
 	await initAgent();
@@ -31460,189 +31010,11 @@ electron.ipcMain.on("relaunch-app", async () => {
 	win?.webContents.send("chat-stream-end", "");
 	win?.webContents.send("chat-status", "idle");
 });
-async function getGitBranch(dir) {
-	try {
-		return (await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: dir })).stdout.trim();
-	} catch {
-		return "";
-	}
-}
-var gitStatusCache = /* @__PURE__ */ new Map();
-var gitStatusCacheTime = 0;
-var GIT_CACHE_TTL = 5e3;
-async function getGitStatus(dir) {
-	if (Date.now() - gitStatusCacheTime < GIT_CACHE_TTL) return gitStatusCache;
-	try {
-		const { stdout } = await execAsync("git status --porcelain", { cwd: dir });
-		const m = /* @__PURE__ */ new Map();
-		stdout.split("\n").filter((l) => l.trim()).forEach((l) => {
-			m.set(l.substring(3).trim(), l.substring(0, 2).includes("?") ? "untracked" : "modified");
-		});
-		gitStatusCache = m;
-		gitStatusCacheTime = Date.now();
-		return m;
-	} catch {
-		return /* @__PURE__ */ new Map();
-	}
-}
-async function buildFileTree(dir) {
-	try {
-		const gitMap = dir === currentWorkspacePath ? await getGitStatus(dir) : /* @__PURE__ */ new Map();
-		const entries = await node_fs_promises.readdir(dir, { withFileTypes: true });
-		const ignore = [
-			"node_modules",
-			".git",
-			"dist",
-			"dist-electron",
-			".DS_Store",
-			"__pycache__",
-			".next",
-			"build"
-		];
-		return entries.filter((e) => !ignore.includes(e.name)).map((e) => ({
-			name: e.name,
-			path: node_path.join(dir, e.name),
-			isDirectory: e.isDirectory(),
-			gitStatus: gitMap.get(node_path.relative(currentWorkspacePath, node_path.join(dir, e.name))) || "clean"
-		})).sort((a, b) => a.isDirectory === b.isDirectory ? a.name.localeCompare(b.name) : a.isDirectory ? -1 : 1);
-	} catch {
-		return [];
-	}
-}
-electron.ipcMain.handle("get-file-tree", (_, dir) => {
-	const target = dir || currentWorkspacePath;
-	if (!isWithinWorkspace(target)) return [];
-	return buildFileTree(target);
-});
-electron.ipcMain.handle("get-git-branch", () => getGitBranch(currentWorkspacePath));
-electron.ipcMain.handle("get-git-status", async () => {
-	try {
-		const { stdout } = await execAsync("git status --porcelain", { cwd: currentWorkspacePath });
-		return stdout.split("\n").filter((l) => l.trim()).map((l) => ({
-			status: l.substring(0, 2),
-			path: l.substring(3).trim(),
-			staged: l[0] !== " " && l[0] !== "?"
-		}));
-	} catch {
-		return [];
-	}
-});
-electron.ipcMain.handle("git-commit", async (_, msg) => {
-	try {
-		await new Promise((resolve, reject) => {
-			const add = node_child_process.spawn("git", ["add", "-A"], { cwd: currentWorkspacePath });
-			add.on("close", (code) => code === 0 ? resolve() : reject(/* @__PURE__ */ new Error(`git add failed (exit ${code})`)));
-			add.on("error", reject);
-		});
-		return await new Promise((resolve, reject) => {
-			const proc = node_child_process.spawn("git", [
-				"commit",
-				"-m",
-				msg
-			], { cwd: currentWorkspacePath });
-			let stdout = "", stderr = "";
-			proc.stdout.on("data", (d) => stdout += d);
-			proc.stderr.on("data", (d) => stderr += d);
-			proc.on("close", (code) => code === 0 ? resolve(stdout || stderr) : reject(new Error(stderr || `exit ${code}`)));
-			proc.on("error", reject);
-		});
-	} catch (e) {
-		return `Error: ${e instanceof Error ? e.message : "commit failed"}`;
-	}
-});
-electron.ipcMain.handle("open-workspace", async () => {
-	if (!win) return null;
-	const r = await electron.dialog.showOpenDialog(win, { properties: ["openDirectory"] });
-	if (r.canceled || r.filePaths.length === 0) return null;
-	currentWorkspacePath = r.filePaths[0];
-	fileCacheTime = 0;
-	startPty();
-	await initAgent();
-	return currentWorkspacePath;
-});
-function isWithinWorkspace(fp) {
-	try {
-		const resolved = node_path.resolve(fp);
-		const ws = node_path.resolve(currentWorkspacePath) + node_path.sep;
-		return resolved.startsWith(ws) || resolved === node_path.resolve(currentWorkspacePath);
-	} catch {
-		return false;
-	}
-}
-electron.ipcMain.handle("read-file", (_, fp) => {
-	if (!isWithinWorkspace(fp)) throw new Error("Access denied: path outside workspace");
-	return node_fs_promises.readFile(fp, "utf8");
-});
-electron.ipcMain.handle("rename-file", async (_, oldPath, newPath) => {
-	if (!isWithinWorkspace(oldPath) || !isWithinWorkspace(newPath)) throw new Error("Access denied: path outside workspace");
-	await node_fs_promises.rename(oldPath, newPath);
-	return true;
-});
-electron.ipcMain.on("show-context-menu", (event, fp, isDirectory) => {
-	const window = electron.BrowserWindow.fromWebContents(event.sender);
-	if (!window) return;
-	electron.Menu.buildFromTemplate([
-		{
-			label: "Reveal in Finder",
-			click: () => electron.shell.showItemInFolder(fp)
-		},
-		{
-			label: "Open in Integrated Terminal",
-			click: () => {
-				const targetDir = isDirectory ? fp : node_path.dirname(fp);
-				ptyProcess?.write(`cd "${targetDir}"\r`);
-				event.sender.send("menu-action", "open-terminal");
-			}
-		},
-		{ type: "separator" },
-		{
-			label: "Copy Path",
-			click: () => electron.clipboard.writeText(fp)
-		},
-		{
-			label: "Copy Relative Path",
-			click: () => electron.clipboard.writeText(node_path.relative(currentWorkspacePath, fp))
-		},
-		{ type: "separator" },
-		{
-			label: "Rename...",
-			click: () => event.sender.send("context-menu-action", "rename", fp)
-		},
-		{
-			label: "Delete",
-			click: () => {
-				if (electron.dialog.showMessageBoxSync(window, {
-					type: "warning",
-					buttons: ["Cancel", "Delete"],
-					defaultId: 1,
-					cancelId: 0,
-					title: "Confirm Delete",
-					message: `Are you sure you want to delete '${node_path.basename(fp)}'?`,
-					detail: "This action cannot be undone."
-				}) === 1) node_fs_promises.rm(fp, {
-					recursive: true,
-					force: true
-				}).catch((err) => {
-					electron.dialog.showErrorBox("Delete Failed", err.message);
-				});
-			}
-		}
-	]).popup({ window });
-});
 electron.ipcMain.on("move-window-by", (e, dx, dy) => {
 	const window = electron.BrowserWindow.fromWebContents(e.sender);
 	if (window && !window.isDestroyed()) {
 		const [x, y] = window.getPosition();
 		window.setPosition(x + dx, y + dy, false);
-	}
-});
-electron.ipcMain.handle("write-file", async (_, fp, content) => {
-	if (!isWithinWorkspace(fp)) throw new Error("Access denied: path outside workspace");
-	try {
-		await node_fs_promises.writeFile(fp, content, "utf8");
-		return true;
-	} catch {
-		return false;
 	}
 });
 electron.ipcMain.handle("capture-window", async () => {
@@ -31687,40 +31059,6 @@ electron.ipcMain.handle("browser-go-back", async () => {
 electron.ipcMain.handle("browser-go-forward", async () => {
 	return browserViewManager.goForward();
 });
-var fileCache = [];
-var fileCacheTime = 0;
-async function walkDir(dir, maxDepth = 5, depth = 0) {
-	if (depth > maxDepth) return [];
-	const ignore = [
-		"node_modules",
-		".git",
-		"dist",
-		"dist-electron",
-		".DS_Store",
-		"__pycache__"
-	];
-	const results = [];
-	try {
-		for (const e of await node_fs_promises.readdir(dir, { withFileTypes: true })) {
-			if (ignore.includes(e.name)) continue;
-			const fp = node_path.join(dir, e.name);
-			if (e.isDirectory()) results.push(...await walkDir(fp, maxDepth, depth + 1));
-			else results.push({
-				name: e.name,
-				path: fp
-			});
-		}
-	} catch {}
-	return results;
-}
-electron.ipcMain.handle("search-files", async (_, query) => {
-	if (Date.now() - fileCacheTime > 1e4) {
-		fileCache = await walkDir(currentWorkspacePath);
-		fileCacheTime = Date.now();
-	}
-	const q = query.toLowerCase();
-	return fileCache.filter((f) => f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q)).slice(0, 20);
-});
 electron.ipcMain.handle("get-config", () => loadConfig());
 electron.ipcMain.handle("save-config", async (_, config) => {
 	const m = await saveConfig(config);
@@ -31739,27 +31077,5 @@ electron.ipcMain.handle("load-conversations", async () => {
 	} catch {
 		return null;
 	}
-});
-electron.ipcMain.handle("search-codebase", async (_, query) => {
-	return new Promise((resolve) => {
-		const proc = node_child_process.spawn("grep", [
-			"-rn",
-			"--exclude-dir=node_modules",
-			"--exclude-dir=.git",
-			"--exclude-dir=dist",
-			"--exclude-dir=dist-electron",
-			"--",
-			query,
-			"."
-		], { cwd: currentWorkspacePath });
-		let stdout = "";
-		proc.stdout.on("data", (d) => {
-			stdout += d;
-			if (stdout.length > 2 * 1024 * 1024) proc.kill();
-		});
-		proc.stderr.on("data", () => {});
-		proc.on("close", () => resolve(stdout));
-		proc.on("error", () => resolve(""));
-	});
 });
 //#endregion
