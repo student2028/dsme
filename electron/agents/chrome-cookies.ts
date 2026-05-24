@@ -1,3 +1,5 @@
+import { getErrorMessage } from '../lib/errors';
+import type { ChromeCookieRow } from '../types/common';
 /**
  * Chrome Cookie Sync for DSME
  *
@@ -77,8 +79,8 @@ export function getChromeProfiles(): ChromeProfile[] {
 
       profiles.push({ dirName: entry.name, name, email, cookiesPath });
     }
-  } catch (e: any) {
-    console.error('[ChromeCookies] Failed to enumerate profiles:', e.message);
+  } catch (e: unknown) {
+    console.error('[ChromeCookies] Failed to enumerate profiles:', getErrorMessage(e));
   }
 
   // Sort: Default first, then Profile 1, Profile 3, etc.
@@ -187,9 +189,11 @@ export async function syncChromeCookies(
     try {
       for (const f of fs.readdirSync(tmpDir)) fs.unlinkSync(path.join(tmpDir, f));
       fs.rmdirSync(tmpDir);
-    } catch {}
+    } catch (cleanupErr: unknown) {
+      console.warn('[ChromeCookies] Temp cleanup failed:', getErrorMessage(cleanupErr));
+    }
 
-    let rows: any[];
+    let rows: ChromeCookieRow[];
     try {
       rows = JSON.parse(output);
     } catch {
@@ -241,8 +245,8 @@ export async function syncChromeCookies(
 
     console.log(`[ChromeCookies] Synced ${count} cookies from "${profileDirName}" (${skipped} skipped, ${rows.length} total)`);
     return count;
-  } catch (e: any) {
-    console.error(`[ChromeCookies] Sync failed for "${profileDirName}":`, e.message);
+  } catch (e: unknown) {
+    console.error(`[ChromeCookies] Sync failed for "${profileDirName}":`, getErrorMessage(e));
     return 0;
   }
 }

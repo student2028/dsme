@@ -11,6 +11,7 @@
  *   - Proper error handling and result extraction
  */
 
+import { getErrorMessage } from '../lib/errors';
 import { browserNavigate, browserEval } from './browser-use';
 
 export interface BrowsePageOptions {
@@ -22,7 +23,7 @@ export interface BrowsePageOptions {
 }
 
 export async function browsePage(opts: BrowsePageOptions): Promise<string> {
-  const { url, script, waitMs = 2000, timeoutMs = 30000 } = opts;
+  const { url, script, waitMs = 2000 } = opts;
 
   // ── Input validation ──
   if (!url) return 'Error: url is required';
@@ -62,7 +63,7 @@ export async function browsePage(opts: BrowsePageOptions): Promise<string> {
 
     const result = await browserEval(wrappedScript);
     return result || 'Script returned empty result. The page may still be loading — try increasing wait_before_script or use browser_snapshot to inspect the page state.';
-  } catch (e: any) {
-    return `browse_page error: ${e.message || String(e)}`;
+  } catch (e: unknown) {
+    return `browse_page error: ${getErrorMessage(e)}`;
   }
 }

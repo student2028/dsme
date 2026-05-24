@@ -1,3 +1,5 @@
+import type { StreamToolPart } from '../types/common';
+
 const DEFAULT_VISIBLE_TOOL_OUTPUT_CAP = 6000;
 const QUICK_VISIBLE_TOOLS = new Set(['web_search', 'fetch_url']);
 
@@ -46,7 +48,7 @@ function formatVisibleToolOutput(toolName: string | undefined, value: unknown, c
   return `\n\n### 工具输出${label}\n\n\`\`\`tool-output\n${body}\n\`\`\`\n`;
 }
 
-export function visibleTextFromStreamPart(part: any, cap = DEFAULT_VISIBLE_TOOL_OUTPUT_CAP): string {
+export function visibleTextFromStreamPart(part: StreamToolPart | null | undefined, cap = DEFAULT_VISIBLE_TOOL_OUTPUT_CAP): string {
   switch (part?.type) {
     case 'tool-result':
       return formatVisibleToolOutput(part.toolName, part.result ?? part.output ?? part.content, cap);

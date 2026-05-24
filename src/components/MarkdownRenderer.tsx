@@ -31,7 +31,7 @@ import yaml from 'highlight.js/lib/languages/yaml';
 import sql from 'highlight.js/lib/languages/sql';
 import diff from 'highlight.js/lib/languages/diff';
 
-const LANG_MAP: [string, any][] = [
+const LANG_MAP: [string, Parameters<typeof hljs.registerLanguage>[1]][] = [
   ['typescript', typescript], ['ts', typescript], ['tsx', typescript],
   ['javascript', javascript], ['js', javascript], ['jsx', javascript],
   ['python', python], ['py', python],
@@ -89,7 +89,6 @@ renderer.code = function({ text, lang }: { text: string; lang?: string }) {
   if (collapsibleKind) {
     highlighted = escapeHtml(text);
   } else {
-    highlighted = text;
     try {
       if (language && hljs.getLanguage(language)) {
         highlighted = hljs.highlight(text, { language }).value;

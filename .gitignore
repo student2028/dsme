@@ -29,3 +29,14 @@ scratch/
 .scratch/
 henan_companies2.json
 test_*.js
+/test_*.mjs
+tests/debug_headers.mjs
+tests/test_google_login.mjs
+
+# Local data / chart exports (not part of the app)
+*.csv
+chart*.png
+result_*.png
+test*.png
+A股*.csv
+a股*.csv

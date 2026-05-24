@@ -1,4 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { HistoryMessage, IpcListener } from './types/common';
+
+interface PreloadAppConfig {
+  apiKey?: string;
+  model?: string;
+  baseUrl?: string;
+  bookmarks?: { title: string; url: string; icon?: string; folder?: string }[];
+  [key: string]: unknown;
+}
 
 try {
   if (typeof document !== 'undefined' && process.platform === 'darwin') {
@@ -9,9 +18,9 @@ try {
 }
 
 function createMultiSubscriberChannel(channel: string) {
-  const subs = new Set<(...args: any[]) => void>();
+  const subs = new Set<IpcListener>();
   let listening = false;
-  return (callback: (...args: any[]) => void) => {
+  return (callback: IpcListener) => {
     subs.add(callback);
     if (!listening) {
       listening = true;
@@ -22,8 +31,8 @@ function createMultiSubscriberChannel(channel: string) {
 }
 
 function createSingleListenerChannel(channel: string) {
-  return (callback: (...args: any[]) => void) => {
-    const handler = (_e: any, ...args: any[]) => callback(...args);
+  return (callback: IpcListener) => {
+    const handler = (_e: Electron.IpcRendererEvent, ...args: unknown[]) => callback(...args);
     ipcRenderer.on(channel, handler);
     return () => { ipcRenderer.removeListener(channel, handler); };
   };
@@ -31,9 +40,9 @@ function createSingleListenerChannel(channel: string) {
 
 /** One live handler per channel; new subscribe clears previous (fixes stacked chat-stream under Strict Mode / HMR). */
 function createExclusiveListenerChannel(channel: string) {
-  return (callback: (...args: any[]) => void) => {
+  return (callback: IpcListener) => {
     ipcRenderer.removeAllListeners(channel);
-    const handler = (_e: any, ...args: any[]) => callback(...args);
+    const handler = (_e: Electron.IpcRendererEvent, ...args: unknown[]) => callback(...args);
     ipcRenderer.on(channel, handler);
     return () => { ipcRenderer.removeListener(channel, handler); };
   };
@@ -52,26 +61,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onMenuAction: createSingleListenerChannel('menu-action'),
 
   getConfig: () => ipcRenderer.invoke('get-config'),
-  saveConfig: (config: any) => ipcRenderer.invoke('save-config', config),
+  saveConfig: (config: Partial<PreloadAppConfig>) => ipcRenderer.invoke('save-config', config),
   relaunchApp: () => ipcRenderer.send('relaunch-app'),
   cancelChatRequest: () => ipcRenderer.send('cancel-chat-request'),
   resetConversation: () => ipcRenderer.send('reset-conversation'),
   saveConversations: (data: string) => ipcRenderer.invoke('save-conversations', data),
   loadConversations: () => ipcRenderer.invoke('load-conversations'),
-  syncHistory: (messages: any[]) => ipcRenderer.send('sync-history', messages),
+  syncHistory: (messages: HistoryMessage[]) => ipcRenderer.send('sync-history', messages),
 
   switchKernel: (kernel: string) => ipcRenderer.send('switch-kernel', kernel),
   onKernelChanged: createExclusiveListenerChannel('kernel-changed'),
 
-  // [DEPRECATED] Legacy IPC — no longer used after WebContentsView migration.
-  // web_search now calls BrowserViewManager directly; browser-use tools do too.
-  // Kept as no-ops to prevent runtime errors if any stale code references them.
-  onWebSearchExecute: (_cb: any) => () => {},
-  sendWebSearchResults: (_results: string) => {},
-  onBrowserCommand: (_cb: any) => () => {},
-  sendBrowserResult: (_id: string, _result: string) => {},
-
-  // WebContentsView-based browser panel
   syncBrowserBounds: (bounds: { x: number; y: number; width: number; height: number }) => {
     ipcRenderer.send('browser-view-bounds', bounds);
   },
@@ -84,7 +84,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onBrowserViewNavigated: createMultiSubscriberChannel('browser-view-navigated'),
   onBrowserStep: createMultiSubscriberChannel('browser-step'),
   onBrowserPanelOpen: createMultiSubscriberChannel('browser-panel-open'),
-  
+
   captureWindow: () => ipcRenderer.invoke('capture-window'),
 
   getChromeProfiles: () => ipcRenderer.invoke('get-chrome-profiles'),

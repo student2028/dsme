@@ -10,7 +10,8 @@ import {
   countSearchResultLines,
   formatWebSearchResult,
   hasUsableSearchResults,
-} from '../electron/agents/shared-tools.ts';
+} from '../electron/agents/search-result-format.ts';
+import { isCommandBlocked } from '../electron/lib/command-guard.ts';
 import {
   BROWSER_STEP_RAW_MAX,
   clipRawOutput,
@@ -37,6 +38,8 @@ import {
   getTokenLimitsFromEnv,
   parseTokenLimit,
 } from '../electron/agents/token-config.ts';
+import { formatAxSnapshot } from '../electron/browser/ax-snapshot-format.ts';
+import { parseTextToolCalls } from '../electron/agents/text-tool-parser.ts';
 let passed = 0, failed = 0;
 
 function assert(condition, label) {
@@ -177,8 +180,50 @@ console.log('\n✂️ Mid-sentence Continuation Detection');
   }), 'Tool-call argument streams are not treated as final-answer truncation');
 }
 
+// ── Test 11: Command guard ──
+console.log('\n🛡️ Command Guard');
+{
+  assert(isCommandBlocked('rm -rf /'), 'Destructive rm -rf / is blocked');
+  assert(!isCommandBlocked('npm run test:unit'), 'Benign npm script is allowed');
+}
 
-// ── Summary ──
+// ── Test 12: Accessibility snapshot formatting ──
+console.log('\n🌳 Accessibility Snapshot Format');
+{
+  const interactiveRoles = new Set(['button', 'link', 'textbox']);
+  const result = formatAxSnapshot({
+    title: 'Example',
+    url: 'https://example.com',
+    nodes: [
+      { ignored: true, role: { value: 'generic' } },
+      { role: { value: 'button' }, name: { value: 'Submit' }, backendDOMNodeId: 42 },
+      { role: { value: 'heading' }, name: { value: 'Welcome' } },
+    ],
+    interactiveRoles,
+  });
+  assert(result.text.includes('Page: Example'), 'Snapshot includes page title');
+  assert(result.text.includes('[e1] button "Submit"'), 'Interactive node gets ref label');
+  assert(result.refMap.get('e1')?.backendNodeId === 42, 'Ref map stores backend node id');
+  assert(result.diagnostics.refCount === 1, 'Diagnostics count interactive refs');
+}
+
+// ── Test 13: Text tool call parser ──
+console.log('\n🔧 Text Tool Call Parser');
+{
+  const tools = ['web_search', 'run_command', 'write_file'];
+  const xml = 'Before <function=web_search>{"query":"weather"}</function> after';
+  const xmlCalls = parseTextToolCalls(xml, tools);
+  assert(xmlCalls.length === 1 && xmlCalls[0].name === 'web_search', 'XML function block is parsed');
+
+  const hermes = '[TOOL_CALLS] [{"name":"run_command","arguments":{"command":"echo hi"}}]';
+  const hermesCalls = parseTextToolCalls(hermes, tools);
+  assert(hermesCalls[0]?.args.command === 'echo hi', 'Hermes JSON tool calls are parsed');
+
+  const jsonBlock = 'Use this:\n```json\n{"query":"dsme github"}\n```';
+  const jsonCalls = parseTextToolCalls(jsonBlock, tools);
+  assert(jsonCalls[0]?.name === 'web_search', 'JSON code block infers web_search from query key');
+}
+
 console.log(`\n╔══════════════════════════════════════╗`);
 console.log(`║  UNIT TESTS: ${passed}/${passed + failed}${' '.repeat(22 - String(passed).length - String(passed + failed).length)}║`);
 console.log(`╚══════════════════════════════════════╝`);

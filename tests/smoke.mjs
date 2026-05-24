@@ -14,7 +14,7 @@
  *
  * Prerequisites:
  *   - DSME running: npm run dev (Electron must load the app — not plain browser on :5173)
- *   - CDP proxy port 9418 (electron/main.ts); override DSME_CDP_PORT
+ *   - CDP proxy on 127.0.0.1:9418 (electron/main.ts); override DSME_CDP_PORT
  *   - Renderer sets window.__DSME_READY after React mounts (App.tsx); smoke waits for it first.
  *   - python3|python on PATH for Python tools; network for fetch_url
  *

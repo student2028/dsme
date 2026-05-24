@@ -12,6 +12,7 @@ let toastId = 0;
 
 // Global toast trigger
 const toastListeners: ((toast: Toast) => void)[] = [];
+// eslint-disable-next-line react-refresh/only-export-components -- imperative toast API colocated with container
 export function showToast(message: string, type: 'success' | 'error' | 'info' = 'info') {
   const toast: Toast = { id: `toast_${toastId++}`, message, type, timestamp: Date.now() };
   toastListeners.forEach(fn => fn(toast));

@@ -1,3 +1,6 @@
+import { getErrorMessage } from '../lib/errors';
+import type { JsonObject } from '../types/common';
+import { BrowserWindow } from 'electron';
 /**
  * DSME Browser-Use — Long-running browser agent tools
  *
@@ -100,7 +103,7 @@ function buildSnapshotScript(startRef = 0, includeHeader = true): string {
 
   function getText(el) {
     const t = el.innerText || el.textContent || '';
-    return t.trim().replace(/\s+/g, ' ').slice(0, 80);
+    return t.trim().replace(/\\s+/g, ' ').slice(0, 80);
   }
 
   ${includeHeader ? `
@@ -270,76 +273,14 @@ function buildSnapshotScript(startRef = 0, includeHeader = true): string {
 })(${startRef})`;
 }
 
-// Legacy compat: the old SNAPSHOT_SCRIPT constant for any remaining callers
-const SNAPSHOT_SCRIPT = buildSnapshotScript(0, true);
-
-// ── Lightweight iframe info script — NO ref injection ──
-// Used by browserSnapshot() to report what's inside each iframe without
-// creating ref collisions. Reports element counts and visible text hints.
-// Also detects contenteditable elements (rich text editors like KindEditor,
-// TinyMCE, etc. that use contenteditable body inside about:blank iframes).
-const IFRAME_INFO_SCRIPT = `(function() {
-  var title = document.title || '';
-  var inputs = document.querySelectorAll('input:not([type=hidden])');
-  var buttons = document.querySelectorAll('button, [role=button], input[type=submit]');
-  var links = document.querySelectorAll('a[href]');
-  var editables = document.querySelectorAll('[contenteditable="true"]');
-
-  var visInputs = 0, visButtons = 0, visLinks = 0, visEditables = 0;
-  inputs.forEach(function(el) { if (el.offsetParent) visInputs++; });
-  buttons.forEach(function(el) { if (el.offsetParent) visButtons++; });
-  links.forEach(function(el) { if (el.offsetParent) visLinks++; });
-  editables.forEach(function(el) { visEditables++; });
-
-  // Also check if body itself is contenteditable (common in rich text editor iframes)
-  if (document.body && document.body.getAttribute('contenteditable') === 'true') {
-    visEditables++;
-  }
-
-  if (visInputs === 0 && visButtons === 0 && visLinks === 0 && visEditables === 0) return '';
-
-  var parts = [];
-  if (title) parts.push('Title: ' + title);
-  parts.push('Elements: ' + visInputs + ' inputs, ' + visButtons + ' buttons, ' + visLinks + ' links, ' + visEditables + ' editables');
-
-  if (visEditables > 0) {
-    parts.push('⚡ RICH TEXT EDITOR detected (contenteditable)');
-    var bodyText = (document.body.innerText || '').trim().slice(0, 80);
-    if (bodyText) parts.push('Editor content: "' + bodyText + '"');
-  }
-
-  var inputHints = [];
-  inputs.forEach(function(el) {
-    if (!el.offsetParent) return;
-    var hint = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.getAttribute('name') || el.type;
-    if (hint) inputHints.push(hint);
-  });
-  if (inputHints.length > 0) parts.push('Input hints: ' + inputHints.slice(0, 5).join(', '));
-
-  var btnLabels = [];
-  buttons.forEach(function(el) {
-    if (!el.offsetParent) return;
-    var label = (el.innerText || el.getAttribute('aria-label') || el.value || '').trim().slice(0, 30);
-    if (label) btnLabels.push(label);
-  });
-  if (btnLabels.length > 0) parts.push('Buttons: ' + btnLabels.slice(0, 5).join(', '));
-
-  return parts.join(' | ');
-})()`;
-
-
-
-
 /** Active multi-step browser session title. */
 let activeSessionTitle: string | null = null;
 
-/** Get the main window via browserViewManager — no dynamic require needed. */
-function getMainWindow(): any {
-  return (browserViewManager as any).mainWindow;
+function getMainWindow(): BrowserWindow | null {
+  return browserViewManager.getMainWindow();
 }
 
-/** Notify renderer about browser-use steps (for UI timeline). */
-export function notifyBrowserStepStart(command: string, params: Record<string, any>) {
+export function notifyBrowserStepStart(command: string, params: JsonObject) {
   if (global.mainWindow) {
     global.mainWindow.webContents.send('browser-step', {
       sessionTitle: currentSessionTitle,
@@ -350,7 +291,7 @@ export function notifyBrowserStepStart(command: string, params: Record<string, a
   }
 }
 
-function notifyBrowserStep(command: string, params: Record<string, any>, result: string, screenshotUrl?: string) {
+function notifyBrowserStep(command: string, params: JsonObject, result: string, screenshotUrl?: string) {
   const win = getMainWindow();
   if (!win || win.isDestroyed()) return;
   
@@ -433,8 +374,8 @@ export async function browserSnapshot(): Promise<string> {
     if (cdpResult) {
       console.warn('[browser-use] CDP AXTree returned no interactive refs, falling back to JS');
     }
-  } catch (e: any) {
-    console.warn('[browser-use] CDP snapshot failed, falling back to JS injection:', e.message);
+  } catch (e: unknown) {
+    console.warn('[browser-use] CDP snapshot failed, falling back to JS injection:', getErrorMessage(e));
   }
 
   // ── JS Fallback: penetrate ALL frames with unified ref counter ──
@@ -444,7 +385,7 @@ export async function browserSnapshot(): Promise<string> {
   const frameInfos = browserViewManager.getAllFrameInfos();
 
   // Save current target frame so we can restore it after scanning
-  const savedFrame = (browserViewManager as any).targetFrame;
+  const savedFrame = browserViewManager.getTargetFrame();
 
   for (const frame of frameInfos) {
     // Switch to the target frame for script execution
@@ -484,15 +425,15 @@ export async function browserSnapshot(): Promise<string> {
         }
         allLines.push(...parsed.lines);
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       // Frame may have been destroyed or CSP blocked — skip
-      console.warn(`[browser-use] Frame ${frame.index} snapshot failed:`, e.message);
+      console.warn(`[browser-use] Frame ${frame.index} snapshot failed:`, getErrorMessage(e));
     }
   }
 
   // Restore original target frame
   if (savedFrame) {
-    (browserViewManager as any).targetFrame = savedFrame;
+    browserViewManager.setTargetFrameInternal(savedFrame);
   } else {
     browserViewManager.switchToFrame(-1);
   }
@@ -510,12 +451,12 @@ export async function browserSnapshot(): Promise<string> {
 async function withJsRefFrame<T>(ref: string, fn: () => Promise<T>): Promise<T> {
   const frameIndex = jsRefFrameMap.get(ref);
   if (frameIndex !== undefined && frameIndex > 0) {
-    const saved = (browserViewManager as any).targetFrame;
+    const saved = browserViewManager.getTargetFrame();
     browserViewManager.switchToFrame(frameIndex);
     try {
       return await fn();
     } finally {
-      if (saved) { (browserViewManager as any).targetFrame = saved; }
+      if (saved) { browserViewManager.setTargetFrameInternal(saved); }
       else { browserViewManager.switchToFrame(-1); }
     }
   }
@@ -558,7 +499,7 @@ export async function browserClick(ref: string, _retry = false): Promise<string>
       const idleStatus = await browserViewManager.waitForIdle(8000);
       return result + ` [${idleStatus}]`;
     }
-  } catch {}
+  } catch { void 0; }
 
   // Ref not found — page state may have changed (dynamic UI like login forms).
   // Auto-retry once with a fresh snapshot.
@@ -671,7 +612,7 @@ export async function browserType(ref: string, text: string, _retry = false): Pr
       await browserViewManager.waitForIdle(800);
       return result;
     }
-  } catch {}
+  } catch { void 0; }
 
   // Ref not found — page state may have changed (e.g. password field appeared after email entry).
   // Auto-retry once with a fresh snapshot before failing.
@@ -703,12 +644,12 @@ export async function browserScroll(direction: 'up' | 'down'): Promise<string> {
   browserViewManager.sendMouseWheel(deltaY);
   await new Promise(r => setTimeout(r, 300)); // Let scroll settle
   // Report position via a lightweight eval
-  let position = '';
+  let position = 'unknown';
   try {
     position = await browserViewManager.executeJS(
       `'scrollY=' + window.scrollY + ' / ' + document.body.scrollHeight`
     );
-  } catch { position = 'unknown'; }
+  } catch { /* scroll position optional */ }
   const result = `Scrolled ${direction}. ${position}`;
   notifyBrowserStep('scroll', { direction }, result);
   return result;
@@ -740,8 +681,8 @@ export async function browserEval(script: string, cwd?: string): Promise<string>
       const base64Data = result.replace(/^data:[^;]+;base64,/, '');
       await fsP.writeFile(fp, Buffer.from(base64Data, 'base64'));
       return `Image saved to ${filename} (${Math.round(base64Data.length * 0.75 / 1024)}KB). Use this file path to reference the image. Do NOT re-extract — the file is ready.`;
-    } catch (e: any) {
-      return `Failed to save image: ${e.message}. Raw data length: ${result.length} chars.`;
+    } catch (e: unknown) {
+      return `Failed to save image: ${getErrorMessage(e)}. Raw data length: ${result.length} chars.`;
     }
   }
 
@@ -840,8 +781,8 @@ export async function browserImportCookies(filePath: string): Promise<string> {
     const result = await browserViewManager.importCookies(cookies);
     notifyBrowserStep('import_cookies', { filePath }, result);
     return result;
-  } catch (e: any) {
-    return `Error importing cookies: ${e.message}`;
+  } catch (e: unknown) {
+    return `Error importing cookies: ${getErrorMessage(e)}`;
   }
 }
 

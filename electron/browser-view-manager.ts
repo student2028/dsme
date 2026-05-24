@@ -1,4 +1,5 @@
 /**
+
  * DSME BrowserViewManager — AI Agent as the Browser Itself
  *
  * DESIGN PHILOSOPHY:
@@ -31,7 +32,30 @@
  * coupling between an AI agent and a web browser possible.
  */
 
-import { WebContentsView, BrowserWindow, session, WebFrameMain, clipboard } from 'electron';
+import * as fsPromises from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import {
+  WebContentsView,
+  BrowserWindow,
+  session,
+  WebFrameMain,
+  clipboard,
+  app,
+  dialog,
+  type Cookie,
+  type Event,
+  type OnBeforeRequestListenerDetails,
+  type OnCompletedListenerDetails,
+} from 'electron';
+import { getErrorMessage } from './lib/errors';
+import type { JsonObject } from './types/common';
+import type { WebContentsInputEvent } from './types/input-events';
+import {
+  formatAxSnapshot,
+  type AxNode,
+  type FrameTreeNode,
+} from './browser/ax-snapshot-format';
 
 export class BrowserViewManager {
   private view: WebContentsView | null = null;
@@ -98,6 +122,20 @@ export class BrowserViewManager {
     'menuitemradio', 'treeitem',
   ]);
 
+  /** Exposed for browser-use step notifications. */
+  getMainWindow(): BrowserWindow | null {
+    return this.mainWindow;
+  }
+
+  /** @internal Frame routing for browser-use JS ref fallback */
+  getTargetFrame(): WebFrameMain | null {
+    return this.targetFrame;
+  }
+
+  setTargetFrameInternal(frame: WebFrameMain | null): void {
+    this.targetFrame = frame;
+  }
+
   /** Call once after the main BrowserWindow is created. */
   init(mainWindow: BrowserWindow) {
     this.mainWindow = mainWindow;
@@ -140,13 +178,13 @@ export class BrowserViewManager {
       return TELEMETRY_DOMAINS.test(url) || TELEMETRY_PATHS.test(url);
     };
 
-    const trackNetworkStart = (details: any) => {
+    const trackNetworkStart = (details: OnBeforeRequestListenerDetails) => {
       if (isTelemetry(details.url, details.resourceType)) return;
       this.inflightRequests.add(details.id);
       this.lastNetworkActivity = Date.now();
     };
     
-    const trackNetworkEnd = (details: any) => {
+    const trackNetworkEnd = (details: OnCompletedListenerDetails) => {
       // BUG FIX: Do NOT check isTelemetry here.
       // A request might start as non-telemetry (/api/data) and get 302-redirected
       // to a telemetry URL (google-analytics.com/collect). If we skip the delete
@@ -168,7 +206,7 @@ export class BrowserViewManager {
 
     // Automatically handle downloads to prevent the system "Save As" dialog
     browserSession.removeAllListeners('will-download'); // Prevent leak on recreateView
-    browserSession.on('will-download', (event, item, webContents) => {
+    browserSession.on('will-download', (event, item) => {
       const activeCount = this.recentDownloads.filter(d => d.state === 'progressing').length;
       if (activeCount >= 3) {
         console.warn(`[BrowserViewManager] SECURITY: Blocked concurrent download flooding (${item.getFilename()})`);
@@ -176,8 +214,7 @@ export class BrowserViewManager {
         return;
       }
 
-      const os = require('node:os');
-      const path = require('node:path');
+      
       // Bug fix: Sanitize filename to prevent Directory Traversal via auto-download
       // If a malicious site returns 'Content-Disposition: attachment; filename="../../.bashrc"',
       // path.basename ensures it safely lands inside the Downloads folder as '.bashrc' or similar,
@@ -233,7 +270,7 @@ export class BrowserViewManager {
     // Monitor cookie removals and push a warning into consoleErrors so the
     // agent sees it in its next snapshot and can react proactively.
     browserSession.cookies.removeAllListeners('changed'); // Prevent leak on recreateView
-    browserSession.cookies.on('changed', (_event: any, cookie: any, cause: string, removed: boolean) => {
+    browserSession.cookies.on('changed', (_event: Event, cookie: Cookie, cause: string, removed: boolean) => {
       if (removed && cause !== 'overwrite') {
         // Only warn about cookies that smell like auth tokens
         const name = (cookie.name || '').toLowerCase();
@@ -263,7 +300,7 @@ export class BrowserViewManager {
     
     // Eagerly attach CDP so our anti-bot addScriptToEvaluateOnNewDocument runs
     // on the very first navigation.
-    this.ensureCDP().catch(e => console.warn('[BrowserViewManager] Eager CDP attach failed:', e.message));
+    this.ensureCDP().catch(e => console.warn('[BrowserViewManager] Eager CDP attach failed:', getErrorMessage(e)));
 
     // Notify renderer on navigation events & invalidate CDP refs
     this.view.webContents.on('did-navigate', (_e, url) => {
@@ -281,13 +318,13 @@ export class BrowserViewManager {
       // Immediately re-attach CDP and re-register evasion scripts
       // BEFORE the new page's scripts execute. Without this, cross-origin
       // navigations would lose addScriptToEvaluateOnNewDocument registration.
-      this.ensureCDP().catch(() => {});
+      this.ensureCDP().catch(() => { void 0; });
       const title = this.view!.webContents.getTitle();
       this.currentTitle = title;
       this.notifyRenderer('browser-view-navigated', { url, title });
       // Clear any visual overlay — stale boxes from the previous page would
       // appear frozen over the new page content.
-      this.clearOverlay().catch(() => {});
+      this.clearOverlay().catch(() => { void 0; });
     });
     this.view.webContents.on('did-navigate-in-page', (_e, url, isMainFrame) => {
       if (!isMainFrame) return; // Prevent iframe pushState from hijacking the main URL and clearing refs
@@ -299,14 +336,23 @@ export class BrowserViewManager {
       this.currentTitle = title;
       this.notifyRenderer('browser-view-navigated', { url, title });
       // Clear overlay — SPA route change renders new content, old boxes are wrong
-      this.clearOverlay().catch(() => {});
+      this.clearOverlay().catch(() => { void 0; });
     });
 
     // ── Navigation Protocol Guard (Security) ──
-    // Because we disable webSecurity for CORS bypass, we MUST block arbitrary local file access.
-    // Otherwise a malicious site or prompt injection could force navigation to file:///etc/passwd.
+    // webSecurity stays enabled (SameSite cookies, e.g. Google login). Block file://
+    // and other non-http(s) navigations — otherwise prompt injection could reach local files.
     this.view.webContents.on('will-navigate', (event, url) => {
       const lowerUrl = url.toLowerCase();
+
+      // Intercept Userscript installations (.user.js)
+      if (lowerUrl.endsWith('.user.js') && lowerUrl.startsWith('http')) {
+        event.preventDefault();
+        console.log(`[BrowserViewManager] Intercepted Userscript download: ${url}`);
+        this.installUserscriptFromUrl(url).catch(e => console.error('[DSME] Failed to install userscript:', e));
+        return;
+      }
+
       // Only allow http/https, and file:// ONLY for our specific temp directory used by renderHTML
       const isHttp = lowerUrl.startsWith('http://') || lowerUrl.startsWith('https://') || lowerUrl.startsWith('about:blank');
       const isTempFile = lowerUrl.startsWith('file://') && lowerUrl.includes('dsme-render-');
@@ -354,7 +400,7 @@ export class BrowserViewManager {
     // Electron fires native OS dialogs for alert/confirm/prompt.
     // This handler catches them at the engine level.
     // Confirm/prompt auto-accept; alert auto-dismiss.
-    this.view.webContents.on('dialog', (event: any, dialogInfo: any) => {
+    this.view.webContents.on('dialog', (event: Event, dialogInfo: { message?: string; type?: string }) => {
       event.preventDefault();
       if (dialogInfo.type === 'confirm' || dialogInfo.type === 'beforeunload') {
         event.defaultPrevented = true;
@@ -428,8 +474,8 @@ export class BrowserViewManager {
     // Strip these headers at the engine level — impossible for browser extensions.
     browserSession.webRequest.onHeadersReceived((details, callback) => {
       const headers = details.responseHeaders || {};
-      // CORS restrictions are already bypassed by webSecurity: false.
-      // Modifying Access-Control-Allow-Origin to '*' breaks requests with credentials: 'include'.
+      // webSecurity remains true; strip framing/CSP headers so embedded content and agent eval work.
+      // Do not rewrite Access-Control-Allow-Origin — that breaks credentialed cross-origin requests.
       // Remove X-Frame-Options to allow embedding any iframe
       delete headers['x-frame-options'];
       delete headers['X-Frame-Options'];
@@ -469,9 +515,9 @@ export class BrowserViewManager {
         this.mainWindow.contentView.removeChildView(this.view);
       }
       if (this.view) {
-        try { this.view.webContents.close(); } catch {}
+        try { this.view.webContents.close(); } catch { void 0; }
       }
-    } catch {}
+    } catch { void 0; }
     console.log('[BrowserViewManager] Recreating view...');
     // Reset ALL state before reinit — old debugger/refs/labels/errors are invalid after view destroy
     this.cdpAttached = false;
@@ -499,7 +545,7 @@ export class BrowserViewManager {
   destroy() {
     if (this.highlightTimeout) { clearTimeout(this.highlightTimeout); this.highlightTimeout = null; }
     if (this.view) {
-      try { this.view.webContents.close(); } catch {}
+      try { this.view.webContents.close(); } catch { void 0; }
       this.view = null;
     }
   }
@@ -512,21 +558,19 @@ export class BrowserViewManager {
   async loadHTML(html: string): Promise<string> {
     if (!this.ensureHealthyView()) return 'Error: view not initialized';
     this.ensureAttached();
-    const fsP = require('node:fs/promises');
-    const os = require('node:os');
-    const path = require('node:path');
+    
     const tmpFile = path.join(os.tmpdir(), `dsme-render-${Date.now()}.html`);
     try {
-      await fsP.writeFile(tmpFile, html, 'utf8');
+      await fsPromises.writeFile(tmpFile, html, 'utf8');
       await this.view!.webContents.loadFile(tmpFile);
       this.currentUrl = `file://${tmpFile}`;
       const title = this.view!.webContents.getTitle();
       this.notifyRenderer('browser-view-navigated', { url: this.currentUrl, title });
       // Clean up temp file after a delay (page is already loaded in memory)
-      setTimeout(() => fsP.unlink(tmpFile).catch(() => {}), 5000);
+      setTimeout(() => fsPromises.unlink(tmpFile).catch(() => { void 0; }), 5000);
       return `HTML rendered successfully. Title: ${title}`;
-    } catch (e: any) {
-      return `HTML render error: ${e.message}`;
+    } catch (e: unknown) {
+      return `HTML render error: ${getErrorMessage(e)}`;
     }
   }
 
@@ -555,7 +599,7 @@ export class BrowserViewManager {
     // CRITICAL: Must await CDP attachment BEFORE loadURL, otherwise the first page load
     // might execute scripts before our anti-bot evasion (addScriptToEvaluateOnNewDocument) is registered,
     // immediately exposing navigator.webdriver = true to Cloudflare/Turnstile.
-    await this.ensureCDP().catch(e => console.warn('[BrowserViewManager] Eager CDP attach failed before nav:', e.message));
+    await this.ensureCDP().catch(e => console.warn('[BrowserViewManager] Eager CDP attach failed before nav:', getErrorMessage(e)));
 
     try {
       this.targetFrame = null; // Clear any previously focused iframe on top-level navigation
@@ -564,8 +608,8 @@ export class BrowserViewManager {
       const title = this.view!.webContents.getTitle();
       this.notifyRenderer('browser-view-navigated', { url, title });
       return `Navigated to ${url}. Title: ${title}`;
-    } catch (e: any) {
-      if (e.message?.includes('ERR_ABORTED')) {
+    } catch (e: unknown) {
+      if (getErrorMessage(e).includes('ERR_ABORTED')) {
         try {
           const actualUrl = this.view!.webContents.getURL();
           const title = this.view!.webContents.getTitle();
@@ -582,13 +626,13 @@ export class BrowserViewManager {
       }
       
       // Native WebContents in a bad state — recreate and retry once.
-      if (_retryCount < 1 && (e.message?.includes('Cannot read properties') || e.message?.includes('object has been destroyed'))) {
-        console.error('[BrowserViewManager] WebContents in bad state, recreating and retrying...', e.message);
+      if (_retryCount < 1 && (getErrorMessage(e).includes('Cannot read properties') || getErrorMessage(e).includes('object has been destroyed'))) {
+        console.error('[BrowserViewManager] WebContents in bad state, recreating and retrying...', getErrorMessage(e));
         this.recreateView();
         return this.navigate(url, _retryCount + 1);
       }
       
-      return `Navigation error: ${e.message}`;
+      return `Navigation error: ${getErrorMessage(e)}`;
     }
   }
 
@@ -629,8 +673,8 @@ export class BrowserViewManager {
       this.currentUrl = url;
       this.notifyRenderer('browser-view-navigated', { url, title: this.view!.webContents.getTitle() });
       return `Went back. Now at: ${url}`;
-    } catch (e: any) {
-      return `GoBack error: ${e.message}`;
+    } catch (e: unknown) {
+      return `GoBack error: ${getErrorMessage(e)}`;
     }
   }
 
@@ -670,8 +714,8 @@ export class BrowserViewManager {
       this.currentUrl = url;
       this.notifyRenderer('browser-view-navigated', { url, title: this.view!.webContents.getTitle() });
       return `Went forward. Now at: ${url}`;
-    } catch (e: any) {
-      return `GoForward error: ${e.message}`;
+    } catch (e: unknown) {
+      return `GoForward error: ${getErrorMessage(e)}`;
     }
   }
 
@@ -719,7 +763,7 @@ export class BrowserViewManager {
       if (!this.view.webContents.isDestroyed()) {
         // Pass `true` for onlyDirty — we only need the timestamp, not the full NativeImage.
         // Without this, Chromium captures the entire viewport image every frame (~MB each).
-        this.view.webContents.beginFrameSubscription(true, (_image, _dirtyRect) => {
+        this.view.webContents.beginFrameSubscription(true, () => {
           lastFrameTime = Date.now();
         });
         frameSubscriptionActive = true;
@@ -734,7 +778,7 @@ export class BrowserViewManager {
           this.view.webContents.endFrameSubscription();
           frameSubscriptionActive = false;
         }
-      } catch {}
+      } catch { void 0; }
     };
 
     const SPINNER_JS = `(()=>{
@@ -821,7 +865,7 @@ export class BrowserViewManager {
     if (this.targetFrame) {
       // Validate the frame is still alive
       try {
-        this.targetFrame.url; // throws if frame is destroyed
+        void this.targetFrame.url; // throws if frame is destroyed
         return this.targetFrame;
       } catch {
         console.warn('[BrowserViewManager] Target frame destroyed, falling back to mainFrame');
@@ -871,12 +915,12 @@ export class BrowserViewManager {
           if (fallback && typeof fallback === 'string' && fallback.length > 10) {
             return fallback;
           }
-        } catch {}
+        } catch { void 0; }
         return 'Script completed but returned no value. Use `return` to return data.';
       }
       return typeof val === 'string' ? val : JSON.stringify(val);
-    } catch (e: any) {
-      return `Script error: ${e.message}`;
+    } catch (e: unknown) {
+      return `Script error: ${getErrorMessage(e)}`;
     }
   }
 
@@ -924,7 +968,7 @@ export class BrowserViewManager {
           isolatedWorld
             ? frame.executeJavaScriptInIsolatedWorld(999, [{ code: script }])
             : frame.executeJavaScript(script),
-          new Promise<any>((_, reject) => {
+          new Promise<never>((_, reject) => {
             timer = setTimeout(() => reject(new Error('timeout')), timeoutMs);
           }),
         ]).finally(() => clearTimeout(timer!));
@@ -1029,7 +1073,7 @@ export class BrowserViewManager {
         const u = 1 - t;
         const ptX = clampX(u*u*u*startX + 3*u*u*t*ctrl1X + 3*u*t*t*ctrl2X + t*t*t*cx);
         const ptY = clampY(u*u*u*startY + 3*u*u*t*ctrl1Y + 3*u*t*t*ctrl2Y + t*t*t*cy);
-        wc.sendInputEvent({ type: 'mouseMove', x: ptX, y: ptY } as any);
+        wc.sendInputEvent({ type: 'mouseMove', x: ptX, y: ptY } as WebContentsInputEvent);
         
         // Ease-out delay: slow down as it approaches target
         const delay = 10 + (t * t * 20) + (Math.random() * 10);
@@ -1037,17 +1081,17 @@ export class BrowserViewManager {
       }
       
       // Final adjustment & pause before clicking
-      wc.sendInputEvent({ type: 'mouseMove', x: cx, y: cy } as any);
+      wc.sendInputEvent({ type: 'mouseMove', x: cx, y: cy } as WebContentsInputEvent);
       this.lastMouseX = cx;
       this.lastMouseY = cy;
       await new Promise(r => setTimeout(r, 60 + Math.random() * 80));
 
-      wc.sendInputEvent({ type: 'mouseDown', x: cx, y: cy, button: 'left', clickCount: 1 } as any);
+      wc.sendInputEvent({ type: 'mouseDown', x: cx, y: cy, button: 'left', clickCount: 1 } as WebContentsInputEvent);
       await new Promise(r => setTimeout(r, 40 + Math.random() * 50)); // Human click hold time
-      wc.sendInputEvent({ type: 'mouseUp', x: cx, y: cy, button: 'left', clickCount: 1 } as any);
+      wc.sendInputEvent({ type: 'mouseUp', x: cx, y: cy, button: 'left', clickCount: 1 } as WebContentsInputEvent);
       return `Native click at (${cx}, ${cy}) with humanized Bezier trajectory`;
-    } catch (e: any) {
-      return `Native click error: ${e.message}`;
+    } catch (e: unknown) {
+      return `Native click error: ${getErrorMessage(e)}`;
     }
   }
 
@@ -1079,12 +1123,12 @@ export class BrowserViewManager {
       for (let i = 1; i <= 3; i++) {
         const ptX = Math.round(currentX + (cx - currentX) * (i / 3));
         const ptY = Math.round(currentY + (cy - currentY) * (i / 3));
-        wc.sendInputEvent({ type: 'mouseMove', x: ptX, y: ptY } as any);
+        wc.sendInputEvent({ type: 'mouseMove', x: ptX, y: ptY } as WebContentsInputEvent);
         await new Promise(r => setTimeout(r, 16));
       }
     }
     
-    wc.sendInputEvent({ type: 'mouseMove', x: cx, y: cy } as any);
+    wc.sendInputEvent({ type: 'mouseMove', x: cx, y: cy } as WebContentsInputEvent);
     this.lastMouseX = cx;
     this.lastMouseY = cy;
     
@@ -1107,7 +1151,7 @@ export class BrowserViewManager {
       type: 'mouseWheel',
       x: cx, y: cy,
       deltaX: 0, deltaY,
-    } as any);
+    } as WebContentsInputEvent);
   }
 
 
@@ -1135,8 +1179,8 @@ export class BrowserViewManager {
       await new Promise(r => setTimeout(r, 50));
       
       return `Inserted (pasted) ${text.length} characters`;
-    } catch (e: any) {
-      return `insertText error: ${e.message}`;
+    } catch (e: unknown) {
+      return `insertText error: ${getErrorMessage(e)}`;
     }
   }
 
@@ -1169,11 +1213,11 @@ export class BrowserViewManager {
       const wc = this.view!.webContents;
       // Only keyDown + keyUp — no 'char' event.
       // pressKey is for control actions (submit, dismiss, navigate), not character input.
-      wc.sendInputEvent({ type: 'keyDown', keyCode } as any);
-      wc.sendInputEvent({ type: 'keyUp', keyCode } as any);
+      wc.sendInputEvent({ type: 'keyDown', keyCode } as WebContentsInputEvent);
+      wc.sendInputEvent({ type: 'keyUp', keyCode } as WebContentsInputEvent);
       return `Pressed key: ${key}`;
-    } catch (e: any) {
-      return `pressKey error: ${e.message}`;
+    } catch (e: unknown) {
+      return `pressKey error: ${getErrorMessage(e)}`;
     }
   }
 
@@ -1189,8 +1233,8 @@ export class BrowserViewManager {
       if (image.isEmpty()) return null;
       const jpeg = image.toJPEG(60);
       return `data:image/jpeg;base64,${jpeg.toString('base64')}`;
-    } catch (e: any) {
-      console.warn('[BrowserViewManager] captureScreenshot failed:', e.message);
+    } catch (e: unknown) {
+      console.warn('[BrowserViewManager] captureScreenshot failed:', getErrorMessage(e));
       return null;
     }
   }
@@ -1304,8 +1348,8 @@ export class BrowserViewManager {
       }
       
       return id;
-    } catch (e: any) {
-      return `Error creating snapshot: ${e.message}`;
+    } catch (e: unknown) {
+      return `Error creating snapshot: ${getErrorMessage(e)}`;
     }
   }
 
@@ -1370,8 +1414,8 @@ export class BrowserViewManager {
       this.view!.webContents.reload();
       
       return `Successfully rolled back to state ${id} and navigated to ${snap.url}`;
-    } catch (e: any) {
-      return `Error restoring snapshot: ${e.message}`;
+    } catch (e: unknown) {
+      return `Error restoring snapshot: ${getErrorMessage(e)}`;
     }
   }
 
@@ -1417,8 +1461,8 @@ export class BrowserViewManager {
           expirationDate: c.expirationDate,
         });
         imported++;
-      } catch (e: any) {
-        console.warn(`[BrowserViewManager] Failed to import cookie ${c.name}:`, e.message);
+      } catch (e: unknown) {
+        console.warn(`[BrowserViewManager] Failed to import cookie ${c.name}:`, getErrorMessage(e));
       }
     }
     return `Imported ${imported}/${cookies.length} cookies`;
@@ -1450,7 +1494,7 @@ export class BrowserViewManager {
       wc.removeAllListeners('found-in-page');
 
       // found-in-page fires for each match found; finalUpdate=true means search is complete
-      const handler = (_event: any, result: any) => {
+      const handler = (_event: Event, result: { finalUpdate?: number; matches?: number }) => {
         if (result.finalUpdate) {
           clearTimeout(timeout);
           wc.removeListener('found-in-page', handler);
@@ -1494,9 +1538,6 @@ export class BrowserViewManager {
    */
   async exportPDF(outputPath?: string): Promise<string> {
     if (!this.ensureHealthyView()) return 'Error: view not initialized';
-    const fsP = require('node:fs/promises');
-    const path = require('node:path');
-    const os = require('node:os');
     const fp = outputPath || path.join(os.homedir(), 'Downloads', `page_${Date.now()}.pdf`);
     try {
       const data = await this.view!.webContents.printToPDF({
@@ -1504,11 +1545,11 @@ export class BrowserViewManager {
         pageSize: 'A4',
         preferCSSPageSize: true,
       });
-      await fsP.mkdir(path.dirname(fp), { recursive: true });
-      await fsP.writeFile(fp, data);
+      await fsPromises.mkdir(path.dirname(fp), { recursive: true });
+      await fsPromises.writeFile(fp, data);
       return `PDF saved to ${fp} (${Math.round(data.length / 1024)}KB)`;
-    } catch (e: any) {
-      return `PDF export error: ${e.message}`;
+    } catch (e: unknown) {
+      return `PDF export error: ${getErrorMessage(e)}`;
     }
   }
 
@@ -1522,8 +1563,8 @@ export class BrowserViewManager {
   readClipboard(): string {
     try {
       return clipboard.readText() || '(clipboard is empty)';
-    } catch (e: any) {
-      return `Clipboard read error: ${e.message}`;
+    } catch (e: unknown) {
+      return `Clipboard read error: ${getErrorMessage(e)}`;
     }
   }
 
@@ -1535,8 +1576,8 @@ export class BrowserViewManager {
     try {
       clipboard.writeText(text);
       return `Wrote ${text.length} chars to clipboard`;
-    } catch (e: any) {
-      return `Clipboard write error: ${e.message}`;
+    } catch (e: unknown) {
+      return `Clipboard write error: ${getErrorMessage(e)}`;
     }
   }
 
@@ -1603,8 +1644,8 @@ export class BrowserViewManager {
         backendNodeId,
       }, 1, sessionId);
       return `Set ${filePaths.length} file(s) on [${ref}]: ${filePaths.map(f => f.split('/').pop()).join(', ')}`;
-    } catch (e: any) {
-      return `File upload error: ${e.message}`;
+    } catch (e: unknown) {
+      return `File upload error: ${getErrorMessage(e)}`;
     }
   }
 
@@ -1643,7 +1684,7 @@ export class BrowserViewManager {
           clearTimeout(timer);
         };
 
-        const handler = async (_event: any, method: string, params: any, sessionId: string) => {
+        const handler = async (_event: Event, method: string, params: JsonObject, sessionId: string) => {
           if (settled) return;
           // Guard: if view was destroyed (crash/recreate), clean up immediately
           if (viewRef.webContents.isDestroyed()) {
@@ -1677,8 +1718,8 @@ export class BrowserViewManager {
                 ? content.slice(0, 50000) + '\n...(truncated)'
                 : content;
               resolve(`Captured response from ${targetUrl} (${content.length} chars):\n${preview}`);
-            } catch (e: any) {
-              resolve(`Matched ${targetUrl} but failed to read body: ${e.message}`);
+            } catch (e: unknown) {
+              resolve(`Matched ${targetUrl} but failed to read body: ${getErrorMessage(e)}`);
             }
           }
         };
@@ -1693,8 +1734,8 @@ export class BrowserViewManager {
 
         debugger_.on('message', handler);
       });
-    } catch (e: any) {
-      return `Network capture error: ${e.message}`;
+    } catch (e: unknown) {
+      return `Network capture error: ${getErrorMessage(e)}`;
     }
   }
 
@@ -1727,8 +1768,8 @@ export class BrowserViewManager {
       
       // Use raw sendCommand (not this.cdpCommand) to avoid
       // ensureCDP → cdpCommand → ensureCDP recursion.
-      const send = (m: string, p?: any) => this.view!.webContents.debugger.sendCommand(m, p);
-      send('Network.enable').catch(() => {});
+      const send = (m: string, p?: JsonObject) => this.view!.webContents.debugger.sendCommand(m, p);
+      send('Network.enable').catch(() => { void 0; });
       
       const CHROME_VERSION = '131';
       const EVASION_SCRIPT = `
@@ -1757,7 +1798,7 @@ export class BrowserViewManager {
             },
             configurable: true
           });
-        } catch {}
+        } catch { void 0; }
 
         // 2. window.chrome
         if (!window.chrome) window.chrome = {};
@@ -1792,16 +1833,16 @@ export class BrowserViewManager {
               { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
             ]
           });
-        } catch {}
+        } catch { void 0; }
 
         // 4. Remove Electron fingerprints
         try {
           delete window.process; delete window.require; delete window.module;
           delete window.exports; delete window.__electron_preload;
-        } catch {}
+        } catch { void 0; }
 
         // 5. navigator.webdriver
-        try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch {}
+        try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch { void 0; }
 
         // 6. Eradicate CDP variables (cdc_...)
         try {
@@ -1817,14 +1858,51 @@ export class BrowserViewManager {
               delete document[docKeys[i]];
             }
           }
-        } catch {}
+        } catch { void 0; }
         // Cleaned up over-engineered proxies that Google BotGuard detects via iframe escapes.
       `;
+
+      // ── Load Userscripts ──
+      let userscriptInjection = '';
+      try {
+        const configPath = path.join(app.getPath('userData'), 'dsme-config.json');
+        const configRaw = await fsPromises.readFile(configPath, 'utf8').catch(() => null);
+        if (configRaw) {
+          const config = JSON.parse(configRaw) as { userscripts?: { enabled?: boolean; match?: string; name?: string; code?: string }[] };
+          if (config.userscripts && Array.isArray(config.userscripts)) {
+            config.userscripts.filter((s) => s.enabled).forEach((s) => {
+              // Split multiple matches (e.g., separated by comma) and convert each glob to regex
+              const matchPatterns = (s.match || '').split(',').map((m: string) => m.trim()).filter(Boolean);
+              const matchRegexes = matchPatterns.map((pat: string) => {
+                return '^' + pat
+                  .replace(/[.+?^${}()|[\]\\]/g, '\\$&') // Escape regex chars
+                  .replace(/\\\*/g, '.*') + '$'; // Convert * to .*
+              });
+              const combinedRegexStr = matchRegexes.join('|');
+              
+              userscriptInjection += `
+                if (new RegExp(${JSON.stringify(combinedRegexStr)}).test(window.location.href)) {
+                  try {
+                    console.log('[Tampermonkey] Running script:', ${JSON.stringify(s.name)});
+                    ${s.code}
+                  } catch(e) {
+                    console.error('[Tampermonkey] Script error in ' + ${JSON.stringify(s.name)} + ':', e);
+                  }
+                }
+              `;
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('[DSME] Failed to load userscripts:', e);
+      }
+
+      const FINAL_INJECTION = EVASION_SCRIPT + '\n' + userscriptInjection;
 
       // Inject anti-bot evasion and dialog suppression into EVERY frame BEFORE page scripts run.
       // We MUST await these to ensure the registry is armed before any navigation completes.
       await send('Page.enable');
-      await send('Page.addScriptToEvaluateOnNewDocument', { source: EVASION_SCRIPT });
+      await send('Page.addScriptToEvaluateOnNewDocument', { source: FINAL_INJECTION });
       
       // Handle cross-origin Out-of-Process Iframes (OOPIFs)
       // Site Isolation means cross-origin iframes run in separate processes.
@@ -1835,7 +1913,7 @@ export class BrowserViewManager {
         autoAttach: true,
         waitForDebuggerOnStart: true, // Pause child target to inject evasion before any JS runs
         flatten: true
-      }).catch(e => console.warn('[DSME] Target.setAutoAttach failed (non-fatal):', e.message));
+      }).catch(e => console.warn('[DSME] Target.setAutoAttach failed (non-fatal):', getErrorMessage(e)));
 
       if (!this.networkListenerAttached) {
         this.networkListenerAttached = true;
@@ -1849,20 +1927,20 @@ export class BrowserViewManager {
             if (targetId) this.oopifSessions.set(targetId, childSid);
 
             // In flatten mode, route commands to child via sessionId (3rd arg).
-            const childSend = (m: string, p?: any) =>
+            const childSend = (m: string, p?: JsonObject) =>
               this.view!.webContents.debugger.sendCommand(m, p, childSid);
             
             // Only inject evasion scripts into DOM-bearing targets (page/iframe).
             // Workers do not have a Page domain and would throw on Page.enable.
             if (targetType === 'page' || targetType === 'iframe') {
               childSend('Page.enable')
-                .then(() => childSend('Page.addScriptToEvaluateOnNewDocument', { source: EVASION_SCRIPT }))
-                .catch(e => console.warn(`[DSME] OOPIF injection failed for ${targetType}:`, e.message))
-                .finally(() => childSend('Runtime.runIfWaitingForDebugger').catch(() => {}));
+                .then(() => childSend('Page.addScriptToEvaluateOnNewDocument', { source: FINAL_INJECTION }))
+                .catch(e => console.warn(`[DSME] OOPIF injection failed for ${targetType}:`, getErrorMessage(e)))
+                .finally(() => childSend('Runtime.runIfWaitingForDebugger').catch(() => { void 0; }));
             } else {
               // For all other targets (workers, etc.), just release the debugger pause immediately.
               // Failing to do this permanently freezes all Web Workers on the site.
-              childSend('Runtime.runIfWaitingForDebugger').catch(() => {});
+              childSend('Runtime.runIfWaitingForDebugger').catch(() => { void 0; });
             }
           }
           if (method === 'Target.detachedFromTarget') {
@@ -1906,18 +1984,18 @@ export class BrowserViewManager {
         this.refLabels.clear(); // Labels are stale too
       });
       return true;
-    } catch (e: any) {
-      if (e.message?.includes('Already attached')) {
+    } catch (e: unknown) {
+      if (getErrorMessage(e).includes('Already attached')) {
         this.cdpAttached = true;
         return true;
       }
-      console.warn('[BrowserViewManager] CDP attach failed:', e.message);
+      console.warn('[BrowserViewManager] CDP attach failed:', getErrorMessage(e));
       return false;
     }
   }
 
   /** Send a CDP command. Auto-retries once if the target detached asynchronously (process swap). */
-  async cdpCommand(method: string, params?: Record<string, any>, retries = 1, sessionId?: string): Promise<any> {
+  async cdpCommand(method: string, params?: JsonObject, retries = 1, sessionId?: string): Promise<unknown> {
     if (!this.view || this.view.webContents.isDestroyed()) {
       throw new Error('CDP not attached: view destroyed');
     }
@@ -1938,12 +2016,12 @@ export class BrowserViewManager {
         timeoutPromise
       ]).finally(() => clearTimeout(timer!));
       return result;
-    } catch (e: any) {
-      if (retries > 0 && (e.message?.includes('not attached') || e.message?.includes('timed out'))) {
+    } catch (e: unknown) {
+      if (retries > 0 && (getErrorMessage(e).includes('not attached') || getErrorMessage(e).includes('timed out'))) {
         // Race condition or hang: target detached asynchronously after ensureCDP, or command hung.
         // Force state reset, wait a bit for Electron to settle, and retry.
         this.cdpAttached = false;
-        try { this.view.webContents.debugger.detach(); } catch {}
+        try { this.view.webContents.debugger.detach(); } catch { void 0; }
         await new Promise(r => setTimeout(r, 100));
         return this.cdpCommand(method, params, retries - 1, sessionId);
       }
@@ -1954,7 +2032,7 @@ export class BrowserViewManager {
   /** Detach CDP debugger (cleanup). */
   detachCDP(): void {
     if (this.cdpAttached && this.view && !this.view.webContents.isDestroyed()) {
-      try { this.view.webContents.debugger.detach(); } catch {}
+      try { this.view.webContents.debugger.detach(); } catch { void 0; }
     }
     this.cdpAttached = false;
     // Do NOT set this.networkListenerAttached = false here!
@@ -2064,7 +2142,7 @@ export class BrowserViewManager {
     try {
       const frame = this.getExecutionFrame() || this.view!.webContents.mainFrame;
       await frame.executeJavaScriptInIsolatedWorld(999, [{ code: HUD_JS }]);
-    } catch {}
+    } catch { void 0; }
   }
 
   listRecentNetworkRequests() {
@@ -2082,11 +2160,11 @@ export class BrowserViewManager {
       const { body, base64Encoded } = await this.cdpCommand('Network.getResponseBody', { requestId }, 1, req.sessionId);
       const content = base64Encoded ? Buffer.from(body, 'base64').toString('utf-8') : body;
       return content.length > 50000 ? content.slice(0, 50000) + '\n...(truncated)' : content;
-    } catch (e: any) {
-      if (e.message?.includes('No resource with given identifier')) {
+    } catch (e: unknown) {
+      if (getErrorMessage(e).includes('No resource with given identifier')) {
          return `Error: Response body for ${requestId} has been garbage collected by Chromium. Try capturing it earlier.`;
       }
-      return `Error retrieving response body: ${e.message}`;
+      return `Error retrieving response body: ${getErrorMessage(e)}`;
     }
   }
 
@@ -2120,23 +2198,23 @@ export class BrowserViewManager {
     const allFrameIds: { id: string; url: string }[] = [];
     try {
       // Ensure DOM is enabled so backendDOMNodeId is populated in the AX tree
-      await this.cdpCommand('DOM.enable').catch(() => {});
+      await this.cdpCommand('DOM.enable').catch(() => { void 0; });
       
-      const { frameTree } = await this.cdpCommand('Page.getFrameTree');
-      const collectFrames = (tree: any) => {
+      const { frameTree } = await this.cdpCommand('Page.getFrameTree') as { frameTree: FrameTreeNode };
+      const collectFrames = (tree: FrameTreeNode) => {
         allFrameIds.push({ id: tree.frame.id, url: tree.frame.url || '' });
         if (tree.childFrames) {
           for (const child of tree.childFrames) collectFrames(child);
         }
       };
       collectFrames(frameTree);
-    } catch (e: any) {
-      console.warn('[BrowserViewManager] Page.getFrameTree failed, falling back to main frame only:', e.message);
+    } catch (e: unknown) {
+      console.warn('[BrowserViewManager] Page.getFrameTree failed, falling back to main frame only:', getErrorMessage(e));
       allFrameIds.push({ id: '', url: this.getUrl() }); // empty id = no frameId param = main frame
     }
 
     // Step 2: Collect AX nodes from ALL frames CONCURRENTLY
-    let allNodes: any[] = [];
+    let allNodes: AxNode[] = [];
     const frameUrlMap = new Map<string, string>(); // frameId → URL for annotation
 
     const framePromises = allFrameIds.map(async (frame) => {
@@ -2144,7 +2222,7 @@ export class BrowserViewManager {
         const sessionId = frame.id ? this.oopifSessions.get(frame.id) : undefined;
         // When querying an OOPIF directly via its sessionId, we do not pass frameId.
         // It acts as the main frame for that specific Target session.
-        const axParams: any = { depth: -1 };
+        const axParams: JsonObject = { depth: -1 };
         if (!sessionId && frame.id) axParams.frameId = frame.id;
 
         let timer: NodeJS.Timeout;
@@ -2155,15 +2233,15 @@ export class BrowserViewManager {
         const { nodes } = await Promise.race([
           this.cdpCommand('Accessibility.getFullAXTree', axParams, 1, sessionId),
           timeoutPromise
-        ]).finally(() => clearTimeout(timer));
+        ]).finally(() => clearTimeout(timer!)) as { nodes: AxNode[] };
         // Tag each node with its frame URL for output annotation
         for (const node of nodes) {
           node._frameUrl = frame.url;
           node._frameId = frame.id;
         }
         return { frame, nodes };
-      } catch (e: any) {
-        console.warn(`[BrowserViewManager] AXTree failed for frame ${frame.id || 'main'}:`, e.message);
+      } catch (e: unknown) {
+        console.warn(`[BrowserViewManager] AXTree failed for frame ${frame.id || 'main'}:`, getErrorMessage(e));
         // Frame might have been destroyed or is truly empty — skip silently
         return { frame, nodes: [] };
       }
@@ -2178,132 +2256,24 @@ export class BrowserViewManager {
     }
 
     // Step 3: Format into compact text with refs
-    const lines: string[] = [];
-    let refCounter = 0;
-    const newRefMap = new Map<string, { backendNodeId: number; frameId: string }>();
-    const newRefLabels = new Map<string, string>();
-    const frameIds = new Set<string>();
-    let currentFrameUrl = '';
+    const formatted = formatAxSnapshot({
+      title: this.getTitle(),
+      url: this.getUrl(),
+      nodes: allNodes,
+      interactiveRoles: BrowserViewManager.INTERACTIVE_ROLES,
+      recentErrors: this.consoleErrors,
+    });
 
-    lines.push(`Page: ${this.getTitle()}`);
-    lines.push(`URL: ${this.getUrl()}`);
-    lines.push('');
+    const d = formatted.diagnostics;
+    console.log(
+      `[BrowserViewManager] CDP AXTree: ${d.totalNodes} nodes (${d.ignoredNodes} ignored), `
+      + `${d.interactiveWithBackendId} interactive+backendId, ${d.interactiveWithoutBackendId} interactive-NO-backendId, `
+      + `refs=${d.refCount}. Top roles: ${d.topRoles}`,
+    );
 
-    const INTERACTIVE_ROLES = BrowserViewManager.INTERACTIVE_ROLES; // use static constant
-
-    // Diagnostic counters for understanding CDP quality
-    let totalNodes = 0;
-    let ignoredNodes = 0;
-    let interactiveWithBackendId = 0;
-    let interactiveWithoutBackendId = 0;
-    const roleCounts = new Map<string, number>();
-
-    for (const node of allNodes) {
-      totalNodes++;
-      if (node.ignored) { ignoredNodes++; continue; }
-
-      const role: string = node.role?.value || '';
-      const name: string = (node.name?.value || '').trim();
-      const value: string = (node.value?.value || '').trim();
-      const backendId: number | undefined = node.backendDOMNodeId;
-      const nodeFrameUrl: string = node._frameUrl || '';
-      if (node._frameId) frameIds.add(node._frameId);
-
-      // Track role distribution for diagnostics
-      if (role) roleCounts.set(role, (roleCounts.get(role) || 0) + 1);
-
-      // Annotate when we enter a new frame's content (helps agent understand page structure)
-      if (nodeFrameUrl && nodeFrameUrl !== currentFrameUrl && nodeFrameUrl !== 'about:blank') {
-        currentFrameUrl = nodeFrameUrl;
-        if (frameIds.size > 1) {
-          // Only annotate non-main frames
-          const host = (() => { try { return new URL(nodeFrameUrl).hostname; } catch { return nodeFrameUrl.slice(0, 50); } })();
-          lines.push(`\n--- frame: ${host} ---`);
-        }
-      }
-
-      const props: any[] = node.properties || [];
-      const isDisabled = props.some((p: any) => p.name === 'disabled' && p.value?.value === true);
-      const isEditable = props.some((p: any) => p.name === 'editable' && p.value?.value);
-      const isFocused = props.some((p: any) => p.name === 'focused' && p.value?.value === true);
-      const description: string = (node.description?.value || '').trim();
-
-      // Interactive elements get refs
-      if (INTERACTIVE_ROLES.has(role) || isEditable) {
-        if (backendId) {
-          interactiveWithBackendId++;
-          refCounter++;
-          const ref = `e${refCounter}`;
-          newRefMap.set(ref, { backendNodeId: backendId, frameId: node._frameId || '' });
-          // Cache the label so getElementCenterByCDP doesn't need a DOM.describeNode round-trip
-          const displayName = name || role;
-          newRefLabels.set(ref, displayName);
-
-          const disabledTag = isDisabled ? ' [DISABLED]' : '';
-          const focusedTag = isFocused ? ' [FOCUSED]' : '';
-          const valueDisplay = value ? ` value="${value.slice(0, 40)}"` : '';
-          const descDisplay = description && description !== name ? ` (desc: "${description.slice(0, 40)}")` : '';
-          lines.push(`[${ref}] ${role} "${displayName.slice(0, 60)}"${valueDisplay}${descDisplay}${disabledTag}${focusedTag}`);
-        } else {
-          interactiveWithoutBackendId++;
-        }
-      }
-      // Headings
-      else if (role === 'heading' && name) {
-        lines.push(`heading: ${name.slice(0, 80)}`);
-      }
-      // Static text: keep all text > 1 char (crucial for short form labels like "Name:").
-      // Truncate ultra-long text instead of dropping it.
-      else if (role === 'staticText' && name.length > 1) {
-        lines.push(`text: ${name.slice(0, 120)}`);
-      }
-      // Images
-      else if (role === 'image' && name && backendId) {
-        refCounter++;
-        const ref = `e${refCounter}`;
-        newRefMap.set(ref, { backendNodeId: backendId, frameId: node._frameId || '' });
-        newRefLabels.set(ref, name);
-        lines.push(`[${ref}] img "${name.slice(0, 60)}"`);
-      }
-    }
-
-    // Log CDP AXTree diagnostics
-    const topRoles = [...roleCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([r, c]) => `${r}:${c}`).join(', ');
-    console.log(`[BrowserViewManager] CDP AXTree: ${totalNodes} nodes (${ignoredNodes} ignored), ${interactiveWithBackendId} interactive+backendId, ${interactiveWithoutBackendId} interactive-NO-backendId, refs=${refCounter}. Top roles: ${topRoles}`);
-
-    this.refMap = newRefMap;
-    this.refLabels = newRefLabels;
-
-    if (frameIds.size > 1) {
-      lines.push(`\n📌 Content spans ${frameIds.size} frames (cross-origin included — all refs work directly, no need to switch frames).`);
-    }
-
-    // Auto-include recent console errors — agent sees page problems immediately
-    const recentErrors = this.consoleErrors.filter(e => Date.now() - e.time < 30_000); // last 30s
-    if (recentErrors.length > 0) {
-      lines.push(`\n⚠️ Recent page errors:`);
-      for (const err of recentErrors.slice(-5)) {
-        lines.push(`  [${err.level}] ${err.message}`);
-      }
-    }
-
-    // Smart cap: preserve original line ORDER (critical for agent context — headings
-    // introduce the buttons below them). But if there are very many interactive elements,
-    // ensure they all fit within 500 lines total.
-    // Strategy: if total fits, return all. Otherwise, keep first 400 lines (which covers
-    // most pages) and ensure any interactive lines beyond that are appended.
-    if (lines.length <= 500) return lines.join('\n');
-
-    // Page has > 500 lines: keep first 400 in-order, then append any [eN] refs
-    // that were cut off (so agent always has all interactive targets).
-    const first400 = lines.slice(0, 400);
-    const first400Set = new Set(first400);
-    const missedRefs = lines.slice(400).filter(l => l.startsWith('[e') && !first400Set.has(l));
-    if (missedRefs.length > 0) {
-      first400.push(`\n… (${lines.length - 400} lines truncated, ${missedRefs.length} refs appended below)`);
-      first400.push(...missedRefs);
-    }
-    return first400.join('\n');
+    this.refMap = formatted.refMap;
+    this.refLabels = formatted.refLabels;
+    return formatted.text;
   }
 
   /**
@@ -2333,7 +2303,7 @@ export class BrowserViewManager {
             objectId: object.objectId
           }, 1, sessionId);
           // Release the JS object reference to prevent V8 heap accumulation
-          this.cdpCommand('Runtime.releaseObject', { objectId: object.objectId }, 0, sessionId).catch(() => {});
+          this.cdpCommand('Runtime.releaseObject', { objectId: object.objectId }, 0, sessionId).catch(() => { void 0; });
           // Wait briefly for smooth scrolling to settle
           await new Promise(r => setTimeout(r, 100));
         }
@@ -2352,8 +2322,8 @@ export class BrowserViewManager {
       const label = this.refLabels.get(ref) || ref;
 
       return { x: cx, y: cy, label };
-    } catch (e: any) {
-      console.warn(`[BrowserViewManager] CDP getContentQuads failed for ${ref}:`, e.message);
+    } catch (e: unknown) {
+      console.warn(`[BrowserViewManager] CDP getContentQuads failed for ${ref}:`, getErrorMessage(e));
       return null;
     }
   }
@@ -2372,8 +2342,8 @@ export class BrowserViewManager {
       if (!await this.ensureCDP()) return 'Error: CDP not available';
       await this.cdpCommand('DOM.focus', { backendNodeId }, 1, sessionId);
       return `Focused [${ref}] via CDP`;
-    } catch (e: any) {
-      return `CDP focus error: ${e.message}`;
+    } catch (e: unknown) {
+      return `CDP focus error: ${getErrorMessage(e)}`;
     }
   }
 
@@ -2414,11 +2384,11 @@ export class BrowserViewManager {
       }, 1, sessionId);
 
       // Release the JS object reference to prevent V8 heap accumulation
-      this.cdpCommand('Runtime.releaseObject', { objectId: object.objectId }, 0, sessionId).catch(() => {});
+      this.cdpCommand('Runtime.releaseObject', { objectId: object.objectId }, 0, sessionId).catch(() => { void 0; });
 
       return `Cleared input [${ref}] via CDP`;
-    } catch (e: any) {
-      return `CDP clear error: ${e.message}`;
+    } catch (e: unknown) {
+      return `CDP clear error: ${getErrorMessage(e)}`;
     }
   }
 
@@ -2490,7 +2460,7 @@ export class BrowserViewManager {
       // Auto-clear after duration
       if (this.highlightTimeout) clearTimeout(this.highlightTimeout);
       this.highlightTimeout = setTimeout(() => {
-        this.cdpCommand('Overlay.hideHighlight').catch(() => {});
+        this.cdpCommand('Overlay.hideHighlight').catch(() => { void 0; });
         this.highlightTimeout = null;
       }, durationMs);
     } catch {
@@ -2529,7 +2499,7 @@ export class BrowserViewManager {
           let timer: NodeJS.Timeout;
           const { quads } = await Promise.race([
             this.cdpCommand('DOM.getContentQuads', { backendNodeId }, 1, sessionId),
-            new Promise<any>((_, reject) => { timer = setTimeout(() => reject(new Error('Timeout')), 2000); })
+            new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Timeout')), 2000); })
           ]).finally(() => clearTimeout(timer!));
           if (!quads || quads.length === 0) return null;
 
@@ -2673,8 +2643,8 @@ export class BrowserViewManager {
       `}]);
 
       return `X-ray: ${boxes.length} of ${this.refMap.size} refs highlighted with [eN] labels. Run browser_clear_overlay() to dismiss.`;
-    } catch (e: any) {
-      return `Overlay error: ${e.message}`;
+    } catch (e: unknown) {
+      return `Overlay error: ${getErrorMessage(e)}`;
     }
   }
 
@@ -2693,7 +2663,7 @@ export class BrowserViewManager {
       try {
         await this.cdpCommand('Overlay.hideHighlight');
         await this.cdpCommand('Overlay.disable');
-      } catch {}
+      } catch { void 0; }
     }
 
     // Clear Shadow DOM overlay
@@ -2706,12 +2676,64 @@ export class BrowserViewManager {
           if (el) el.remove();
         })()
       ` }]);
-    } catch {}
+    } catch { void 0; }
   }
 
   // ── Internal ──
 
-  private notifyRenderer(channel: string, data: any) {
+  private async installUserscriptFromUrl(url: string) {
+    try {
+      const response = await fetch(url);
+      const code = await response.text();
+      
+      let name = 'Unknown Script';
+      let match = '*://*/*';
+      
+      const nameMatch = code.match(/@name\s+(.+)/);
+      if (nameMatch) name = nameMatch[1].trim();
+      
+      const matchMatches = [...code.matchAll(/@(match|include)\s+(.+)/g)];
+      if (matchMatches.length > 0) {
+        match = matchMatches.map(m => m[2].trim()).join(', ');
+      }
+      
+      const { response: btnIdx } = await dialog.showMessageBox(this.mainWindow!, {
+        type: 'question',
+        buttons: ['Cancel', 'Install'],
+        defaultId: 1,
+        title: 'Install Userscript',
+        message: `Do you want to install this Userscript?\n\nName: ${name}\nMatches: ${match}`
+      });
+      
+      if (btnIdx === 1) {
+        const configPath = path.join(app.getPath('userData'), 'dsme-config.json');
+        
+        const config = JSON.parse(await fsPromises.readFile(configPath, 'utf8')) as { userscripts?: JsonObject[] };
+        const newScript = {
+          id: 'script_' + Date.now(),
+          name,
+          match,
+          enabled: true,
+          code
+        };
+        
+        if (!config.userscripts) config.userscripts = [];
+        config.userscripts.push(newScript);
+        
+        await fsPromises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
+        
+        dialog.showMessageBox(this.mainWindow!, {
+          type: 'info',
+          title: 'Success',
+          message: `Userscript "${name}" has been installed successfully!\nPlease open the Userscript Manager to view or edit it. Note: You may need to reload the page for the script to take effect.`
+        });
+      }
+    } catch (e) {
+      console.error('[BrowserViewManager] Failed to install userscript:', e);
+    }
+  }
+
+  private notifyRenderer(channel: string, data: JsonObject) {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.mainWindow.webContents.send(channel, data);
     }

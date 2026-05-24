@@ -260,8 +260,8 @@ const ChromeProfileSync: React.FC = () => {
       } else {
         setStatus({ ok: false, msg: `❌ 同步失败: ${res?.error || 'Unknown error'}` });
       }
-    } catch (e: any) {
-      setStatus({ ok: false, msg: `❌ ${e.message}` });
+    } catch (e: unknown) {
+      setStatus({ ok: false, msg: `❌ ${e instanceof Error ? e.message : String(e)}` });
     }
     setSyncing(false);
   };

@@ -10,13 +10,22 @@
 
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
-import { BrowserWindow, ipcMain } from 'electron';
-import { streamText, tool, stepCountIs } from 'ai';
+import { BrowserWindow } from 'electron';
+import { streamText, tool, stepCountIs, type ModelMessage } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { z } from 'zod';
 import type { IAgent, AgentConfig } from './base';
+import { getErrorMessage } from '../lib/errors';
+import { executeRunCommand } from '../lib/run-command';
+import type { HistoryAttachment, HistoryMessage, JsonObject } from '../types/common';
+import type {
+  ToolCallContentPart,
+  UserContentPart,
+  VercelStreamPart,
+} from '../types/agent-messages';
+import { formatToolArgs } from './tool-display';
+import { parseTextToolCalls } from './text-tool-parser';
+import { browserViewManager } from '../browser-view-manager';
 import { browsePage } from './browser';
 import { shouldContinueModelText } from './continuation';
 import {
@@ -30,7 +39,6 @@ import {
   hasUsableSearchResults,
   webSearch,
   fetchUrl,
-  searchCodebase,
   buildSystemPromptBase,
 } from './shared-tools';
 import { shouldWatchdogVisibleTool, stringifyStreamValue, visibleTextFromStreamPart } from './stream-output';
@@ -75,73 +83,12 @@ import {
   notifyBrowserStepStart,
 } from './browser-use';
 
-const execAsync = promisify(exec);
-
-/** Model-specific fenced blocks — slice offsets MUST match full delimiter length (historically caused leaked tags / stray text). */
 const REDACTED_THINK_OPEN = '<think>';
 const REDACTED_THINK_CLOSE = '</think>';
 
 // System prompt: shared base (from shared-tools.ts)
 function getSystemPrompt(cwd: string): string {
   return buildSystemPromptBase(cwd);
-}
-
-// webSearch, fetchUrl — imported from shared-tools.ts
-// browsePage — imported from ./browser
-
-// ── Format tool args for display ──
-function formatToolArgs(name: string, args: any): string {
-  try {
-    switch (name) {
-      case 'web_search': return args.query ? ` \`${args.query}\`` : '';
-      case 'fetch_url': return args.url ? ` \`${args.url.slice(0, 80)}${args.url.length > 80 ? '...' : ''}\`` : '';
-      case 'run_command': return args.command ? ` \`${args.command.slice(0, 60)}${args.command.length > 60 ? '...' : ''}\`` : '';
-      case 'read_file': return args.filepath ? ` \`${args.filepath}\`` : '';
-      case 'write_file': return args.filepath ? ` → \`${args.filepath}\`` : '';
-      case 'replace_in_file': return args.filepath ? ` \`${args.filepath}\`` : '';
-      case 'list_directory': return args.dirpath ? ` \`${args.dirpath}\`` : '';
-      case 'search_codebase': return args.query ? ` \`${args.query.slice(0, 40)}${args.query.length > 40 ? '...' : ''}\`` : '';
-      case 'browse_page': return args.url ? ` \`${args.url.slice(0, 60)}${args.url.length > 60 ? '...' : ''}\`` : '';
-      case 'browser_navigate': return args.url ? ` → \`${args.url.slice(0, 60)}\`` : '';
-      case 'browser_snapshot': return ' 📸';
-      case 'browser_click': return args.ref ? ` [${args.ref}]` : '';
-      case 'browser_hover': return args.ref ? ` 👆 [${args.ref}]` : '';
-      case 'browser_type': return args.ref ? ` [${args.ref}] "${(args.text || '').slice(0, 20)}"` : '';
-      case 'browser_scroll': return args.direction ? ` ${args.direction}` : '';
-      case 'browser_back': return ' ←';
-      case 'browser_eval': return args.script ? ` \`${args.script.slice(0, 40)}...\`` : '';
-      case 'browser_press_key': return args.key ? ` ⌨️ ${args.key}` : '';
-      case 'browser_list_frames': return ' 🖼️';
-      case 'browser_switch_frame': return args.frameIndex !== undefined ? ` → frame[${args.frameIndex}]` : '';
-      case 'browser_task_start': return args.goal ? ` — ${args.goal.slice(0, 80)}${args.goal.length > 80 ? '…' : ''}` : '';
-      case 'browser_task_finish':
-        return args.summary
-          ? ` — ${args.summary.slice(0, 240)}${args.summary.length > 240 ? '…' : ''}`
-          : '';
-      // Electron Native tools
-      case 'browser_find': return args.text ? ` 🔍 "${args.text}"` : '';
-      case 'browser_stop_find': return ' 🔍 clear';
-      case 'browser_export_cookies': return ' 🍪 export';
-      case 'browser_import_cookies': return args.file_path ? ` 🍪 import ${args.file_path}` : ' 🍪 import';
-      case 'browser_clear_session': return ' 🧹';
-      case 'browser_zoom': return args.factor ? ` 🔎 ${Math.round(args.factor * 100)}%` : '';
-      case 'browser_export_pdf': return ' 📄 PDF';
-      case 'browser_read_clipboard': return ' 📋 read';
-      case 'browser_write_clipboard': return ' 📋 write';
-      case 'browser_page_health': return ' 🩺';
-      case 'browser_show_overlay': return ' 🔵 X-ray';
-      case 'browser_clear_overlay': return ' clear';
-      case 'browser_highlight_ref': return args.ref ? ` 🟠 [${args.ref}]` : '';
-      case 'browser_upload_file': return args.ref ? ` 📁 [${args.ref}]` : '';
-      case 'browser_capture_network': return args.url_pattern ? ` 🌐 "${args.url_pattern}"` : '';
-      case 'browser_list_network_requests': return ' 🌐 list API calls';
-      case 'browser_get_network_response': return args.request_id ? ` 🌐 API res: ${args.request_id}` : '';
-      case 'browser_snapshot_state': return ' 📸 Snapshot State';
-      case 'browser_restore_state': return args.state_id ? ` ⏪ Restore: ${args.state_id}` : '';
-      case 'browser_list_downloads': return ' ⬇️ List Downloads';
-      default: return '';
-    }
-  } catch { return ''; }
 }
 
 // ── Agent implementation using Vercel AI SDK ────────────────────────
@@ -156,7 +103,7 @@ export class VercelAgent implements IAgent {
   private maxToolSteps!: number;
   private apiKey = '';
   private provider!: ReturnType<typeof createOpenAI>;
-  private messages: Array<{ role: string; content: string }> = [];
+  private messages: ModelMessage[] = [];
   private abortController: AbortController | null = null;
 
   private retryCount = 0;
@@ -204,7 +151,9 @@ export class VercelAgent implements IAgent {
             return 'data: ' + JSON.stringify(data);
           }
         }
-      } catch {}
+      } catch (patchErr: unknown) {
+        console.warn('[VercelAgent] patchSSELine parse failed:', getErrorMessage(patchErr));
+      }
       return line;
     };
 
@@ -233,49 +182,54 @@ export class VercelAgent implements IAgent {
                 init.headers = Object.fromEntries(headers.entries());
               }
             }
-          } catch {}
+          } catch (parseErr: unknown) {
+            console.warn('[VercelAgent] SSE patch skipped line:', getErrorMessage(parseErr));
+          }
         }
 
         const response = await globalThis.fetch(url, init);
         if (!response.body) return response;
         const originalBody = response.body;
-        
-        // Capture context for the TransformStream
-        const self = this;
+
+        let sseBuffer = '';
+        let sseReasoning = '';
+        const assistantReasonings = this.assistantReasonings;
         const transform = new TransformStream({
-          _buffer: '',
-          _reasoning: '',
           transform(chunk, controller) {
             const text = new TextDecoder().decode(chunk);
-            (this as any)._buffer += text;
-            const lines = (this as any)._buffer.split('\n');
-            (this as any)._buffer = lines.pop()!;
+            sseBuffer += text;
+            const lines = sseBuffer.split('\n');
+            sseBuffer = lines.pop() ?? '';
             for (const line of lines) {
               if (line.startsWith('data: ') && line !== 'data: [DONE]') {
                 try {
-                  const data = JSON.parse(line.slice(6));
+                  const data = JSON.parse(line.slice(6)) as { choices?: { delta?: { reasoning_content?: string } }[] };
                   if (data?.choices?.[0]?.delta?.reasoning_content) {
-                    (this as any)._reasoning += data.choices[0].delta.reasoning_content;
+                    sseReasoning += data.choices[0].delta.reasoning_content;
                   }
-                } catch {}
+                } catch {
+                  /* ignore malformed SSE chunk */
+                }
               }
               controller.enqueue(new TextEncoder().encode(patchSSELine(line) + '\n'));
             }
           },
           flush(controller) {
-            if ((this as any)._buffer?.trim()) {
-              const line = (this as any)._buffer;
+            if (sseBuffer.trim()) {
+              const line = sseBuffer;
               if (line.startsWith('data: ') && line !== 'data: [DONE]') {
                 try {
-                  const data = JSON.parse(line.slice(6));
+                  const data = JSON.parse(line.slice(6)) as { choices?: { delta?: { reasoning_content?: string } }[] };
                   if (data?.choices?.[0]?.delta?.reasoning_content) {
-                    (this as any)._reasoning += data.choices[0].delta.reasoning_content;
+                    sseReasoning += data.choices[0].delta.reasoning_content;
                   }
-                } catch {}
+                } catch {
+                  /* ignore malformed SSE chunk */
+                }
               }
               controller.enqueue(new TextEncoder().encode(patchSSELine(line) + '\n'));
             }
-            self.assistantReasonings[numAssistants] = (this as any)._reasoning || '';
+            assistantReasonings[numAssistants] = sseReasoning || '';
           },
         });
         return new Response(originalBody.pipeThrough(transform), {
@@ -290,8 +244,10 @@ export class VercelAgent implements IAgent {
 
   }
 
-  private send(channel: string, ...args: any[]) {
-    try { this.window.webContents.send(channel, ...args); } catch {}
+  private send(channel: string, ...args: unknown[]) {
+    try { this.window.webContents.send(channel, ...args); } catch (sendErr: unknown) {
+      console.warn('[VercelAgent] IPC send failed:', getErrorMessage(sendErr));
+    }
   }
 
   async handleMessage(content: string): Promise<void> {
@@ -336,7 +292,7 @@ export class VercelAgent implements IAgent {
     this.busy = true;
     this.missingToolRecoveryAttempts = 0;
     // Build multimodal message with text + image parts (Vercel AI SDK format)
-    const parts: any[] = [{ type: 'text', text: content }];
+    const parts: UserContentPart[] = [{ type: 'text', text: content }];
     for (const dataUrl of imageDataUrls) {
       // dataUrl format: "data:image/png;base64,iVBOR..."
       const match = dataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
@@ -344,7 +300,7 @@ export class VercelAgent implements IAgent {
         parts.push({ type: 'image', image: match[2], mimeType: match[1] });
       }
     }
-    this.messages.push({ role: 'user', content: parts } as any);
+    this.messages.push({ role: 'user', content: parts });
     this.send('chat-stream-start', '');
     try {
       await this.runStream();
@@ -360,16 +316,16 @@ export class VercelAgent implements IAgent {
     this.messages = [];
   }
 
-  loadHistory(history: any[]): void {
+  loadHistory(history: HistoryMessage[]): void {
     if (this.busy) this.abort();
     this.messages = history.map(m => {
-      // Reconstruct image attachments
-      if (m.role === 'user' && m.attachments && m.attachments.some((a: any) => a.type === 'image' && a.dataUrl)) {
+      const isImageAttachment = (a: HistoryAttachment) => a.type === 'image' && !!a.dataUrl;
+      if (m.role === 'user' && m.attachments?.some(isImageAttachment)) {
         const imageParts = m.attachments
-          .filter((a: any) => a.type === 'image' && a.dataUrl)
-          .map((a: any) => ({
+          .filter(isImageAttachment)
+          .map((a) => ({
             type: 'image' as const,
-            image: new URL(a.dataUrl)
+            image: new URL(a.dataUrl!),
           }));
         
         return {
@@ -380,8 +336,8 @@ export class VercelAgent implements IAgent {
           ]
         };
       }
-      return { role: m.role, content: m.content };
-    });
+      return { role: m.role, content: m.content } as ModelMessage;
+    }) as ModelMessage[];
   }
 
   abort(): void { this.abortController?.abort(); this.abortController = null; }
@@ -438,8 +394,8 @@ export class VercelAgent implements IAgent {
       // Collect all tool-call IDs from assistant messages
       const allToolCallIds = new Set<string>();
       for (const m of this.messages) {
-        if ((m as any).role === 'assistant' && Array.isArray((m as any).content)) {
-          for (const p of (m as any).content) {
+        if (m.role === 'assistant' && Array.isArray(m.content)) {
+          for (const p of m.content) {
             if (p.type === 'tool-call' && p.toolCallId) allToolCallIds.add(p.toolCallId);
           }
         }
@@ -448,8 +404,8 @@ export class VercelAgent implements IAgent {
       // Collect all tool-result IDs from tool messages
       const allToolResultIds = new Set<string>();
       for (const m of this.messages) {
-        if ((m as any).role === 'tool') {
-          const parts = Array.isArray((m as any).content) ? (m as any).content : [m];
+        if (m.role === 'tool') {
+          const parts = Array.isArray(m.content) ? m.content : [m];
           for (const p of parts) {
             if (p.toolCallId) allToolResultIds.add(p.toolCallId);
           }
@@ -458,9 +414,9 @@ export class VercelAgent implements IAgent {
 
       const cleaned: typeof this.messages = [];
       for (const m of this.messages) {
-        if ((m as any).role === 'assistant' && Array.isArray((m as any).content)) {
+        if (m.role === 'assistant' && Array.isArray(m.content)) {
           // Strip tool-calls that have no matching tool-result
-          const filteredContent = ((m as any).content as any[]).filter((p: any) => {
+          const filteredContent = (m.content as ToolCallContentPart[]).filter((p) => {
             if (p.type === 'tool-call' && p.toolCallId && !allToolResultIds.has(p.toolCallId)) {
               console.log(`[VercelAgent] pruneHistory: stripping orphaned tool-call ${p.toolCallId} (${p.toolName})`);
               return false;
@@ -468,17 +424,17 @@ export class VercelAgent implements IAgent {
             return true;
           });
           if (filteredContent.length > 0) {
-            cleaned.push({ ...(m as any), content: filteredContent });
+            cleaned.push({ ...m, content: filteredContent });
           }
           // else: assistant message had only orphaned tool-calls → drop entirely
-        } else if ((m as any).role === 'tool') {
+        } else if (m.role === 'tool') {
           // Strip tool-results that have no matching tool-call
-          const parts = Array.isArray((m as any).content) ? (m as any).content : [m];
-          const hasMatchingCall = parts.some((p: any) => p.toolCallId && allToolCallIds.has(p.toolCallId));
+          const parts = Array.isArray(m.content) ? m.content : [m];
+          const hasMatchingCall = parts.some((p: ToolCallContentPart) => p.toolCallId && allToolCallIds.has(p.toolCallId));
           if (hasMatchingCall) {
             cleaned.push(m);
           } else {
-            const ids = parts.map((p: any) => p.toolCallId).filter(Boolean).join(', ');
+            const ids = parts.map((p: ToolCallContentPart) => p.toolCallId).filter(Boolean).join(', ');
             console.log(`[VercelAgent] pruneHistory: stripping orphaned tool-result ${ids}`);
           }
         } else {
@@ -498,7 +454,6 @@ export class VercelAgent implements IAgent {
   private getTools() {
     const cwd = this.cwd;
     const send = this.send.bind(this);
-    const resolve = (p: string) => path.resolve(cwd, p);
 
     return {
       web_search: tool({
@@ -554,14 +509,7 @@ export class VercelAgent implements IAgent {
       run_command: tool({
         description: 'Run a shell command on the user\'s local machine. This runs in the project directory by default. Used for running scripts (e.g. python, node), installing dependencies, or generic OS commands. Use responsibly.',
         inputSchema: z.object({ command: z.string().describe('The shell command to execute') }),
-        execute: async ({ command }) => {
-          try {
-            const { stdout, stderr } = await execAsync(command, { cwd });
-            return `STDOUT:\n${stdout}\nSTDERR:\n${stderr}`;
-          } catch (e: any) {
-            return `ERROR: ${e.message}\nSTDOUT:\n${e.stdout}\nSTDERR:\n${e.stderr}`;
-          }
-        },
+        execute: async ({ command }) => executeRunCommand(command, cwd),
       }),
 
       read_file: tool({
@@ -572,8 +520,8 @@ export class VercelAgent implements IAgent {
             const fullPath = path.resolve(cwd, filepath);
             const content = await fs.readFile(fullPath, 'utf8');
             return content;
-          } catch (e: any) {
-            return `Error reading file: ${e.message}`;
+          } catch (e: unknown) {
+            return `Error reading file: ${getErrorMessage(e)}`;
           }
         },
       }),
@@ -590,8 +538,8 @@ export class VercelAgent implements IAgent {
             await fs.mkdir(path.dirname(fullPath), { recursive: true });
             await fs.writeFile(fullPath, content, 'utf8');
             return `Successfully wrote to ${fullPath}`;
-          } catch (e: any) {
-            return `Error writing file: ${e.message}`;
+          } catch (e: unknown) {
+            return `Error writing file: ${getErrorMessage(e)}`;
           }
         },
       }),
@@ -904,10 +852,8 @@ export class VercelAgent implements IAgent {
         description: 'Render a beautiful, rich HTML document directly in the IDE browser panel. Use this for highly visual results like shopping items, social media posts, image galleries, or dashboards. You can use absolute local file paths (e.g. file:///Users/...) directly in src/href attributes.',
         inputSchema: z.object({ html: z.string().describe('The complete HTML document string to render (include <style> tags or Tailwind via CDN for styling).') }),
         execute: async ({ html }) => {
-          const { browserViewManager } = require('../browser-view-manager');
-          const { BrowserWindow } = require('electron');
           const allWindows = BrowserWindow.getAllWindows();
-          const mainWindow = allWindows.find((w: any) => w.getTitle()?.includes('DSME')) || allWindows[0];
+          const mainWindow = allWindows.find((w) => w.getTitle()?.includes('DSME')) || allWindows[0];
           if (mainWindow) mainWindow.webContents.send('browser-panel-open');
 
           this.send('chat-stream-token', `\n正在渲染丰富的 HTML 视图...\n`);
@@ -967,14 +913,14 @@ export class VercelAgent implements IAgent {
       const result = streamText({
         model: this.provider.chat(this.model),
         system: getSystemPrompt(this.cwd),
-        messages: this.messages as any,
+        messages: this.messages,
         tools: forceNoTools ? undefined : this.getTools(),
         maxOutputTokens: this.maxOutputTokens,
         stopWhen: stepCountIs(this.maxToolSteps),
         abortSignal: this.abortController.signal,
 
         // Lifecycle callbacks for UI updates
-        onStepFinish: ({ stepNumber, text, toolCalls, toolResults }) => {
+        onStepFinish: ({ stepNumber, text, toolCalls }) => {
           lastStepNumber = stepNumber;
           console.log(`[VercelAgent] Step ${stepNumber} finished: text=${text?.length || 0}ch, tools=${toolCalls?.length || 0}`);
         },
@@ -1010,8 +956,8 @@ export class VercelAgent implements IAgent {
       for await (const part of result.fullStream) {
         switch (part.type) {
           case 'text-delta': {
-            const rawDelta = (part as any).text ?? (part as any).textDelta;
-            let delta = rawDelta == null ? '' : typeof rawDelta === 'string' ? rawDelta : String(rawDelta);
+            const rawDelta = (part as VercelStreamPart).text ?? (part as VercelStreamPart).textDelta;
+            const delta = rawDelta == null ? '' : typeof rawDelta === 'string' ? rawDelta : String(rawDelta);
             if (delta.length) {
               modelText += delta;
               modelTextChars += delta.length;
@@ -1075,17 +1021,17 @@ export class VercelAgent implements IAgent {
             break;
           }
           case 'tool-call': {
-            const toolCallId = (part as any).toolCallId ?? (part as any).id;
-            const toolName = (part as any).toolName;
+            const toolCallId = (part as VercelStreamPart).toolCallId ?? (part as VercelStreamPart).id;
+            const toolName = (part as VercelStreamPart).toolName;
             if (toolCallId && toolName) toolCallNames.set(toolCallId, toolName);
             sawToolCallPart = true;
             lastEventWasText = false;
             break;
           }
           case 'error': {
-            const e = (part as any).error;
+            const e = (part as VercelStreamPart).error;
             const msg = typeof e?.message === 'string' ? e.message : String(e ?? 'stream error');
-            const ename = typeof (e as any)?.name === 'string' ? (e as any).name : '';
+            const ename = typeof (e as { name?: string })?.name === 'string' ? (e as { name?: string }).name : '';
             if (
               /tool result(?:s)? (?:is|are) missing for tool call/i.test(msg) ||
               /missing for tool call/i.test(msg) ||
@@ -1102,7 +1048,7 @@ export class VercelAgent implements IAgent {
             break;
           }
           case 'tool-error': {
-            const e = (part as any).error ?? part;
+            const e = (part as VercelStreamPart).error ?? part;
             const msg = typeof e === 'string' ? e : e?.message ?? JSON.stringify(e);
             console.error('[VercelAgent] Tool stream error:', e);
             this.send('chat-stream-token', `\n\n⚠️ **工具错误** — ${String(msg).slice(0, 800)}\n`);
@@ -1112,9 +1058,9 @@ export class VercelAgent implements IAgent {
           case 'tool-output-available':
           case 'tool-output-error':
           case 'tool-output-denied': {
-            const toolCallId = (part as any).toolCallId ?? (part as any).id;
-            const toolName = (part as any).toolName ?? (toolCallId ? toolCallNames.get(toolCallId) : undefined);
-            const visible = visibleTextFromStreamPart({ ...(part as any), toolName }, this.getToolResultCapChars());
+            const toolCallId = (part as VercelStreamPart).toolCallId ?? (part as VercelStreamPart).id;
+            const toolName = (part as VercelStreamPart).toolName ?? (toolCallId ? toolCallNames.get(toolCallId) : undefined);
+            const visible = visibleTextFromStreamPart({ ...(part as VercelStreamPart), toolName }, this.getToolResultCapChars());
             if (visible) {
               fullText += visible;
               this.send('chat-stream-token', visible);
@@ -1132,17 +1078,17 @@ export class VercelAgent implements IAgent {
       const finishReason = await result.finishReason;
       // In ai SDK v6 assistant messages use `content: AssistantContent` (string | (TextPart|ToolCallPart|…)[]).
       // There is NO legacy `tool_calls` field — inspect `content` parts directly.
-      const hadToolCalls = (response.messages ?? []).some((m: any) => {
+      const hadToolCalls = (response.messages ?? []).some((m: ModelMessage) => {
         if (m.role !== 'assistant') return false;
         const c = m.content;
-        if (Array.isArray(c)) return c.some((p: any) => p?.type === 'tool-call');
+        if (Array.isArray(c)) return c.some((p: ToolCallContentPart) => p?.type === 'tool-call');
         return false;
       });
       // Robust signal: did the stream end while the model was emitting final text
       // (rather than tool-call args)? Combine message-shape check with live event tracking.
-      const lastAssistantMsg = [...(response.messages ?? [])].reverse().find((m: any) => m.role === 'assistant');
+      const lastAssistantMsg = [...(response.messages ?? [])].reverse().find((m: ModelMessage) => m.role === 'assistant');
       const lastMsgHasToolCall = Array.isArray(lastAssistantMsg?.content) &&
-        (lastAssistantMsg!.content as any[]).some((p: any) => p?.type === 'tool-call');
+        (lastAssistantMsg!.content as ToolCallContentPart[]).some((p) => p?.type === 'tool-call');
       const lastStepWasText = (lastEventWasText && modelTextChars > 0) || (!!lastAssistantMsg && !lastMsgHasToolCall);
       console.log(`[VercelAgent] Stream complete: text=${fullText.length}ch, modelTextChars=${modelTextChars}, hadTools=${hadToolCalls}, sawToolCallPart=${sawToolCallPart}, lastEventWasText=${lastEventWasText}, lastStepText=${lastStepWasText}, finishReason=${finishReason}`);
 
@@ -1194,7 +1140,7 @@ export class VercelAgent implements IAgent {
           // so the model sees its prior tool I/O on retry. Fall back to plain-text persistence
           // if for some reason response.messages is empty but fullText is not.
           if (response.messages?.length) {
-            for (const msg of response.messages) this.messages.push(msg as any);
+            for (const msg of response.messages) this.messages.push(msg);
           } else if (fullText.trim()) {
             this.messages.push({ role: 'assistant', content: fullText.trim() });
           }
@@ -1256,7 +1202,7 @@ export class VercelAgent implements IAgent {
       // surface tool payloads or a finishReason hint instead of a blank bubble.
       if (!fullText.trim()) {
         const toolTexts =
-          (response.messages as any[])
+          (response.messages ?? [])
             ?.filter((m) => m.role === 'tool')
             .map((m) => stringifyStreamValue(m.content))
             .join('\n\n---\n') ?? '';
@@ -1278,7 +1224,7 @@ export class VercelAgent implements IAgent {
       // Add response messages to history (handles tool calls + assistant replies properly)
       if (response.messages?.length) {
         for (const msg of response.messages) {
-          this.messages.push(msg as any);
+          this.messages.push(msg);
         }
       } else if (fullText.trim()) {
         this.messages.push({ role: 'assistant', content: fullText.trim() });
@@ -1291,10 +1237,10 @@ export class VercelAgent implements IAgent {
       clearTimeout(timeoutId);
       clearPostToolWatchdog();
 
-    } catch (err: any) {
+    } catch (err: unknown) {
       clearTimeout(timeoutId);
       clearPostToolWatchdog();
-      const msg = err?.message || String(err);
+      const msg = getErrorMessage(err);
       
       if (err?.name === 'AbortError' || msg === 'Request was aborted.' || msg === 'aborted') {
         if (postToolWatchdogTimedOut) {
@@ -1358,8 +1304,8 @@ export class VercelAgent implements IAgent {
             // Collect all tool-call IDs present in assistant messages
             const allToolCallIds = new Set<string>();
             for (const m of this.messages) {
-              if ((m as any).role === 'assistant' && Array.isArray((m as any).content)) {
-                for (const p of (m as any).content) {
+              if (m.role === 'assistant' && Array.isArray(m.content)) {
+                for (const p of m.content) {
                   if (p.type === 'tool-call' && p.toolCallId) allToolCallIds.add(p.toolCallId);
                 }
               }
@@ -1368,8 +1314,8 @@ export class VercelAgent implements IAgent {
             // Collect all tool-result IDs present in tool messages
             const allToolResultIds = new Set<string>();
             for (const m of this.messages) {
-              if ((m as any).role === 'tool') {
-                const parts = Array.isArray((m as any).content) ? (m as any).content : [m];
+              if (m.role === 'tool') {
+                const parts = Array.isArray(m.content) ? m.content : [m];
                 for (const p of parts) {
                   if (p.toolCallId) allToolResultIds.add(p.toolCallId);
                 }
@@ -1378,9 +1324,9 @@ export class VercelAgent implements IAgent {
 
             const cleaned: typeof this.messages = [];
             for (const m of this.messages) {
-              if ((m as any).role === 'assistant' && Array.isArray((m as any).content)) {
+              if (m.role === 'assistant' && Array.isArray(m.content)) {
                 // Strip tool-calls that have no matching tool-result
-                const filteredContent = ((m as any).content as any[]).filter((p: any) => {
+                const filteredContent = (m.content as ToolCallContentPart[]).filter((p) => {
                   if (p.type === 'tool-call' && p.toolCallId && !allToolResultIds.has(p.toolCallId)) {
                     console.log(`[VercelAgent] Stripping orphaned tool-call: ${p.toolCallId} (${p.toolName})`);
                     return false;
@@ -1388,17 +1334,17 @@ export class VercelAgent implements IAgent {
                   return true;
                 });
                 if (filteredContent.length > 0) {
-                  cleaned.push({ ...(m as any), content: filteredContent });
+                  cleaned.push({ ...m, content: filteredContent });
                 }
                 // else: assistant message had only orphaned tool-calls → drop entirely
-              } else if ((m as any).role === 'tool') {
+              } else if (m.role === 'tool') {
                 // Strip tool-results that have no matching tool-call
-                const parts = Array.isArray((m as any).content) ? (m as any).content : [m];
-                const hasMatchingCall = parts.some((p: any) => p.toolCallId && allToolCallIds.has(p.toolCallId));
+                const parts = Array.isArray(m.content) ? m.content : [m];
+                const hasMatchingCall = parts.some((p: ToolCallContentPart) => p.toolCallId && allToolCallIds.has(p.toolCallId));
                 if (hasMatchingCall) {
                   cleaned.push(m);
                 } else {
-                  const ids = parts.map((p: any) => p.toolCallId).filter(Boolean).join(', ');
+                  const ids = parts.map((p: ToolCallContentPart) => p.toolCallId).filter(Boolean).join(', ');
                   console.log(`[VercelAgent] Stripping orphaned tool-result: ${ids}`);
                 }
               } else {
@@ -1448,30 +1394,35 @@ export class VercelAgent implements IAgent {
   /** Flatten `Error.cause` chains so AI_NoOutputGeneratedError can still reveal MissingToolResultsError. */
   private collectErrorMessages(err: unknown, maxDepth = 10): string {
     const parts: string[] = [];
-    let e: any = err;
+    let e: unknown = err;
     let depth = 0;
     const seen = new Set<unknown>();
     while (e != null && depth++ < maxDepth) {
       if (typeof e === 'object' && e !== null) {
         if (seen.has(e)) break;
         seen.add(e);
+        const rec = e as { name?: string; message?: string; cause?: unknown };
+        if (typeof rec.name === 'string') parts.push(rec.name);
+        if (typeof rec.message === 'string') parts.push(rec.message);
+        e = rec.cause;
+      } else if (typeof e === 'string') {
+        parts.push(e);
+        break;
+      } else {
+        break;
       }
-      if (typeof e?.name === 'string') parts.push(e.name);
-      if (typeof e?.message === 'string') parts.push(e.message);
-      else if (typeof e === 'string') parts.push(e);
-      e = e?.cause;
     }
     return parts.join('\n');
   }
 
   /** Safely extract text content from a message (handles multimodal arrays) */
-  private extractTextContent(msg: { role: string; content: any } | undefined): string {
+  private extractTextContent(msg: ModelMessage | undefined): string {
     if (!msg) return '';
     if (typeof msg.content === 'string') return msg.content;
     if (Array.isArray(msg.content)) {
       return msg.content
-        .filter((p: any) => p.type === 'text')
-        .map((p: any) => p.text || '')
+        .filter((p): p is { type: 'text'; text: string } => typeof p === 'object' && p !== null && 'type' in p && p.type === 'text')
+        .map((p) => p.text || '')
         .join(' ');
     }
     return '';
@@ -1494,7 +1445,7 @@ export class VercelAgent implements IAgent {
   private async autoExecuteCodeBlocks(text: string): Promise<void> {
     const toolDefs = this.getTools();
     const availableTools = Object.keys(toolDefs);
-    const parsed = this.parseTextToolCalls(text, availableTools);
+    const parsed = parseTextToolCalls(text, availableTools);
     if (parsed.length === 0) return;
 
     console.log(`[VercelAgent] Fallback: parsed ${parsed.length} tool call(s) from text`);
@@ -1512,100 +1463,17 @@ export class VercelAgent implements IAgent {
       console.log(`[VercelAgent] Fallback exec: ${tc.name}`, JSON.stringify(tc.args).slice(0, 200));
 
       try {
-        const result = await (toolFn as any).execute(tc.args, { toolCallId: `fallback-${Date.now()}` });
+        const result = await (toolFn as { execute: (args: JsonObject, opts: { toolCallId: string }) => Promise<unknown> }).execute(
+          tc.args,
+          { toolCallId: `fallback-${Date.now()}` },
+        );
         const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
         const cap = this.getToolResultCapChars();
         const display = resultStr.length > cap ? resultStr.slice(0, cap) + '\n...(truncated)' : resultStr;
         this.send('chat-stream-token', `\n\`\`\`\n${display}\n\`\`\`\n`);
-      } catch (e: any) {
-        this.send('chat-stream-token', `\n⚠️ Tool error: ${e.message?.slice(0, 500)}\n`);
+      } catch (e: unknown) {
+        this.send('chat-stream-token', `\n⚠️ Tool error: ${getErrorMessage(e).slice(0, 500)}\n`);
       }
     }
-  }
-
-  /** Parse tool calls from text using multiple fallback formats. */
-  private parseTextToolCalls(text: string, availableTools: string[]): { name: string; args: any }[] {
-    // Strategy 1: Hermes — [TOOL_CALLS][{"name": "...", "arguments": {...}}]
-    const hermesMatch = text.match(/\[TOOL_CALLS\]\s*(\[[\s\S]*?\])/);
-    if (hermesMatch) {
-      try {
-        const calls = JSON.parse(hermesMatch[1]);
-        if (Array.isArray(calls)) {
-          return calls
-            .filter((c: any) => c.name && availableTools.includes(c.name))
-            .map((c: any) => ({ name: c.name, args: c.arguments || c.parameters || {} }));
-        }
-      } catch {}
-    }
-
-    // Strategy 2: XML — <function=tool_name>{"arg": "val"}</function>
-    const xmlRegex = /<function=([^>]+)>([\s\S]*?)<\/function>/g;
-    const xmlCalls: { name: string; args: any }[] = [];
-    let xmlMatch;
-    while ((xmlMatch = xmlRegex.exec(text)) !== null) {
-      const name = xmlMatch[1].trim();
-      if (!availableTools.includes(name)) continue;
-      try { xmlCalls.push({ name, args: JSON.parse(xmlMatch[2].trim()) }); }
-      catch { xmlCalls.push({ name, args: {} }); }
-    }
-    if (xmlCalls.length > 0) return xmlCalls;
-
-    // Strategy 3: JSON code blocks — ```json\n{"name": "tool", "parameters": {...}}\n```
-    const jsonBlockRegex = /```(?:json)?\s*\n?\s*(\{[\s\S]*?\})\s*\n?```/g;
-    const jsonCalls: { name: string; args: any }[] = [];
-    let jsonMatch;
-    while ((jsonMatch = jsonBlockRegex.exec(text)) !== null) {
-      try {
-        const data = JSON.parse(jsonMatch[1]);
-        if (data.name && availableTools.includes(data.name)) {
-          jsonCalls.push({ name: data.name, args: data.parameters || data.arguments || {} });
-        }
-      } catch {}
-    }
-    if (jsonCalls.length > 0) return jsonCalls;
-
-    // Strategy 4: Bare JSON — {"name": "tool", "parameters": {...}}
-    const bareRegex = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"(?:parameters|arguments)"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
-    const bareCalls: { name: string; args: any }[] = [];
-    let bareMatch;
-    while ((bareMatch = bareRegex.exec(text)) !== null) {
-      const name = bareMatch[1];
-      if (!availableTools.includes(name)) continue;
-      try { bareCalls.push({ name, args: JSON.parse(bareMatch[2]) }); }
-      catch {}
-    }
-    if (bareCalls.length > 0) return bareCalls;
-
-    // Strategy 5: Raw code blocks — ```python\ncode\n``` or ```bash\ncode\n```
-    // Last resort: if model just outputs raw code blocks, extract and wrap as
-    // write_file + run_command tool calls
-    const codeBlockRegex = /```(\w+)\n([\s\S]*?)```/g;
-    const codeCalls: { name: string; args: any }[] = [];
-    let codeMatch;
-    const RUNNABLE: Record<string, string> = {
-      python: 'python3', py: 'python3',
-      javascript: 'node', js: 'node',
-      typescript: 'npx tsx', ts: 'npx tsx',
-      bash: 'bash', sh: 'bash', zsh: 'zsh',
-    };
-    while ((codeMatch = codeBlockRegex.exec(text)) !== null) {
-      const lang = codeMatch[1].toLowerCase();
-      const code = codeMatch[2].trim();
-      const runner = RUNNABLE[lang];
-      if (!runner || code.length < 10) continue;
-      // Synthesize write_file + run_command
-      const ext = lang === 'python' || lang === 'py' ? '.py' :
-                  lang === 'javascript' || lang === 'js' ? '.js' :
-                  lang === 'typescript' || lang === 'ts' ? '.ts' : '.sh';
-      const filename = `scratch/auto_${Date.now()}${ext}`;
-      codeCalls.push({ name: 'write_file', args: { filepath: filename, content: code } });
-      codeCalls.push({ name: 'run_command', args: { command: `${runner} ${filename}` } });
-    }
-    if (codeCalls.length > 0) {
-      console.log(`[VercelAgent] Strategy 5: Synthesized ${codeCalls.length} tool calls from raw code blocks`);
-      return codeCalls;
-    }
-
-    return [];
   }
 }

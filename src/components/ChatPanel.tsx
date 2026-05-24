@@ -40,11 +40,26 @@ interface Conversation {
   createdAt: number;
 }
 
-interface Props {}
+type Props = Record<string, never>;
 
 // ── Helpers ──
 let msgId = 0;
 const newId = () => `msg_${Date.now()}_${msgId++}`;
+
+function createDefaultConversation(): Conversation {
+  const now = Date.now();
+  return {
+    id: 'conv_0',
+    title: 'New Session',
+    messages: [{
+      id: newId(),
+      role: 'assistant',
+      content: '你好！我是 Web 自动化助手。\n\n我能为你**操作浏览器网页**、**抓取网页数据**、**同步 Cookie 免登录**、**捕获 API 请求**，实现各种复杂的自动化交互任务。',
+      timestamp: now,
+    }],
+    createdAt: now,
+  };
+}
 
 function formatTime(ts: number): string {
   const diff = Math.floor((Date.now() - ts) / 1000);
@@ -57,11 +72,7 @@ function formatTime(ts: number): string {
 
 // ── Component ──
 export const ChatPanel: React.FC<Props> = () => {
-  const [conversations, setConversations] = useState<Conversation[]>([{
-    id: 'conv_0', title: 'New Session',
-    messages: [{ id: newId(), role: 'assistant' as const, content: '你好！我是 Web 自动化助手。\n\n我能为你**操作浏览器网页**、**抓取网页数据**、**同步 Cookie 免登录**、**捕获 API 请求**，实现各种复杂的自动化交互任务。', timestamp: Date.now() }],
-    createdAt: Date.now()
-  }]);
+  const [conversations, setConversations] = useState<Conversation[]>(() => [createDefaultConversation()]);
   const [activeConvId, setActiveConvId] = useState('conv_0');
   const [input, setInput] = useState('');
   const [agentStatus, setAgentStatus] = useState<string>('idle');
@@ -72,6 +83,7 @@ export const ChatPanel: React.FC<Props> = () => {
   const [kernel, setKernel] = useState<'vercel' | 'builtin'>('vercel');
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [streamingMsgIdForUi, setStreamingMsgIdForUi] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const streamingMsgId = useRef<string | null>(null);
@@ -87,17 +99,20 @@ export const ChatPanel: React.FC<Props> = () => {
       window.electronAPI.loadConversations().then(data => {
         if (data) {
           try {
-            const saved = JSON.parse(data);
-            if (saved.conversations?.length > 0) {
-              setConversations(saved.conversations);
-              const targetId = saved.activeConvId || saved.conversations[0].id;
+            const saved = JSON.parse(data) as { conversations?: Conversation[]; activeConvId?: string };
+            const convs = saved.conversations;
+            if (convs && convs.length > 0) {
+              setConversations(convs);
+              const targetId = saved.activeConvId || convs[0].id;
               setActiveConvId(targetId);
               if (window.electronAPI.syncHistory) {
-                const activeConv = saved.conversations.find((c: any) => c.id === targetId);
+                const activeConv = convs.find((c) => c.id === targetId);
                 if (activeConv) window.electronAPI.syncHistory(activeConv.messages);
               }
             }
-          } catch {}
+          } catch (parseErr) {
+            console.warn('[ChatPanel] Failed to parse saved conversations:', parseErr);
+          }
         }
       }).catch(() => {});
     }
@@ -178,6 +193,7 @@ export const ChatPanel: React.FC<Props> = () => {
       api.onChatStreamStart(() => {
         const mid = newId();
         streamingMsgId.current = mid;
+        setStreamingMsgIdForUi(mid);
         streamStartTime.current = Date.now();
         tokenBufferRef.current = '';
         setConversations(prev => prev.map(conv => {
@@ -207,6 +223,7 @@ export const ChatPanel: React.FC<Props> = () => {
         const duration = streamStartTime.current ? ((Date.now() - streamStartTime.current) / 1000).toFixed(1) : null;
         const finishedMsgId = streamingMsgId.current;
         streamingMsgId.current = null;
+        setStreamingMsgIdForUi(null);
         streamStartTime.current = 0;
         setAgentStatus('idle');
         if (finishedMsgId) {
@@ -250,29 +267,29 @@ export const ChatPanel: React.FC<Props> = () => {
   }, [flushTokenBuffer]);
 
   // ── Menu shortcuts ──
-  const newConvRef = useRef<() => void>(() => {});
-  useEffect(() => {
-    const handleFind = () => setShowSearch(s => !s);
-    const handleNewConv = () => newConvRef.current();
-    window.addEventListener('dsme-find', handleFind);
-    window.addEventListener('dsme-new-conversation', handleNewConv);
-    return () => {
-      window.removeEventListener('dsme-find', handleFind);
-      window.removeEventListener('dsme-new-conversation', handleNewConv);
+  const handleNewConversation = useCallback(() => {
+    const c: Conversation = {
+      id: `conv_${Date.now()}`, title: 'New Session',
+      messages: [{ id: newId(), role: 'assistant' as const, content: '你好！我是 Web 自动化助手。\n\n我能为你**操作浏览器网页**、**抓取网页数据**、**同步 Cookie 免登录**、**捕获 API 请求**，实现各种复杂的自动化交互任务。', timestamp: Date.now() }],
+      createdAt: Date.now()
     };
+    setConversations(prev => [...prev, c]);
+    setActiveConvId(c.id);
+    setShowHistory(false);
+    if (window.electronAPI?.resetConversation) window.electronAPI.resetConversation();
   }, []);
 
-  // Auto-title
   useEffect(() => {
-    if (activeConv.title === 'New Session') {
-      const firstUser = activeConv.messages.find(m => m.role === 'user');
-      if (firstUser) {
-        setConversations(prev => prev.map(c =>
-          c.id === activeConvId ? { ...c, title: firstUser.content.slice(0, 30) + (firstUser.content.length > 30 ? '...' : '') } : c
-        ));
-      }
-    }
-  }, [activeConv.messages]);
+    const handleFind = () => setShowSearch(s => !s);
+    window.addEventListener('dsme-find', handleFind);
+    window.addEventListener('dsme-new-conversation', handleNewConversation);
+    return () => {
+      window.removeEventListener('dsme-find', handleFind);
+      window.removeEventListener('dsme-new-conversation', handleNewConversation);
+    };
+  }, [handleNewConversation]);
+
+  // Auto-title is handled in handleSubmit when the first user message is sent.
 
   // ── Actions ──
   const handleSubmit = useCallback(() => {
@@ -329,19 +346,6 @@ export const ChatPanel: React.FC<Props> = () => {
       return { ...conv, messages: msgs };
     }));
   }, [activeConvId]);
-
-  const handleNewConversation = () => {
-    const c: Conversation = {
-      id: `conv_${Date.now()}`, title: 'New Session',
-      messages: [{ id: newId(), role: 'assistant' as const, content: '你好！我是 Web 自动化助手。\n\n我能为你**操作浏览器网页**、**抓取网页数据**、**同步 Cookie 免登录**、**捕获 API 请求**，实现各种复杂的自动化交互任务。', timestamp: Date.now() }],
-      createdAt: Date.now()
-    };
-    setConversations(prev => [...prev, c]);
-    setActiveConvId(c.id);
-    setShowHistory(false);
-    if (window.electronAPI?.resetConversation) window.electronAPI.resetConversation();
-  };
-  newConvRef.current = handleNewConversation;
 
   const handleDeleteConversation = (e: React.MouseEvent, convId: string) => {
     e.stopPropagation();
@@ -466,7 +470,7 @@ export const ChatPanel: React.FC<Props> = () => {
   // ── Drag handlers ──
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setIsDragOver(true); };
   const handleDragLeave = () => setIsDragOver(false);
-  const handleDropWithState = (_e: React.DragEvent) => { setIsDragOver(false); };
+  const handleDropWithState = () => { setIsDragOver(false); };
 
   // ── Render ──
   return (
@@ -570,7 +574,7 @@ export const ChatPanel: React.FC<Props> = () => {
                 index={i}
                 totalMessages={activeConv.messages.length}
                 isLoading={isLoading}
-                isStreaming={streamingMsgId.current === msg.id}
+                isStreaming={streamingMsgIdForUi === msg.id}
                 isSearchDimmed={!!searchQuery.trim() && !isSearchMatch}
                 copiedMsgId={copiedMsgId}
                 onCopy={handleCopyMessage}
@@ -580,7 +584,7 @@ export const ChatPanel: React.FC<Props> = () => {
               />
             );
           })}
-          {isLoading && !streamingMsgId.current && (
+          {isLoading && !streamingMsgIdForUi && (
             <div className="chat-message assistant loader">
               <div className="chat-loading-content">
                 <div className="typing-indicator">

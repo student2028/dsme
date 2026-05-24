@@ -8,6 +8,7 @@
  */
 
 import { BrowserWindow } from 'electron';
+import type { HistoryMessage } from '../types/common';
 
 // ── Agent configuration ─────────────────────────────────────────────
 export interface AgentConfig {
@@ -51,7 +52,7 @@ export interface IAgent {
   resetConversation(): void;
 
   /** Load history from frontend to restore context after app restart */
-  loadHistory(messages: any[]): void;
+  loadHistory(messages: HistoryMessage[]): void;
 
   /** Abort the current request */
   abort(): void;

@@ -8,7 +8,16 @@
  * All external interactions go through native Node.js APIs or Electron IPC.
  */
 import * as fs from 'node:fs';
-import * as path from 'node:path';
+import { createRequire } from 'node:module';
+import { getErrorMessage } from '../lib/errors';
+import {
+  countSearchResultLines,
+} from './search-result-format';
+
+export { isCommandBlocked } from '../lib/command-guard';
+export { countSearchResultLines, formatWebSearchResult, hasUsableSearchResults } from './search-result-format';
+
+const customRequire = createRequire(import.meta.url);
 
 // ── Mozilla Readability.js — industry gold-standard content extraction ──
 // Loaded once at startup, injected into WebContentsView page context on demand.
@@ -16,11 +25,11 @@ let _readabilitySource: string | null = null;
 function getReadabilitySource(): string {
   if (_readabilitySource) return _readabilitySource;
   try {
-    const readabilityPath = require.resolve('@mozilla/readability/Readability.js');
+    const readabilityPath = customRequire.resolve('@mozilla/readability/Readability.js');
     _readabilitySource = fs.readFileSync(readabilityPath, 'utf8');
     console.log(`[SharedTools] Readability.js loaded (${(_readabilitySource.length / 1024).toFixed(0)}KB)`);
-  } catch (e) {
-    console.warn('[SharedTools] @mozilla/readability not found, deep extraction disabled');
+  } catch (loadErr: unknown) {
+    console.warn('[SharedTools] @mozilla/readability not found, deep extraction disabled:', getErrorMessage(loadErr));
     _readabilitySource = '';
   }
   return _readabilitySource;
@@ -31,7 +40,7 @@ function getReadabilitySource(): string {
  * Returns { title, textContent, excerpt } or null if extraction fails.
  * This leverages the full Chromium DOM — our project's unique advantage.
  */
-export async function extractWithReadability(browserViewManager: any): Promise<{ title: string; textContent: string; excerpt: string } | null> {
+export async function extractWithReadability(browserViewManagerLike: BrowserViewManagerLike): Promise<{ title: string; textContent: string; excerpt: string } | null> {
   const src = getReadabilitySource();
   if (!src) {
     console.warn('[SharedTools] Readability source is empty, skipping');
@@ -50,15 +59,15 @@ export async function extractWithReadability(browserViewManager: any): Promise<{
         excerpt: article.excerpt || ''
       });
     })()`;
-    const raw = await browserViewManager.executeJS(script, 15000, false); // Main world for maximum compatibility
+    const raw = await browserViewManagerLike.executeJS(script, 15000, false);
     console.log(`[SharedTools] Readability executeJS returned (${raw?.length || 0} chars): "${String(raw).slice(0, 80)}"`);
     if (!raw || raw === 'null' || raw.startsWith('Script error:')) {
       console.warn(`[SharedTools] Readability returned unusable: "${String(raw).slice(0, 120)}"`);
       return null;
     }
     return JSON.parse(raw);
-  } catch (e: any) {
-    console.warn('[SharedTools] Readability extraction failed:', e.message);
+  } catch (e: unknown) {
+    console.warn('[SharedTools] Readability extraction failed:', getErrorMessage(e));
     return null;
   }
 }
@@ -67,7 +76,7 @@ export async function extractWithReadability(browserViewManager: any): Promise<{
 // Design: multi-layer, fault-tolerant, engine-agnostic.
 // Built as a function to avoid template-string escape hell.
 function buildExtractScript(): string {
-  /* eslint-disable no-useless-escape */
+   
   return [
     '(function(){',
     'var MR=10;',
@@ -177,75 +186,21 @@ function buildExtractScript(): string {
 // Single universal extraction script — works on ALL search engines
 const UNIVERSAL_EXTRACT = buildExtractScript();
 
-// ── Command safety blacklist ──
-export const BLOCKED_COMMANDS = ['rm -rf /', 'mkfs', ':(){', 'dd if=', '> /dev/sd'];
-
-
-export function countSearchResultLines(result: string): number {
-  return result
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line =>
-      line &&
-      !line.startsWith('Results from ') &&
-      line !== '---' &&
-      !line.startsWith('WEB_SEARCH_') &&
-      !line.startsWith('QUERY:') &&
-      !line.startsWith('RESULT_COUNT:') &&
-      !line.startsWith('INTERPRETATION_HINT:') &&
-      !/^No results found for /i.test(line) &&
-      !/^Search timeout for /i.test(line) &&
-      !/^Error:/i.test(line)
-    )
-    .length;
-}
-
-export function hasUsableSearchResults(result: string): boolean {
-  const text = String(result || '').trim();
-  if (!text) return false;
-  if (/^(Search timeout|No results found|Error:)/i.test(text)) return false;
-  return countSearchResultLines(text) > 0;
-}
-
-export function formatWebSearchResult(query: string, result: string): string {
-  const usable = hasUsableSearchResults(result);
-  const count = countSearchResultLines(result);
-  const status = usable ? 'ok' : 'empty';
-  const hint = usable
-    ? 'Search parsing succeeded. Use these snippets to answer directly; do not call web_search again unless the user asks for more sources.'
-    : 'Search parsing did not find usable snippets. You may try one alternate query once.';
-  return [
-    `WEB_SEARCH_STATUS: ${status}`,
-    `QUERY: ${query}`,
-    `RESULT_COUNT: ${count}`,
-    `INTERPRETATION_HINT: ${hint}`,
-    '',
-    result,
-  ].join('\n');
-}
-
-export function isCommandBlocked(cmd: string): boolean {
-  return BLOCKED_COMMANDS.some(b => cmd.includes(b));
-}
-
-
-
 // ── Web search — uses BrowserViewManager directly (no IPC to renderer) ──
 // Navigates the WebContentsView to search engines, extracts results via executeJS.
 export async function webSearch(query: string, engine?: string): Promise<string> {
   if (!query) return 'Error: query is required';
 
-  const { browserViewManager } = require('../browser-view-manager');
-  const { BrowserWindow: BW } = require('electron');
+  const { BrowserWindow } = await import('electron');
+  const { browserViewManager } = await import('../browser-view-manager');
+
   const q = encodeURIComponent(query);
 
-  // Ensure browser panel is visible so user can see the search
-  const allWindows = BW.getAllWindows();
-  const mainWindow = allWindows.find((w: any) => w.getTitle()?.includes('DSME')) || allWindows[0];
+  const allWindows = BrowserWindow.getAllWindows();
+  const mainWindow = allWindows.find((w) => w.getTitle()?.includes('DSME')) || allWindows[0];
   if (mainWindow) mainWindow.webContents.send('browser-panel-open');
 
-  // ── Timeline helper: push step events to the browser panel UI ──
-  const emitStep = (command: string, params: Record<string, any>, result: string, status: 'running' | 'done' | 'error' = 'done') => {
+  const emitStep = (command: string, params: JsonObject, result: string, status: 'running' | 'done' | 'error' = 'done') => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('browser-step', {
       sessionTitle: `搜索: ${query.slice(0, 60)}`,
@@ -297,8 +252,8 @@ export async function webSearch(query: string, engine?: string): Promise<string>
       let text: string = '';
       try {
         text = await browserViewManager.executeJS(eng.extractJS, 10000, false);
-      } catch (e1: any) {
-        console.warn(`[webSearch] ${eng.label} extractJS threw:`, e1.message);
+      } catch (e1: unknown) {
+        console.warn(`[webSearch] ${eng.label} extractJS threw:`, getErrorMessage(e1));
       }
       console.log(`[webSearch] ${eng.label} L1 extractJS (${text?.length || 0} chars): "${String(text).slice(0, 150)}"`);
 
@@ -324,8 +279,8 @@ export async function webSearch(query: string, engine?: string): Promise<string>
           emitStep('eval', { script: `Extract results from ${eng.label}` }, `✓ Readability extracted ${article.textContent.length} chars`);
           return `Results from ${eng.label} (Readability):\n${article.title}\n${article.textContent.slice(0, 5000)}`;
         }
-      } catch (e2: any) {
-        console.warn(`[webSearch] ${eng.label} Readability threw:`, e2.message);
+      } catch (e2: unknown) {
+        console.warn(`[webSearch] ${eng.label} Readability threw:`, getErrorMessage(e2));
       }
 
       // === Layer 3: Raw body text — absolute last resort, use MAIN WORLD ===
@@ -337,8 +292,8 @@ export async function webSearch(query: string, engine?: string): Promise<string>
           5000,
           false // Main world — absolutely nothing should block this
         );
-      } catch (e3: any) {
-        console.warn(`[webSearch] ${eng.label} raw body threw:`, e3.message);
+      } catch (e3: unknown) {
+        console.warn(`[webSearch] ${eng.label} raw body threw:`, getErrorMessage(e3));
       }
       console.log(`[webSearch] ${eng.label} L3 raw body (${rawBody?.length || 0} chars): "${String(rawBody).slice(0, 200)}"`);
 
@@ -349,8 +304,8 @@ export async function webSearch(query: string, engine?: string): Promise<string>
 
       emitStep('eval', { script: `Extract results from ${eng.label}` }, `✗ All extraction layers failed`, 'error');
       console.error(`[webSearch] ✗ ${eng.label} ALL 3 LAYERS FAILED. extractJS="${String(text).slice(0,80)}", rawBody="${String(rawBody).slice(0,80)}"`);
-    } catch (e: any) {
-      console.error(`[webSearch] ${eng.label} outer catch:`, e.message);
+    } catch (e: unknown) {
+      console.error(`[webSearch] ${eng.label} outer catch:`, getErrorMessage(e));
     }
   }
 
@@ -387,14 +342,15 @@ export async function fetchUrl(url: string): Promise<string> {
       .trim()
       .slice(0, 15000);
     return text ? `URL: ${url}\n\n${text}` : `No content from: ${url}`;
-  } catch (e: any) {
+  } catch (e: unknown) {
     if (e.name === 'AbortError') return `Fetch error: timeout after 25s for ${url}`;
-    return `Fetch error: ${e.message}`;
+    return `Fetch error: ${getErrorMessage(e)}`;
   }
 }
 
 // ── System prompt builder (shared core) ──
 export function buildSystemPromptBase(cwd: string): string {
+  void cwd;
   const now = new Date();
   const dateStr = now.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
   const timeStr = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });

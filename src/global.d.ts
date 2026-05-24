@@ -1,3 +1,5 @@
+import type { BrowserStepEvent, HistoryMessage } from '../electron/types/common';
+
 interface ProviderConfig {
   name: string;
   apiKey: string;
@@ -5,15 +7,25 @@ interface ProviderConfig {
   models: string[];
 }
 
+export interface Userscript {
+  id: string;
+  name: string;
+  match: string;
+  code: string;
+  enabled: boolean;
+}
+
 interface AppConfig {
   apiKey: string;
   model: string;
-  baseUrl: string;
-  maxOutputTokens: number;
-  maxContextTokens: number;
+  baseUrl?: string;
+  maxOutputTokens?: number;
+  maxContextTokens?: number;
   maxToolSteps?: number;
   providers: ProviderConfig[];
   activeProvider: string;
+  bookmarks?: { title: string; url: string; icon?: string; folder?: string }[];
+  userscripts?: Userscript[];
 }
 
 type Unsubscribe = () => void;
@@ -37,23 +49,14 @@ declare global {
       loadConversations: () => Promise<string | null>;
       cancelChatRequest: () => void;
       resetConversation: () => void;
-      syncHistory: (messages: any[]) => void;
+      syncHistory: (messages: HistoryMessage[]) => void;
       onKernelChanged: (callback: (kernel: string) => void) => Unsubscribe;
       switchKernel: (kernel: string) => void;
-      /** @deprecated No longer used — web_search uses BrowserViewManager directly */
-      onWebSearchExecute: (callback: (data: any) => void) => Unsubscribe;
-      /** @deprecated No longer used */
-      sendWebSearchResults: (results: string) => void;
-      /** @deprecated No longer used — browser-use tools use BrowserViewManager directly */
-      onBrowserCommand: (callback: (cmd: any) => void) => Unsubscribe;
-      /** @deprecated No longer used */
-      sendBrowserResult: (id: string, result: string) => void;
-      // WebContentsView browser panel
       syncBrowserBounds: (bounds: { x: number; y: number; width: number; height: number }) => void;
       showBrowserView: (bounds?: { x: number; y: number; width: number; height: number }) => void;
       hideBrowserView: () => void;
       onBrowserViewNavigated: (callback: (data: { url: string; title: string }) => void) => Unsubscribe;
-      onBrowserStep: (callback: (data: any) => void) => Unsubscribe;
+      onBrowserStep: (callback: (data: BrowserStepEvent) => void) => Unsubscribe;
       onBrowserPanelOpen: (callback: () => void) => Unsubscribe;
       moveWindowBy: (dx: number, dy: number) => void;
       getChromeProfiles: () => Promise<{ dirName: string; name: string; email: string; cookiesPath: string }[]>;

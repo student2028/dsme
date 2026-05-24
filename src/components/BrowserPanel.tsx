@@ -8,6 +8,8 @@ import {
   type BrowserTask,
   type BrowserTaskStep,
 } from '../lib/browserTaskTimeline';
+import type { BrowserStepEvent, JsonObject } from '../../electron/types/common';
+import { UserscriptManager } from './UserscriptManager';
 
 interface BrowserSlot {
   url: string;
@@ -43,8 +45,21 @@ export const BrowserPanel: React.FC<{
   const [summary, setSummary] = useState<BrowserSummary | null>(null);
   const [task, setTask] = useState<BrowserTask | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [bookmarks, setBookmarks] = useState<{ title: string; url: string; icon?: string; folder?: string }[]>([]);
+  const [bookmarkPopover, setBookmarkPopover] = useState<{ title: string; url: string; folder: string } | null>(null);
+  const [openFolder, setOpenFolder] = useState<string | null>(null);
+  const [isUserscriptModalOpen, setIsUserscriptModalOpen] = useState(false);
   const taskRef = useRef<BrowserTask | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // Load initial bookmarks from config
+    window.electronAPI?.getConfig?.().then(cfg => {
+      if (cfg && cfg.bookmarks) {
+        setBookmarks(cfg.bookmarks);
+      }
+    });
+  }, []);
 
   const setCurrentTask = useCallback((next: BrowserTask) => {
     taskRef.current = next;
@@ -90,10 +105,8 @@ export const BrowserPanel: React.FC<{
     } catch { setLastAction('前进失败'); }
   }, []);
 
-  // Sync the input value when the underlying slot url changes
-  useEffect(() => {
-    setUrlInput(slot.url);
-  }, [slot.url]);
+  // Keep url input in sync when navigation updates slot.url (controlled fallback).
+  const displayUrl = urlInput || slot.url;
 
   // ── Bounds sync: tell main process where our placeholder div is ──
   useEffect(() => {
@@ -174,8 +187,9 @@ export const BrowserPanel: React.FC<{
     const unsub = window.electronAPI.onBrowserViewNavigated((data: { url: string; title: string }) => {
       const { url, title } = data;
       let label = 'Browser';
-      try { label = new URL(url).hostname; } catch {}
+      try { label = new URL(url).hostname; } catch { /* keep default label */ }
       setSlot({ url, label, status: 'ready' });
+      setUrlInput(url);
       setLastAction(`Loaded: ${title || url}`);
     });
     return () => { unsub(); };
@@ -184,18 +198,18 @@ export const BrowserPanel: React.FC<{
   // ── Listen for browser-step events from main process (timeline) ──
   useEffect(() => {
     if (!window.electronAPI?.onBrowserStep) return;
-    const unsub = window.electronAPI.onBrowserStep((data: any) => {
+    const unsub = window.electronAPI.onBrowserStep((data: BrowserStepEvent) => {
       const { command, sessionTitle, params, result, status } = data;
 
       if (command === 'task_start') {
-        const goal = params?.goal || 'Browser task';
+        const goal = toBrowserCommandLike(params).goal || 'Browser task';
         beginTask(goal);
         setSummary({ title: '浏览器会话', lines: [goal], tone: 'info' });
         return;
       }
 
       if (command === 'task_finish') {
-        const summaryText = params?.summary || '';
+        const summaryText = toBrowserCommandLike(params).summary || '';
         if (summaryText) {
           setSummary({
             title: '浏览器任务已完成',
@@ -212,18 +226,19 @@ export const BrowserPanel: React.FC<{
           beginTask(sessionTitle || '浏览器自动化');
         }
 
+        const cmd = toBrowserCommandLike(params);
         beginStep(
-          commandToStepKind(command, params?.script),
-          commandToStepLabel(command, params),
-          commandToStepInput(command, params),
+          commandToStepKind(command, cmd.script),
+          commandToStepLabel(command, cmd),
+          commandToStepInput(command, cmd),
         );
 
         // Update slot status on navigate
-        if (command === 'navigate' && params?.url) {
+        if (command === 'navigate' && cmd.url) {
           setSlot(prev => ({
             ...prev,
-            url: params.url,
-            label: (() => { try { return new URL(params.url).hostname; } catch { return prev.label; } })(),
+            url: cmd.url!,
+            label: (() => { try { return new URL(cmd.url!).hostname; } catch { return prev.label; } })(),
             status: 'navigating',
           }));
         }
@@ -237,10 +252,11 @@ export const BrowserPanel: React.FC<{
         if (!taskRef.current || (sessionTitle && taskRef.current.title !== sessionTitle)) {
           beginTask(sessionTitle || '浏览器自动化');
         }
+        const cmd = toBrowserCommandLike(params);
         stepId = beginStep(
-          commandToStepKind(command, params?.script),
-          commandToStepLabel(command, params),
-          commandToStepInput(command, params),
+          commandToStepKind(command, cmd.script),
+          commandToStepLabel(command, cmd),
+          commandToStepInput(command, cmd),
         );
       }
 
@@ -260,13 +276,47 @@ export const BrowserPanel: React.FC<{
     return () => { unsub(); };
   }, [onTabOpen]);
 
+  const onStarClick = useCallback(() => {
+    if (!slot.url) return;
+    const existing = bookmarks.find(b => b.url === slot.url);
+    if (existing) {
+      setBookmarkPopover({ ...existing, folder: existing.folder || '' });
+    } else {
+      const title = slot.label && slot.label !== 'Browser' ? slot.label : (slot.url.startsWith('http') ? new URL(slot.url).hostname : slot.url);
+      setBookmarkPopover({ url: slot.url, title, folder: '' });
+    }
+  }, [slot.url, slot.label, bookmarks]);
+
+  const saveBookmark = useCallback((title: string, folder: string) => {
+    if (!bookmarkPopover) return;
+    setBookmarks(prev => {
+      const filtered = prev.filter(b => b.url !== bookmarkPopover.url);
+      const next = [...filtered, { title, url: bookmarkPopover.url, folder: folder || undefined }];
+      window.electronAPI?.saveConfig?.({ bookmarks: next });
+      return next;
+    });
+    setBookmarkPopover(null);
+  }, [bookmarkPopover]);
+
+  const removeBookmark = useCallback(() => {
+    if (!bookmarkPopover) return;
+    setBookmarks(prev => {
+      const next = prev.filter(b => b.url !== bookmarkPopover.url);
+      window.electronAPI?.saveConfig?.({ bookmarks: next });
+      return next;
+    });
+    setBookmarkPopover(null);
+  }, [bookmarkPopover]);
+
+  const isCurrentBookmarked = bookmarks.some(b => b.url === slot.url);
+
   return (
     <div className="browser-panel" style={{ display: visible ? 'flex' : 'none' }}>
       <div className="browser-slot-header">
         <span className="browser-slot-label">🌐 {slot.label}</span>
         <input 
           className="browser-slot-url-input" 
-          value={urlInput} 
+          value={displayUrl} 
           onChange={(e) => setUrlInput(e.target.value)}
           onKeyDown={async (e) => {
             if (e.key === 'Enter') {
@@ -282,6 +332,15 @@ export const BrowserPanel: React.FC<{
           }}
           placeholder="Enter URL..."
         />
+        <button
+          type="button"
+          className="browser-slot-star-btn"
+          onClick={onStarClick}
+          title="Bookmark this page"
+          style={{ color: isCurrentBookmarked ? '#f59e0b' : 'inherit' }}
+        >
+          {isCurrentBookmarked ? '★' : '☆'}
+        </button>
         <StatusBadge status={slot.status} />
         <button type="button" className="browser-slot-user-btn" onClick={userHistoryBack} title="后退">
           ← 后退
@@ -292,8 +351,111 @@ export const BrowserPanel: React.FC<{
         {navigator.platform.toLowerCase().includes('mac') && (
           <CookieSyncDropdown onOpenChange={setDropdownOpen} />
         )}
-        {lastAction && <span className="browser-slot-action">{lastAction}</span>}
+        <button type="button" className="browser-slot-user-btn" onClick={() => setIsUserscriptModalOpen(true)} title="Userscripts">
+          🐒 脚本
+        </button>
+        <span className="browser-slot-last-action" title={lastAction}>
+          {lastAction && `Loaded: ${lastAction}`}
+        </span>
       </div>
+      {bookmarkPopover && (
+        <div className="bookmark-popover">
+          <div className="bookmark-popover-title">Edit Bookmark</div>
+          <div className="bookmark-popover-field">
+            <label>Name</label>
+            <input 
+              value={bookmarkPopover.title} 
+              onChange={e => setBookmarkPopover(p => p ? { ...p, title: e.target.value } : null)} 
+            />
+          </div>
+          <div className="bookmark-popover-field">
+            <label>Folder</label>
+            <input 
+              value={bookmarkPopover.folder} 
+              onChange={e => setBookmarkPopover(p => p ? { ...p, folder: e.target.value } : null)} 
+              placeholder="Bookmarks Bar"
+            />
+          </div>
+          <div className="bookmark-popover-actions">
+            <button onClick={removeBookmark}>Remove</button>
+            <button className="primary" onClick={() => saveBookmark(bookmarkPopover.title, bookmarkPopover.folder)}>Done</button>
+          </div>
+        </div>
+      )}
+      
+      {/* Bookmarks Bar */}
+      {bookmarks.length > 0 && (
+        <div className="browser-slot-bookmarks-bar">
+          {(() => {
+            const rootMarks = bookmarks.filter(b => !b.folder);
+            const folders = Array.from(new Set(bookmarks.filter(b => b.folder).map(b => b.folder!)));
+            return (
+              <>
+                {folders.map(folder => (
+                  <React.Fragment key={folder}>
+                    <div className="bookmark-folder" onClick={() => setOpenFolder(openFolder === folder ? null : folder)}>
+                      <span className="bookmark-folder-icon">{openFolder === folder ? '📂' : '📁'}</span>
+                      <span className="bookmark-title">{folder}</span>
+                    </div>
+                    {openFolder === folder && (
+                      <div className="bookmark-folder-contents">
+                        {bookmarks.filter(b => b.folder === folder).map((b, i) => {
+                          const domain = b.url.replace(/^https?:/i, '').split('/')[0];
+                          return (
+                            <div 
+                              key={i} 
+                              className="bookmark-item bookmark-sub-item"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOpenFolder(null);
+                                setSlot(s => ({ ...s, status: 'navigating' }));
+                                setUrlInput(b.url);
+                                window.electronAPI?.browserNavigateTo?.(b.url).then(res => setLastAction(res || ''));
+                              }}
+                              title={b.url}
+                            >
+                              <img 
+                                src={`https://www.google.com/s2/favicons?domain=${domain}&sz=16`} 
+                                alt="" 
+                                className="bookmark-favicon"
+                                onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                              />
+                              <span className="bookmark-title">{b.title}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </React.Fragment>
+                ))}
+                {rootMarks.map((b, i) => {
+                  const domain = b.url.replace(/^https?:/i, '').split('/')[0];
+                  return (
+                    <div 
+                      key={i} 
+                      className="bookmark-item"
+                      onClick={() => {
+                        setSlot(s => ({ ...s, status: 'navigating' }));
+                        setUrlInput(b.url);
+                        window.electronAPI?.browserNavigateTo?.(b.url).then(res => setLastAction(res || ''));
+                      }}
+                      title={b.url}
+                    >
+                      <img 
+                        src={`https://www.google.com/s2/favicons?domain=${domain}&sz=16`} 
+                        alt="" 
+                        className="bookmark-favicon"
+                        onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                      />
+                      <span className="bookmark-title">{b.title}</span>
+                    </div>
+                  );
+                })}
+              </>
+            );
+          })()}
+        </div>
+      )}
       {summary && (
         <div className={`browser-search-summary ${summary.tone}`}>
           <div className="browser-search-summary-title">{summary.title}</div>
@@ -311,9 +473,30 @@ export const BrowserPanel: React.FC<{
       )}
       {/* Placeholder div — WebContentsView is positioned over this area by main process */}
       <div ref={containerRef} className="browser-slot-content" />
+
+      {isUserscriptModalOpen && (
+        <UserscriptManager currentUrl={slot.url} onClose={() => setIsUserscriptModalOpen(false)} />
+      )}
     </div>
   );
 };
+
+function toBrowserCommandLike(params?: JsonObject): BrowserCommandLike {
+  if (!params) return {};
+  const str = (key: string) => {
+    const value = params[key];
+    return typeof value === 'string' ? value : undefined;
+  };
+  return {
+    url: str('url'),
+    script: str('script'),
+    ref: str('ref'),
+    text: str('text'),
+    direction: str('direction'),
+    goal: str('goal'),
+    summary: str('summary'),
+  };
+}
 
 function commandToStepKind(command: string, script?: string): BrowserStepKind {
   if (command === 'snapshot') return 'observe';
@@ -337,7 +520,8 @@ interface BrowserCommandLike {
   ref?: string;
   text?: string;
   direction?: string;
-  [key: string]: unknown;
+  goal?: string;
+  summary?: string;
 }
 
 function commandToStepLabel(command: string, cmd: BrowserCommandLike): string {
@@ -539,8 +723,8 @@ const CookieSyncDropdown: React.FC<{ onOpenChange?: (open: boolean) => void }> =
       } else {
         alert(`❌ 同步失败: ${res?.error || 'Unknown error'}`);
       }
-    } catch (e: any) {
-      alert(`❌ ${e.message}`);
+    } catch (e: unknown) {
+      alert(`❌ ${e instanceof Error ? e.message : String(e)}`);
     }
     setSyncing(null);
     setOpen(false);

@@ -10,11 +10,15 @@
 import * as fs from 'node:fs/promises';
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
 import { BrowserWindow } from 'electron';
 import OpenAI from 'openai';
 import type { IAgent, AgentConfig } from './base';
+import { getErrorMessage, isExecError } from '../lib/errors';
+import { executeRunCommand } from '../lib/run-command';
+import { safeJsonParse } from '../lib/safe-json-parse';
+import type { HistoryAttachment, HistoryMessage, JsonObject } from '../types/common';
+import { parseTextToolCalls } from './text-tool-parser';
+import { browserViewManager } from '../browser-view-manager';
 import { browsePage } from './browser';
 import {
   deriveHistoryBudgetTokens,
@@ -67,50 +71,12 @@ import {
   hasUsableSearchResults,
   webSearch,
   fetchUrl,
-  searchCodebase,
-  isCommandBlocked,
   buildSystemPromptBase,
 } from './shared-tools';
 
-const execAsync = promisify(exec);
-
-// ── JSON repair (ported from tools1/cortex/llm/sanitize.py) ──
-// Small models often emit malformed JSON: trailing commas, single quotes,
-// Python literals (True/False/None), unquoted keys, etc.
-function safeJsonParse(raw: string, fallback: any = null): any {
-  if (!raw || typeof raw !== 'string') return fallback;
-  raw = raw.trim();
-
-  // Tier 1: standard JSON.parse (fast path for well-formed JSON)
-  try { return JSON.parse(raw); } catch {}
-
-  // Tier 2: manual repair (mirrors sanitize.py _manual_repair)
-  let s = raw;
-
-  // Strip markdown code blocks wrapping
-  const codeBlockMatch = s.match(/```(?:json|JSON)?\s*\n?([\s\S]*?)\n?\s*```/);
-  if (codeBlockMatch) s = codeBlockMatch[1].trim();
-
-  // Extract JSON region from surrounding text
-  for (const startChar of ['{', '[']) {
-    const idx = s.indexOf(startChar);
-    if (idx > 0) { s = s.slice(idx); break; }
-  }
-
-  // Fix trailing commas before } or ]
-  s = s.replace(/,\s*([}\]])/g, '$1');
-  // Python literals → JSON
-  s = s.replace(/\bNone\b/g, 'null');
-  s = s.replace(/\bTrue\b/g, 'true');
-  s = s.replace(/\bFalse\b/g, 'false');
-  s = s.replace(/\bNaN\b/g, 'null');
-  s = s.replace(/\bInfinity\b/g, 'null');
-  // Single quotes → double quotes (simple heuristic)
-  s = s.replace(/'/g, '"');
-
-  try { return JSON.parse(s); } catch {}
-  return fallback;
-}
+type ChatDelta = OpenAI.Chat.Completions.ChatCompletionChunk.Choice.Delta & {
+  reasoning_content?: string;
+};
 
 // System prompt: shared base + builtin-specific additions
 function getSystemPrompt(cwd: string): string {
@@ -198,8 +164,10 @@ export class BuiltinAgent implements IAgent {
 
   }
 
-  private send(channel: string, ...args: any[]) {
-    try { this.window.webContents.send(channel, ...args); } catch {}
+  private send(channel: string, ...args: unknown[]) {
+    try { this.window.webContents.send(channel, ...args); } catch (sendErr: unknown) {
+      console.warn('[BuiltinAgent] IPC send failed:', getErrorMessage(sendErr));
+    }
   }
 
   async handleMessage(content: string): Promise<void> {
@@ -219,12 +187,12 @@ export class BuiltinAgent implements IAgent {
   async handleMessageWithImages(content: string, imageDataUrls: string[]): Promise<void> {
     if (this.busy) { this.abort(); await new Promise(r => setTimeout(r, 500)); }
     this.busy = true;
-    const parts: any[] = [{ type: 'text', text: content }];
+    const parts: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [{ type: 'text', text: content }];
     for (const dataUrl of imageDataUrls) {
       const match = dataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
       if (match) parts.push({ type: 'image_url', image_url: { url: dataUrl } });
     }
-    this.messages.push({ role: 'user', content: parts } as any);
+    this.messages.push({ role: 'user', content: parts });
     this.send('chat-stream-start', '');
     try { await this.runLoop(); }
     finally { this.busy = false; this.send('chat-stream-end', ''); this.send('chat-status', 'idle'); }
@@ -235,15 +203,16 @@ export class BuiltinAgent implements IAgent {
     this.messages = [];
   }
 
-  loadHistory(history: any[]): void {
+  loadHistory(history: HistoryMessage[]): void {
     if (this.busy) this.abort();
+    const isImageAttachment = (a: HistoryAttachment) => a.type === 'image' && !!a.dataUrl;
     this.messages = history.map(m => {
-      if (m.role === 'user' && m.attachments && m.attachments.some((a: any) => a.type === 'image' && a.dataUrl)) {
+      if (m.role === 'user' && m.attachments?.some(isImageAttachment)) {
         const imageParts = m.attachments
-          .filter((a: any) => a.type === 'image' && a.dataUrl)
-          .map((a: any) => ({
-            type: 'image_url',
-            image_url: { url: a.dataUrl }
+          .filter(isImageAttachment)
+          .map((a) => ({
+            type: 'image_url' as const,
+            image_url: { url: a.dataUrl! },
           }));
         
         return {
@@ -254,8 +223,8 @@ export class BuiltinAgent implements IAgent {
           ]
         };
       }
-      return { role: m.role, content: m.content };
-    });
+      return { role: m.role as 'user' | 'assistant' | 'system', content: m.content };
+    }) as OpenAI.Chat.Completions.ChatCompletionMessageParam[];
   }
   abort(): void { this.abortController?.abort(); this.abortController = null; }
   destroy(): void {
@@ -305,7 +274,7 @@ export class BuiltinAgent implements IAgent {
         // If the stream is interrupted after producing content, we keep the partial output
         // rather than failing the whole turn.
         let fullText = '';
-        let toolCalls: Array<{ id: string; name: string; arguments: string }> = [];
+        const toolCalls: Array<{ id: string; name: string; arguments: string }> = [];
         let currentToolIdx = -1;
         let finishReason = '';
         let insideThink = false;
@@ -315,13 +284,12 @@ export class BuiltinAgent implements IAgent {
 
         try {
         for await (const chunk of stream) {
-          const delta = chunk.choices[0]?.delta;
+          const delta = chunk.choices[0]?.delta as ChatDelta | undefined;
           if (chunk.choices[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
           if (!delta) continue;
 
-          // Native reasoning_content (DeepSeek API format)
-          if ((delta as any).reasoning_content) {
-            const raw = (delta as any).reasoning_content;
+          if (delta.reasoning_content) {
+            const raw = delta.reasoning_content;
             if (!insideNativeReasoning) {
               insideNativeReasoning = true;
               this.send('chat-stream-token', '\n<details>\n<summary>💭 思考过程</summary>\n\n');
@@ -396,20 +364,18 @@ export class BuiltinAgent implements IAgent {
           insideNativeReasoning = false;
           this.send('chat-stream-token', '\n\n</details>\n');
         }
-        } catch (streamErr: any) {
-          // Graceful degradation (ported from tools1 _handle_streaming lines 985-989):
-          // If stream interrupted AFTER producing content, keep partial output
+        } catch (streamErr: unknown) {
           if (!fullText && toolCalls.length === 0) {
-            throw streamErr; // Nothing collected → re-throw to outer catch
+            throw streamErr;
           }
-          console.warn(`[BuiltinAgent] Streaming interrupted (${streamErr.message}), keeping partial output (${fullText.length} chars, ${toolCalls.length} tool calls)`);
+          console.warn(`[BuiltinAgent] Streaming interrupted (${getErrorMessage(streamErr)}), keeping partial output (${fullText.length} chars, ${toolCalls.length} tool calls)`);
           finishReason = 'error';
         }
 
         // Fallback text parsing if no native tool calls were streamed
         if (toolCalls.length === 0 && fullText.length > 0) {
           const availableTools = TOOLS.map(t => t.function.name);
-          const parsed = this.parseTextToolCalls(fullText, availableTools);
+          const parsed = parseTextToolCalls(fullText, availableTools);
           if (parsed.length > 0) {
             console.log(`[BuiltinAgent] Fallback: parsed ${parsed.length} tool call(s) from text`);
             for (let i = 0; i < parsed.length; i++) {
@@ -426,10 +392,11 @@ export class BuiltinAgent implements IAgent {
 
         // Save assistant message
         if (fullText || toolCalls.length > 0 || reasoningContent) {
-          const assistantMsg: any = { role: 'assistant', content: fullText || null };
-          if (reasoningContent) {
-            assistantMsg.reasoning_content = reasoningContent;
-          }
+          const assistantMsg: OpenAI.Chat.Completions.ChatCompletionAssistantMessageParam = {
+            role: 'assistant',
+            content: fullText || null,
+            ...(reasoningContent ? { reasoning_content: reasoningContent } as JsonObject : {}),
+          };
           if (toolCalls.length > 0) {
             assistantMsg.tool_calls = toolCalls.map(tc => ({
               id: tc.id, type: 'function' as const,
@@ -471,8 +438,8 @@ export class BuiltinAgent implements IAgent {
           this.send('chat-stream-token', `\n\n> **${tc.name}**\n`);
           console.log(`[BuiltinAgent] Tool: ${tc.name}`);
 
-          let args: any = {};
-          args = safeJsonParse(tc.arguments, {});
+          let args: JsonObject = {};
+          args = (safeJsonParse(tc.arguments, {}) as JsonObject) ?? {};
 
           const result = await this.executeTool(tc.name, args);
 
@@ -494,9 +461,9 @@ export class BuiltinAgent implements IAgent {
         this.send('chat-status', 'thinking');
         // Continue loop for next iteration
 
-      } catch (err: any) {
+      } catch (err: unknown) {
         clearTimeout(timeoutId);
-        const msg = err?.message || String(err);
+        const msg = getErrorMessage(err);
         if (err?.name === 'AbortError' || msg === 'Request was aborted.' || msg === 'aborted') return;
         
         console.error('[BuiltinAgent] ERROR:', msg);
@@ -535,8 +502,8 @@ export class BuiltinAgent implements IAgent {
     // Sanitize malformed tool call arguments in history (ported from tools1 _sanitize_api_messages)
     // Prevents 400 Bad Request from providers rejecting replayed tool calls with broken JSON
     for (const msg of this.messages) {
-      if ((msg as any).role === 'assistant' && (msg as any).tool_calls) {
-        for (const tc of (msg as any).tool_calls) {
+      if (msg.role === 'assistant' && 'tool_calls' in msg && msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
           if (tc.function?.arguments && typeof tc.function.arguments === 'string') {
             const parsed = safeJsonParse(tc.function.arguments);
             if (parsed !== null) {
@@ -578,11 +545,9 @@ export class BuiltinAgent implements IAgent {
   }
 
   // ── Tool execution ──
-  private async executeTool(name: string, args: any): Promise<string> {
-    const resolve = (p: string) => path.resolve(this.cwd, p);
+  private async executeTool(name: string, args: JsonObject): Promise<string> {
+    const cwd = this.cwd;
 
-    // ── Normalize argument names (small models use variant casing/naming) ──
-    // e.g. URL→url, Command→command, FilePath→filepath, Query→query, etc.
     args = this.normalizeToolArgs(name, args);
 
     try {
@@ -621,30 +586,24 @@ export class BuiltinAgent implements IAgent {
           if (!args.url) return 'Error: url is required for fetch_url. Please provide the URL to fetch.';
           return await fetchUrl(args.url);
         }
-        case 'run_command': {
-          try {
-            const { stdout, stderr } = await execAsync(args.command, { cwd });
-            return `STDOUT:\n${stdout}\nSTDERR:\n${stderr}`;
-          } catch (e: any) {
-            return `ERROR: ${e.message}\nSTDOUT:\n${e.stdout}\nSTDERR:\n${e.stderr}`;
-          }
-        }
+        case 'run_command':
+          return executeRunCommand(String(args.command ?? ''), cwd);
         case 'read_file': {
           try {
-            const fullPath = path.resolve(cwd, args.filepath);
+            const fullPath = path.resolve(cwd, String(args.filepath ?? ''));
             return await fs.readFile(fullPath, 'utf8');
-          } catch (e: any) {
-            return `Error reading file: ${e.message}`;
+          } catch (e: unknown) {
+            return `Error reading file: ${getErrorMessage(e)}`;
           }
         }
         case 'write_file': {
           try {
-            const fullPath = path.resolve(cwd, args.filepath);
+            const fullPath = path.resolve(cwd, String(args.filepath ?? ''));
             await fs.mkdir(path.dirname(fullPath), { recursive: true });
             await fs.writeFile(fullPath, args.content, 'utf8');
             return `Successfully wrote to ${fullPath}`;
-          } catch (e: any) {
-            return `Error writing file: ${e.message}`;
+          } catch (e: unknown) {
+            return `Error writing file: ${getErrorMessage(e)}`;
           }
         }
         case 'browse_page': {
@@ -730,14 +689,12 @@ export class BuiltinAgent implements IAgent {
           return await browserSwitchFrame(idx);
         }
         case 'render_html': {
-          const { browserViewManager } = require('../browser-view-manager');
-          const { BrowserWindow } = require('electron');
           const allWindows = BrowserWindow.getAllWindows();
-          const mainWindow = allWindows.find((w: any) => w.getTitle()?.includes('DSME')) || allWindows[0];
+          const mainWindow = allWindows.find((w) => w.getTitle()?.includes('DSME')) || allWindows[0];
           if (mainWindow) mainWindow.webContents.send('browser-panel-open');
 
           this.send('chat-stream-token', `\n正在渲染丰富的 HTML 视图...\n`);
-          await browserViewManager.loadHTML(args.html);
+          await browserViewManager.loadHTML(String(args.html ?? ''));
           return 'HTML rendered successfully in the IDE browser panel. Tell the user to look at the browser panel.';
         }
         // ── Electron Native tools ──
@@ -803,8 +760,9 @@ export class BuiltinAgent implements IAgent {
         }
         default: return `Unknown tool: ${name}`;
       }
-    } catch (e: any) {
-      return `Tool error (${name}): ${e.code === 'ENOENT' ? 'File not found' : e.message}`;
+    } catch (e: unknown) {
+      const code = isExecError(e) ? e.code : undefined;
+      return `Tool error (${name}): ${code === 'ENOENT' ? 'File not found' : getErrorMessage(e)}`;
     }
   }
 
@@ -813,17 +771,15 @@ export class BuiltinAgent implements IAgent {
    * Small/local models (Gemma, Qwen-small, Llama) often use variant casing
    * or alternative parameter names. This normalizes them to match our schema.
    */
-  private normalizeToolArgs(toolName: string, args: any): any {
+  private normalizeToolArgs(toolName: string, args: JsonObject): JsonObject {
     if (!args || typeof args !== 'object') return args;
 
-    // Build a case-insensitive lookup: lowercase key → original value
-    const lowerMap = new Map<string, any>();
+    const lowerMap = new Map<string, unknown>();
     for (const [key, val] of Object.entries(args)) {
       lowerMap.set(key.toLowerCase(), val);
     }
 
-    // Helper: find a value by trying multiple key variants
-    const find = (...keys: string[]): any => {
+    const find = (...keys: string[]): unknown => {
       for (const k of keys) {
         if (args[k] !== undefined) return args[k];
       }
@@ -897,7 +853,7 @@ export class BuiltinAgent implements IAgent {
   /** Text-based tool call fallback (Hermes / XML / JSON code block / bare JSON) */
   private async autoExecuteCodeBlocks(text: string): Promise<void> {
     const availableTools = TOOLS.map(t => t.function.name);
-    const parsed = this.parseTextToolCalls(text, availableTools);
+    const parsed = parseTextToolCalls(text, availableTools);
     if (parsed.length === 0) return;
 
     console.log(`[BuiltinAgent] Fallback: parsed ${parsed.length} tool call(s) from text`);
@@ -912,97 +868,9 @@ export class BuiltinAgent implements IAgent {
         const cap = this.getToolResultCapChars();
         const display = result.length > cap ? result.slice(0, cap) + '\n...(truncated)' : result;
         this.send('chat-stream-token', `\n\`\`\`\n${display}\n\`\`\`\n`);
-      } catch (e: any) {
-        this.send('chat-stream-token', `\n⚠️ Tool error: ${e.message?.slice(0, 500)}\n`);
+      } catch (e: unknown) {
+        this.send('chat-stream-token', `\n⚠️ Tool error: ${getErrorMessage(e).slice(0, 500)}\n`);
       }
     }
-  }
-
-  private parseTextToolCalls(text: string, availableTools: string[]): { name: string; args: any }[] {
-    // Strategy 1: Hermes (uses safeJsonParse for resilient parsing)
-    const hermesMatch = text.match(/\[TOOL_CALLS\]\s*(\[[\s\S]*?\])/);
-    if (hermesMatch) {
-      const calls = safeJsonParse(hermesMatch[1]);
-      if (Array.isArray(calls)) {
-        return calls.filter((c: any) => c.name && availableTools.includes(c.name))
-          .map((c: any) => ({ name: c.name, args: c.arguments || c.parameters || {} }));
-      }
-    }
-    // Strategy 2: XML
-    const xmlRegex = /<function=([^>]+)>([\s\S]*?)<\/function>/g;
-    const xmlCalls: { name: string; args: any }[] = [];
-    let xmlMatch;
-    while ((xmlMatch = xmlRegex.exec(text)) !== null) {
-      const name = xmlMatch[1].trim();
-      if (!availableTools.includes(name)) continue;
-      const parsed = safeJsonParse(xmlMatch[2].trim());
-      xmlCalls.push({ name, args: parsed ?? {} });
-    }
-    if (xmlCalls.length > 0) return xmlCalls;
-    // Strategy 3: JSON code blocks
-    // Strategy 3: JSON code blocks (matches tools1 CODE_BLOCK_PATTERN with additional key heuristics)
-    const jsonBlockRegex = /```(?:json)?\s*\n?\s*(\{[\s\S]*?\})\s*\n?```/g;
-    const jsonCalls: { name: string; args: any }[] = [];
-    let jsonMatch;
-    while ((jsonMatch = jsonBlockRegex.exec(text)) !== null) {
-      const data = safeJsonParse(jsonMatch[1]);
-      if (data && typeof data === 'object') {
-        // Format: {"name": "tool_name", "parameters": {...}} or {"name": "...", "arguments": {...}}
-        if (data.name && availableTools.includes(data.name)) {
-          jsonCalls.push({ name: data.name, args: data.parameters || data.arguments || {} });
-        }
-        // Format: raw args with known parameter keys (like tools1 _try_parse_tool_json)
-        else if (!data.name) {
-          const paramKeyMap: Record<string, string> = {
-            command: 'run_command', filepath: 'read_file', query: 'web_search',
-            url: 'fetch_url', dirpath: 'list_directory', ref: 'browser_click',
-          };
-          for (const [key, toolName] of Object.entries(paramKeyMap)) {
-            if (key in data && availableTools.includes(toolName)) {
-              jsonCalls.push({ name: toolName, args: data });
-              break;
-            }
-          }
-        }
-      }
-    }
-    if (jsonCalls.length > 0) return jsonCalls;
-    // Strategy 4: Bare JSON
-    const bareRegex = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"(?:parameters|arguments)"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
-    const bareCalls: { name: string; args: any }[] = [];
-    let bareMatch;
-    while ((bareMatch = bareRegex.exec(text)) !== null) {
-      const name = bareMatch[1];
-      if (!availableTools.includes(name)) continue;
-      const parsed = safeJsonParse(bareMatch[2]);
-      if (parsed && typeof parsed === 'object') bareCalls.push({ name, args: parsed });
-    }
-    if (bareCalls.length > 0) return bareCalls;
-
-    // Strategy 5: Raw code blocks → synthesize write_file + run_command
-    const codeBlockRegex = /```(\w+)\n([\s\S]*?)```/g;
-    const codeCalls: { name: string; args: any }[] = [];
-    let codeMatch;
-    const RUNNABLE: Record<string, string> = {
-      python: 'python3', py: 'python3',
-      javascript: 'node', js: 'node',
-      typescript: 'npx tsx', ts: 'npx tsx',
-      bash: 'bash', sh: 'bash', zsh: 'zsh',
-    };
-    while ((codeMatch = codeBlockRegex.exec(text)) !== null) {
-      const lang = codeMatch[1].toLowerCase();
-      const code = codeMatch[2].trim();
-      const runner = RUNNABLE[lang];
-      if (!runner || code.length < 10) continue;
-      const ext = lang === 'python' || lang === 'py' ? '.py' :
-                  lang === 'javascript' || lang === 'js' ? '.js' :
-                  lang === 'typescript' || lang === 'ts' ? '.ts' : '.sh';
-      const filename = `scratch/auto_${Date.now()}${ext}`;
-      codeCalls.push({ name: 'write_file', args: { filepath: filename, content: code } });
-      codeCalls.push({ name: 'run_command', args: { command: `${runner} ${filename}` } });
-    }
-    if (codeCalls.length > 0) return codeCalls;
-
-    return [];
   }
 }

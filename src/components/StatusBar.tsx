@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useTheme } from '../ThemeContext';
 
-interface Props {}
+type Props = Record<string, never>;
 
 export const StatusBar: React.FC<Props> = () => {
   const [model, setModel] = useState('');
