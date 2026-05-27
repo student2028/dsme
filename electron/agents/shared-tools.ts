@@ -21,18 +21,16 @@ export { countSearchResultLines, formatWebSearchResult, hasUsableSearchResults }
 
 /** Works in Vite CJS bundle (import.meta.url is stripped) and in ESM dev. */
 function resolvePackageFile(specifier: string): string {
-  const tryRequire = (filename: string) => createRequire(filename).resolve(specifier);
-  if (typeof __filename !== 'undefined') {
-    try {
-      return tryRequire(__filename);
-    } catch { /* fall through */ }
+  if (typeof require !== 'undefined') {
+    return require.resolve(specifier);
   }
-  if (typeof import.meta !== 'undefined' && import.meta.url) {
-    try {
-      return tryRequire(fileURLToPath(import.meta.url));
-    } catch { /* fall through */ }
-  }
-  return tryRequire(join(process.cwd(), 'package.json'));
+  try {
+    const metaUrl = (import.meta as any).url;
+    if (metaUrl) {
+      return createRequire(fileURLToPath(metaUrl)).resolve(specifier);
+    }
+  } catch {}
+  return createRequire(join(process.cwd(), 'package.json')).resolve(specifier);
 }
 
 // ── Mozilla Readability.js — industry gold-standard content extraction ──

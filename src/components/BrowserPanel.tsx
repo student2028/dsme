@@ -143,7 +143,7 @@ export const BrowserPanel: React.FC<{
   // WebContentsView is a native layer above all DOM content, so we must explicitly
   // hide it when any modal overlay (Settings, CommandPalette, dropdowns etc.) is open.
   useEffect(() => {
-    if (visible && !overlayOpen && !dropdownOpen) {
+    if (visible && !overlayOpen && !dropdownOpen && !isUserscriptModalOpen) {
       // Show with current bounds
       if (containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
@@ -159,7 +159,7 @@ export const BrowserPanel: React.FC<{
     } else {
       window.electronAPI?.hideBrowserView?.();
     }
-  }, [visible, overlayOpen, dropdownOpen]);
+  }, [visible, overlayOpen, dropdownOpen, isUserscriptModalOpen]);
 
   // ── Auto-clear timeline when a new chat round begins, or conversation switches ──
   useEffect(() => {
